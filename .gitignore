@@ -1,0 +1,22 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# 临时自检脚本（非交付物）
+_smoke_test.py
+_e2e_test.py
+
+# 运行时生成
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
