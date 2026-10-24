@@ -9,6 +9,10 @@ wheels/
 # Virtual environments
 .venv
 
+# IDE
+.idea/
+.vscode/
+
 # uiautomation 运行日志（子线程 UIA 调用自动生成）
 @AutomationLog.txt
 

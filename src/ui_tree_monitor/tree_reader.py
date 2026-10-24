@@ -457,8 +457,8 @@ def _match_tree_child(node: TreeNode, seg: PathSegment) -> Optional[TreeNode]:
     # 1) 精确：type + id + name
     for ch in children:
         if seg.control_type and ch.control_type and ch.control_type == seg.control_type and \
-           seg.automation_id and ch.automation_id and ch.automation_id == seg.automation_id and \
-           seg.name and ch.name and ch.name == seg.name:
+           seg.automation_id and ch.automation_id and seg.automation_id == ch.automation_id and \
+           seg.name and ch.name and seg.name == ch.name:
             return ch
     # 2) 放宽：type + name
     for ch in children:

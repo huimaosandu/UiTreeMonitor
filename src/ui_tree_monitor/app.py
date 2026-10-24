@@ -49,6 +49,7 @@ class App(tk.Tk):
         self._cursor_stop = threading.Event()
         self._cursor_queue: "queue.Queue[tuple]" = queue.Queue()
         self._last_cursor_hwnd: Optional[int] = None
+        self._cursor_current_root: Optional[TreeNode] = None   # 线程侧最新树
         self._node_id_to_iid: dict[int, str] = {}   # id(node) -> tree iid
 
         # 属性下拉映射：显示文本 -> key
@@ -138,6 +139,8 @@ class App(tk.Tk):
         self.tree.column("#0", width=360)
         self.tree.column("type", width=110, anchor="w")
         self.tree.column("id", width=110, anchor="w")
+        # 光标捕获高亮样式：醒目浅黄背景
+        self.tree.tag_configure("cursor_hl", background="#FFD666", foreground="#000000")
         vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=vsb.set)
         self.tree.pack(side="left", fill="both", expand=True)
@@ -424,6 +427,7 @@ class App(tk.Tk):
     def _start_cursor(self) -> None:
         self._cursor_on = True
         self._last_cursor_hwnd = self._selected_window.hwnd if self._selected_window else None
+        self._cursor_current_root = self._tree_root
         # 清空残留队列
         while not self._cursor_queue.empty():
             try:
@@ -483,15 +487,20 @@ class App(tk.Tk):
                 if win is None:
                     time.sleep(CURSOR_POLL)
                     continue
-                # 窗口变化 -> 抓树入队（主线程负责切换显示）
+                # 窗口变化 -> 抓树，更新线程侧最新树引用并入队（主线程负责切换显示）
                 if win.hwnd != self._last_cursor_hwnd:
                     self._last_cursor_hwnd = win.hwnd
                     root = build_tree(win.hwnd)
+                    self._cursor_current_root = root
                     self._cursor_queue.put(("tree", win, root))
-                # 定位光标元素并高亮入队
+                    # 树刚切换，等主线程加载完再用新树定位；本轮直接进入下一轮
+                    time.sleep(CURSOR_POLL)
+                    continue
+                # 定位光标元素并高亮入队（用线程侧最新树，消除与主线程加载的竞态）
                 node = None
-                if self._tree_root is not None:
-                    node = locate_in_tree(self._tree_root, ctrl)
+                root_now = self._cursor_current_root
+                if root_now is not None:
+                    node = locate_in_tree(root_now, ctrl)
                 if node is not None:
                     self._cursor_queue.put(("hl", node))
             except Exception:
@@ -528,8 +537,17 @@ class App(tk.Tk):
         self.tree.delete(*self.tree.get_children())
         if root is not None:
             self._insert_node("", root)
+            # 自动展开前两层，让结构立即可见
+            self._expand_levels(self.tree.get_children(), depth=0, max_expand=2)
             count = self._count_nodes(root)
             self._set_status(t("status_tree_ok").format(count=count))
+
+    def _expand_levels(self, iids: list[str], depth: int, max_expand: int) -> None:
+        if depth >= max_expand:
+            return
+        for iid in iids:
+            self.tree.item(iid, open=True)
+            self._expand_levels(self.tree.get_children(iid), depth + 1, max_expand)
 
     def _sync_window_combo(self, win: WindowInfo) -> None:
         label = f"{win.process_name} — {win.title} [pid={win.pid}]"
@@ -545,20 +563,40 @@ class App(tk.Tk):
             pass
 
     def _cursor_highlight(self, node: TreeNode) -> None:
-        """主线程：在树视图中展开并高亮光标所在节点。"""
+        """主线程：在树视图中展开并高亮光标所在节点（醒目背景色 tag）。"""
         if not self._cursor_on:
             return
+        # 清除上一次高亮（递归遍历全部节点）
+        self._clear_all_hl()
         iid = self._node_id_to_iid.get(id(node))
         if not iid or not self.tree.exists(iid):
             return
         # 展开到该节点的所有祖先
+        parents_to_open = []
         parent = self.tree.parent(iid)
         while parent:
-            self.tree.item(parent, open=True)
+            parents_to_open.append(parent)
             parent = self.tree.parent(parent)
+        for p in reversed(parents_to_open):
+            self.tree.item(p, open=True)
+        self.tree.item(iid, tags=("cursor_hl",))
         self.tree.see(iid)
         self.tree.selection_set(iid)
         self.tree.focus(iid)
+        # 状态栏反馈当前命中的节点
+        self._set_status(f"{self._selected_window.process_name} — {node.display}")
+
+    def _clear_all_hl(self) -> None:
+        for iid in self._walk_tree_items():
+            if self.tree.item(iid, "tags"):
+                self.tree.item(iid, tags=())
+
+    def _walk_tree_items(self, parent: str = "") -> list[str]:
+        out: list[str] = []
+        for iid in self.tree.get_children(parent):
+            out.append(iid)
+            out.extend(self._walk_tree_items(iid))
+        return out
 
     # ------------------------------------------------------------------
     # 杂项
