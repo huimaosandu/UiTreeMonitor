@@ -6,6 +6,8 @@
 
   "btn_refresh": "Refresh Windows",
   "btn_load_tree": "Load Tree",
+  "btn_cursor_start": "Capture by Cursor",
+  "btn_cursor_stop": "Stop Cursor Capture",
   "btn_add": "Add Monitor",
   "btn_remove": "Remove Selected",
   "btn_clear": "Clear All",
@@ -51,6 +53,8 @@
   "status_stop": "Monitoring stopped",
   "status_no_select": "Select a node in the tree first",
   "status_running": "Monitoring ({count} items)",
+  "status_cursor_on": "Cursor capture on: move cursor to a window to auto-load its tree and highlight",
+  "status_cursor_off": "Cursor capture off",
 
   "empty_monitored": "(no monitored items)",
   "empty_log": "(no changes yet)",

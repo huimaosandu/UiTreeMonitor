@@ -10,14 +10,22 @@
 from __future__ import annotations
 
 import datetime
+import queue
+import threading
+import time
 import tkinter as tk
 from tkinter import ttk, messagebox
 from typing import Optional
 
 from . import i18n, config
 from .tree_reader import (WindowInfo, list_windows, build_tree,
-                          TreeNode, ATTRIBUTES)
+                          TreeNode, ATTRIBUTES,
+                          cursor_position, element_from_point,
+                          window_from_element, locate_in_tree)
 from .monitor import Monitor, MonitoredNode, ChangeEvent, make_monitored
+
+CURSOR_POLL = 0.2     # 光标捕获轮询间隔（秒）
+CURSOR_DRAIN = 0.1    # 主线程处理队列间隔（秒）
 
 # 树视图中节点映射：iid -> TreeNode
 # 监控表格中：行 id -> MonitoredNode
@@ -34,6 +42,14 @@ class App(tk.Tk):
         self._tree_root: Optional[TreeNode] = None
         self._node_map: dict[str, TreeNode] = {}          # tree iid -> node
         self._monitor_items: dict[str, MonitoredNode] = {}  # table iid -> monitored
+
+        # 随光标捕获状态
+        self._cursor_on = False
+        self._cursor_thread: Optional[threading.Thread] = None
+        self._cursor_stop = threading.Event()
+        self._cursor_queue: "queue.Queue[tuple]" = queue.Queue()
+        self._last_cursor_hwnd: Optional[int] = None
+        self._node_id_to_iid: dict[int, str] = {}   # id(node) -> tree iid
 
         # 属性下拉映射：显示文本 -> key
         self._attr_display_to_key: dict[str, str] = {}
@@ -88,6 +104,8 @@ class App(tk.Tk):
         self.btn_refresh.pack(side="left", padx=2)
         self.btn_load = ttk.Button(toolbar, command=self._load_tree)
         self.btn_load.pack(side="left", padx=2)
+        self.btn_cursor = ttk.Button(toolbar, command=self._toggle_cursor)
+        self.btn_cursor.pack(side="left", padx=2)
 
         ttk.Separator(toolbar, orient="vertical").pack(side="left", fill="y", padx=8)
 
@@ -191,6 +209,7 @@ class App(tk.Tk):
         self.lbl_window.configure(text=t("label_window"))
         self.btn_refresh.configure(text=t("btn_refresh"))
         self.btn_load.configure(text=t("btn_load_tree"))
+        self._update_cursor_button()
         self.lbl_interval.configure(text=t("label_interval"))
         self.btn_start.configure(text=t("btn_start"))
         self.btn_stop.configure(text=t("btn_stop"))
@@ -250,6 +269,7 @@ class App(tk.Tk):
         self._selected_window = win
         self._tree_root = build_tree(win.hwnd)
         self._node_map.clear()
+        self._node_id_to_iid.clear()
         self.tree.delete(*self.tree.get_children())
         if self._tree_root is None:
             messagebox.showerror(t("msg_error_title"), t("status_tree_fail"))
@@ -262,6 +282,7 @@ class App(tk.Tk):
     def _insert_node(self, parent: str, node: TreeNode) -> None:
         iid = f"n{len(self._node_map)}"
         self._node_map[iid] = node
+        self._node_id_to_iid[id(node)] = iid
         self.tree.insert(parent, "end", iid=iid,
                          text=node.name or node.control_type or "(unnamed)",
                          values=(node.control_type, node.automation_id),
@@ -392,12 +413,161 @@ class App(tk.Tk):
         self.after(0, lambda: self._set_status(f"⚠ {msg}"))
 
     # ------------------------------------------------------------------
+    # 随光标捕获（Element Inspector）
+    # ------------------------------------------------------------------
+    def _toggle_cursor(self) -> None:
+        if self._cursor_on:
+            self._stop_cursor()
+        else:
+            self._start_cursor()
+
+    def _start_cursor(self) -> None:
+        self._cursor_on = True
+        self._last_cursor_hwnd = self._selected_window.hwnd if self._selected_window else None
+        # 清空残留队列
+        while not self._cursor_queue.empty():
+            try:
+                self._cursor_queue.get_nowait()
+            except queue.Empty:
+                break
+        self._cursor_stop.clear()
+        self._cursor_thread = threading.Thread(target=self._cursor_loop,
+                                               name="cursor-inspector", daemon=True)
+        self._cursor_thread.start()
+        self.after(int(CURSOR_DRAIN * 1000), self._drain_cursor_queue)
+        self._update_cursor_button()
+        self._set_status(i18n.translate(self.lang, "status_cursor_on"))
+
+    def _stop_cursor(self) -> None:
+        self._cursor_on = False
+        self._cursor_stop.set()
+        if self._cursor_thread:
+            self._cursor_thread.join(timeout=2.0)
+            self._cursor_thread = None
+        self._update_cursor_button()
+        if self.winfo_exists():
+            self._set_status(i18n.translate(self.lang, "status_cursor_off"))
+
+    def _update_cursor_button(self) -> None:
+        if not hasattr(self, "btn_cursor"):
+            return
+        t = lambda k: i18n.translate(self.lang, k)
+        text = t("btn_cursor_stop") if self._cursor_on else t("btn_cursor_start")
+        try:
+            self.btn_cursor.configure(text=text)
+        except Exception:
+            pass
+
+    def _cursor_loop(self) -> None:
+        """后台线程：周期读取光标位置与元素，结果放入队列由主线程处理。
+
+        注意：uiautomation 在子线程使用前必须先 CoInitialize，这里用
+        auto.UIAutomationInitializerInThread 上下文管理；线程内绝不直接操作 Tk。
+        """
+        import uiautomation as auto
+        try:
+            with auto.UIAutomationInitializerInThread(True):
+                self._cursor_loop_inner()
+        except Exception:
+            pass
+
+    def _cursor_loop_inner(self) -> None:
+        while not self._cursor_stop.is_set():
+            try:
+                x, y = cursor_position()
+                ctrl = element_from_point(x, y)
+                if ctrl is None:
+                    time.sleep(CURSOR_POLL)
+                    continue
+                win = window_from_element(ctrl)
+                if win is None:
+                    time.sleep(CURSOR_POLL)
+                    continue
+                # 窗口变化 -> 抓树入队（主线程负责切换显示）
+                if win.hwnd != self._last_cursor_hwnd:
+                    self._last_cursor_hwnd = win.hwnd
+                    root = build_tree(win.hwnd)
+                    self._cursor_queue.put(("tree", win, root))
+                # 定位光标元素并高亮入队
+                node = None
+                if self._tree_root is not None:
+                    node = locate_in_tree(self._tree_root, ctrl)
+                if node is not None:
+                    self._cursor_queue.put(("hl", node))
+            except Exception:
+                pass
+            time.sleep(CURSOR_POLL)
+
+    def _drain_cursor_queue(self) -> None:
+        """主线程定时取队列并更新 UI（跨线程安全的唯一通道）。"""
+        try:
+            while True:
+                item = self._cursor_queue.get_nowait()
+                kind, *rest = item
+                if kind == "tree":
+                    win, root = rest
+                    self._cursor_load_tree(win, root)
+                elif kind == "hl":
+                    self._cursor_highlight(rest[0])
+        except queue.Empty:
+            pass
+        if self._cursor_on:
+            self.after(int(CURSOR_DRAIN * 1000), self._drain_cursor_queue)
+
+    def _cursor_load_tree(self, win: WindowInfo, root: Optional[TreeNode]) -> None:
+        """主线程：光标捕获到新窗口后加载其结构树。"""
+        t = lambda k: i18n.translate(self.lang, k)
+        if not self._cursor_on:
+            return
+        self._selected_window = win
+        # 尝试在窗口中定位下拉框（找不到则保留原选择）
+        self._sync_window_combo(win)
+        self._tree_root = root
+        self._node_map.clear()
+        self._node_id_to_iid.clear()
+        self.tree.delete(*self.tree.get_children())
+        if root is not None:
+            self._insert_node("", root)
+            count = self._count_nodes(root)
+            self._set_status(t("status_tree_ok").format(count=count))
+
+    def _sync_window_combo(self, win: WindowInfo) -> None:
+        label = f"{win.process_name} — {win.title} [pid={win.pid}]"
+        values = list(self.win_combo["values"]) if self.win_combo["values"] else []
+        if label not in values:
+            values.append(label)
+            self.win_combo.configure(values=values)
+            self._windows.append(win)
+        try:
+            idx = list(self.win_combo["values"]).index(label)
+            self.win_combo.current(idx)
+        except Exception:
+            pass
+
+    def _cursor_highlight(self, node: TreeNode) -> None:
+        """主线程：在树视图中展开并高亮光标所在节点。"""
+        if not self._cursor_on:
+            return
+        iid = self._node_id_to_iid.get(id(node))
+        if not iid or not self.tree.exists(iid):
+            return
+        # 展开到该节点的所有祖先
+        parent = self.tree.parent(iid)
+        while parent:
+            self.tree.item(parent, open=True)
+            parent = self.tree.parent(parent)
+        self.tree.see(iid)
+        self.tree.selection_set(iid)
+        self.tree.focus(iid)
+
+    # ------------------------------------------------------------------
     # 杂项
     # ------------------------------------------------------------------
     def _set_status(self, text: str) -> None:
         self.status_var.set(text)
 
     def _on_close(self) -> None:
+        self._stop_cursor()
         self._monitor.stop()
         self.destroy()
 

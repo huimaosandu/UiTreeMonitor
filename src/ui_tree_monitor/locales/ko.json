@@ -6,6 +6,8 @@
 
   "btn_refresh": "창 새로고침",
   "btn_load_tree": "구조 트리 가져오기",
+  "btn_cursor_start": "커서로 캡처",
+  "btn_cursor_stop": "커서 캡처 중지",
   "btn_add": "모니터링 추가",
   "btn_remove": "선택 삭제",
   "btn_clear": "전체 지우기",
@@ -51,6 +53,8 @@
   "status_stop": "모니터링 중지됨",
   "status_no_select": "구조 트리에서 노드를 먼저 선택하세요",
   "status_running": "모니터링 중 ({count} 항목)",
+  "status_cursor_on": "커서 캡처 켜짐: 커서를 창으로 옮기면 구조 트리를 자동 로드하고 하이라이트",
+  "status_cursor_off": "커서 캡처 꺼짐",
 
   "empty_monitored": "(모니터링 항목 없음)",
   "empty_log": "(아직 변경 없음)",

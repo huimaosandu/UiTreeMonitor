@@ -6,6 +6,8 @@
 
   "btn_refresh": "ウィンドウ更新",
   "btn_load_tree": "構造ツリー取得",
+  "btn_cursor_start": "カーソルで取得",
+  "btn_cursor_stop": "カーソル取得停止",
   "btn_add": "監視に追加",
   "btn_remove": "選択を削除",
   "btn_clear": "すべてクリア",
@@ -51,6 +53,8 @@
   "status_stop": "監視を停止",
   "status_no_select": "構造ツリーでノードを選択してください",
   "status_running": "監視中（{count} 項目）",
+  "status_cursor_on": "カーソル取得ON：カーソルをウィンドウへ移動すると構造ツリーを自動取得・ハイライト",
+  "status_cursor_off": "カーソル取得OFF",
 
   "empty_monitored": "（監視項目なし）",
   "empty_log": "（変化はまだありません）",

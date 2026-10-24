@@ -1,12 +1,13 @@
 {
   "app_title": "UI 结构树监控器",
   "win_tab": "目标窗口",
-  "monitor_tab": "监控项",
   "tab_monitor": "监控项",
   "tab_log": "变化日志",
 
   "btn_refresh": "刷新窗口",
   "btn_load_tree": "抓取结构树",
+  "btn_cursor_start": "随光标捕获",
+  "btn_cursor_stop": "停止光标捕获",
   "btn_add": "添加监控",
   "btn_remove": "移除选中",
   "btn_clear": "清空全部",
@@ -52,6 +53,8 @@
   "status_stop": "监控已停止",
   "status_no_select": "请先在结构树中选中一个节点",
   "status_running": "监控运行中 ({count} 项)",
+  "status_cursor_on": "随光标捕获已开启：移动光标到目标窗口自动加载结构树并高亮",
+  "status_cursor_off": "随光标捕获已关闭",
 
   "empty_monitored": "(暂无监控项)",
   "empty_log": "(暂无变化记录)",

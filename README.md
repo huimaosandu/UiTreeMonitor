@@ -10,6 +10,7 @@ Windows 应用 **UI 结构树数值/属性变化监控工具**。
 
 - **窗口枚举**：列出当前系统所有可见顶层窗口（进程名 / 标题 / PID / 句柄）。
 - **结构树抓取**：一键抓取目标窗口完整 UIA 结构树（类型 / 名称 / AutomationId）。
+- **随光标捕获（Element Inspector）**：开启后移动光标，自动加载光标下窗口的结构树，并高亮光标所指向的节点，无需手动选窗口。
 - **节点监控**：在树中选中任意节点 + 属性，加入监控列表。
 - **定时轮询**：可调轮询间隔（秒），独立线程周期抓取属性值。
 - **变化检测**：对比新旧值，记录每次变化的旧值→新值、时间戳与变化次数。
@@ -66,6 +67,7 @@ uv run python -m ui_tree_monitor
 
 1. 顶部工具栏 **选择目标窗口**（下拉框已按进程+标题排序，含 PID）。
 2. 点击 **抓取结构树**，左侧显示目标窗口的完整 UI 树。
+   - 也可点击 **随光标捕获**：开启后把光标移到任意窗口，工具会自动加载该窗口的结构树并高亮光标所指节点（相当于 Element Inspector），无需手动选窗口；再点一次即停止。
 3. 在树中 **选中一个节点**，在右侧 **选择要监控的属性**（默认 Name）。
 4. 点击 **添加监控**，节点出现在下方“已监控项”表格。
 5. 设置 **轮询间隔（秒）**（默认 1.0）。
@@ -102,9 +104,9 @@ E:\ui-tree-monitor\
 
 | 模块 | 职责 |
 |------|------|
-| `tree_reader.py` | `list_windows()` 枚举窗口；`build_tree(hwnd)` 抓树；`build_path()` / `locate_by_path()` 节点定位；`read_attribute()` 读属性；`ATTRIBUTES` 可监控属性清单 |
+| `tree_reader.py` | `list_windows()` 枚举窗口；`build_tree(hwnd)` 抓树；`build_path()` / `locate_by_path()` 节点定位；`read_attribute()` 读属性；`cursor_position()` / `element_from_point()` / `window_from_element()` / `locate_in_tree()` 随光标捕获；`ATTRIBUTES` 可监控属性清单 |
 | `monitor.py` | `Monitor` 定时轮询引擎：`set_interval` / `add` / `remove` / `start` / `stop`；`MonitoredNode` 监控项；`ChangeEvent` 变化事件 |
-| `app.py` | Tkinter 主界面：工具栏 / 结构树 / 监控表格 / 日志 / 状态栏；线程回调经 `after()` 安全更新 UI |
+| `app.py` | Tkinter 主界面：工具栏 / 结构树 / 监控表格 / 日志 / 状态栏；监控与光标捕获回调经 `after()` + 线程安全队列更新 UI |
 | `config.py` | 语言、轮询间隔、上次窗口等设置，持久化到 `~/.ui-tree-monitor/config.json` |
 | `i18n.py` | 按语言取翻译，缺失回退中文 |
 
@@ -114,7 +116,8 @@ E:\ui-tree-monitor\
 
 - **节点定位**：每个监控项保存从窗口根到目标节点的路径（每层记录 控件类型 / AutomationId / 名称 / 子索引）。轮询时按路径重新定位，**优先精确匹配**（类型+ID+名称），找不到再按索引兜底，对兄弟节点顺序变动有一定鲁棒性。
 - **值读取**：对不同属性走对应 UIA Pattern（Value / RangeValue / Toggle），读不到返回空串，不会抛异常中断轮询。
-- **线程模型**：轮询在独立后台线程执行，通过 `on_change` / `on_poll` / `on_error` 回调；GUI 侧用 `after(0, ...)` 回到主线程更新界面，避免 Tk 跨线程访问崩溃。
+- **线程与 COM 初始化**：uiautomation 在子线程使用前必须先 `CoInitialize`。监控轮询线程与随光标捕获线程均用 `auto.UIAutomationInitializerInThread(True)` 上下文包裹。
+- **线程安全**：监控轮询与光标捕获在独立后台线程执行；线程内**绝不直接操作 Tk**。变化回调经 `after(0, ...)` 回主线程；随光标捕获的结果先写入 `queue.Queue`，主线程用定时器 `_drain_cursor_queue()` 周期取走并更新界面，避免跨线程 Tk 访问崩溃。
 - **历史长度**：单监控项保留最近 500 条变化记录，防止内存膨胀。
 
 ### 依赖
@@ -125,14 +128,14 @@ E:\ui-tree-monitor\
 
 ## 验证
 
-工程内含两份一次性自检脚本（运行后删除，非交付物）：
+工程内含一次性自检脚本（运行后删除，非交付物）：
 
 ```powershell
-uv run python _smoke_test.py   # 枚举窗口 + 抓取结构树
-uv run python _e2e_test.py     # 构建树 → 定位 → 监控引擎轮询 → 变化检测
+uv run python _verify_cursor.py       # i18n 键一致性 + 光标捕获冒烟（窗口识别/抓树/定位）
+uv run python _verify_cursor_gui.py   # GUI 光标捕获全流程（开启→自动加载→高亮→停止）
 ```
 
-已实测通过：窗口枚举（10+ 个窗口）、结构树抓取、路径重定位、3 周期轮询读值均正常。
+已实测通过：窗口枚举、结构树抓取、路径重定位、监控引擎轮询、随光标捕获（自动加载光标下窗口树并高亮节点，如 “德擎标光测试平台”）、5 语言键一致均正常。
 
 ---
 

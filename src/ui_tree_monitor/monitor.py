@@ -102,6 +102,15 @@ class Monitor:
 
     # -- 轮询循环 ----------------------------------------------------------
     def _run(self) -> None:
+        # uiautomation 在子线程使用前必须先 CoInitialize
+        import uiautomation as auto
+        try:
+            with auto.UIAutomationInitializerInThread(True):
+                self._run_inner()
+        except Exception:
+            pass
+
+    def _run_inner(self) -> None:
         while not self._stop_ev.is_set():
             start = time.time()
             try:
