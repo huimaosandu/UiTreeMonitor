@@ -63,6 +63,21 @@ uv run python -m ui_tree_monitor
 
 ---
 
+## 独立演示面板（test_ui）
+
+`test_ui/test_ui.py` 是一个与监控工具解耦的独立演示面板，按参考图布局（左侧 4 组，右侧 深度/μm、峰值坐标、最大峰值 三项参数），数据为随机数生成、每 500ms 实时变动刷新。
+
+```powershell
+cd E:\ui-tree-monitor\test_ui
+uv run test_ui.py
+# 或从工程根目录
+uv run test_ui/test_ui.py
+```
+
+无需任何额外依赖（仅 Tkinter，需带完整 Tk 的 Python）。
+
+---
+
 ## 使用步骤
 
 1. 顶部工具栏 **选择目标窗口**（下拉框已按进程+标题排序，含 PID）。
@@ -81,7 +96,9 @@ uv run python -m ui_tree_monitor
 
 ```
 E:\ui-tree-monitor\
-├── main.py                         # 启动入口
+├── main.py                         # 启动入口（主监控工具）
+├── test_ui\
+│   └── test_ui.py                  # 独立演示面板：检测数据展示（随机数实时刷新）
 ├── pyproject.toml                  # 工程与依赖声明（uv）
 ├── README.md                       # 本文档
 ├── src\
