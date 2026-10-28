@@ -82,15 +82,22 @@ D:\dotnet\dotnet.exe run --project src\UiTreeMonitor.App
 `test_ui\test_ui.py` 是一个**用于被监测的测试界面**（检测数据展示面板），专供监控工具抓取验证：
 
 - 结构树按检测软件层级设计：**组1 → 组2 → 组3 → 组4** 层层嵌套（UIA 中为嵌套 Group），最深层含状态项；
-- 右侧参数 **深度/μm、峰值坐标、最大峰值** 数值每 **500ms 随机波动**，便于观测采集效果；
-- 仅依赖 Python 标准库（Tkinter），中文界面。
+- 右侧参数 **深度/μm、峰值坐标、最大峰值** 数值每 **500ms 随机波动**；
+- 基于 **PySide6（Qt6）**：Qt 在 Windows 有完整 UIA 桥，数值控件为只读 `QLineEdit`，
+  UIA 中暴露为 **Edit 控件，Value 属性 = 实时数值**（Accessibility Insights 属性面板可直接读到）；
+- 中文界面。
 
 ```powershell
 cd test_ui
-uv run test_ui.py      # 或 python test_ui.py
+uv sync          # 首次运行安装 PySide6
+uv run test_ui.py
 ```
 
-打开面板后，用监控平台「随鼠标捕获」指向面板任意参数，即可看到结构树与蓝色高亮框，再建任务定时采集实时波动的数值。
+> 注：Tkinter 的 UIA/MSAA 桥有缺陷（Label 文本不暴露、Entry 不暴露为 Edit），
+> Accessibility Insights 抓不到数值，因此被测面板改用 PySide6 实现。
+
+打开面板后，用监控平台「随鼠标捕获」指向面板任意参数（如数字框），即可看到结构树与蓝色高亮框；
+Accessibility Insights 属性面板中该数字框的 **Value 属性**即为实时数值，再建任务定时采集即可。
 
 ---
 
