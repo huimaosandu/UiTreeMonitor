@@ -1,0 +1,23 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <UseWindowsForms>false</UseWindowsForms>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Axe.Windows" Version="2.4.2" />
+  </ItemGroup>
+
+  <!-- UIAutomation COM interop（与官方 accessibility-insights-windows 同款程序集，本地副本保证可移植） -->
+  <ItemGroup>
+    <Reference Include="Interop.UIAutomationClient">
+      <SpecificVersion>False</SpecificVersion>
+      <EmbedInteropTypes>True</EmbedInteropTypes>
+      <HintPath>lib\Interop.UIAutomationClient.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+
+</Project>
