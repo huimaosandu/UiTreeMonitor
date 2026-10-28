@@ -12,3 +12,7 @@ obj/
 
 # 临时文件
 *.tmp
+
+# Python virtual envs (uv)
+.venv/
+

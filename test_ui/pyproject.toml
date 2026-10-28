@@ -1,6 +1,8 @@
 [project]
 name = "test-ui"
-version = "0.1.0"
+version = "0.2.0"
 description = "检测数据展示面板（被测测试 UI）：嵌套结构树 + 实时波动参数，供 UI 结构树监控工具抓取测试"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = [
+    "pyside6>=6.6",
+]
