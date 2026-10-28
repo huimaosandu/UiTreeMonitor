@@ -8,6 +8,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Threading;
+using AccessibilityInsights.SharedUx.Enums;
 using AccessibilityInsights.SharedUx.Highlighting;
 using Axe.Windows.Actions;
 using UiTreeMonitor.Core.Filters;
@@ -49,6 +50,7 @@ public partial class MainWindow : Window
     private TargetWindowInfo? _currentTarget;
     private DispatcherTimer? _drainTimer;
     private bool _capturing;
+    private MouseCaptureResult? _lastHoverResult; // 当前悬停选中的元素（烧杯按钮回调用）
 
     private static readonly string AppDataDir =
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".ui-tree-monitor");
@@ -185,24 +187,54 @@ public partial class MainWindow : Window
     // ========== 鼠标捕获 ==========
     private void BtnMouseCapture_Click(object sender, RoutedEventArgs e)
     {
-        _capturing = !_capturing;
         if (_capturing)
         {
-            // 原版 HollowHighlightDriver（悬停蓝框 + 文字提示 + 快照按钮），默认高亮模式
-            HollowHighlightDriver.GetDefaultInstance().IsEnabled = true;
-            _mouseCapture.Start();
-            _mouseCapture.ResultProduced += OnCaptureResult;
-            BtnMouseCapture.Content = "停止捕获";
-            TxtCaptureStatus.Text = "捕获中：将鼠标悬停到目标控件上（停顿片刻即选中）…";
+            StopMouseCapture();
+            return;
         }
-        else
+
+        _capturing = true;
+        // 原版 HollowHighlightDriver：默认实例自带烧杯按钮（Highlighter 构造 hasSnapshot:true）
+        var driver = HollowHighlightDriver.GetDefaultInstance();
+        driver.HighlighterMode = HighlighterMode.HighlighterBeakerTooltip; // 原版 ConfigurationModel 默认模式：边框+烧杯+文字提示
+        driver.SetCallBackForSnapshot(new Action(OnSnapshotAddTarget));    // 原版 Initialize.cs:165 同款接线
+        driver.IsEnabled = true;
+
+        _mouseCapture.Start();
+        _mouseCapture.ResultProduced += OnCaptureResult;
+        BtnMouseCapture.Content = "停止捕获";
+        TxtCaptureStatus.Text = "捕获中：悬停选中元素后，点蓝框右上角烧杯按钮将其添加为监测目标…";
+    }
+
+    private void StopMouseCapture()
+    {
+        _capturing = false;
+        _mouseCapture.ResultProduced -= OnCaptureResult;
+        _mouseCapture.Stop();
+        HollowHighlightDriver.GetDefaultInstance().Clear();
+        BtnMouseCapture.Content = "随鼠标捕获";
+        TxtCaptureStatus.Text = "";
+    }
+
+    /// <summary>
+    /// 烧杯按钮点击回调（原版 Win32SnapshotButton.Clicked，经 SetCallBackForSnapshot 接线，
+    /// 在 UI 线程触发）：把当前悬停元素填入右侧"新建监控任务"表单作为监测目标，并退出随鼠标捕获。
+    /// </summary>
+    private void OnSnapshotAddTarget()
+    {
+        var result = _lastHoverResult;
+        StopMouseCapture(); // 点击后退出随鼠标捕获
+
+        if (result is null || !result.IsValid)
         {
-            _mouseCapture.ResultProduced -= OnCaptureResult;
-            _mouseCapture.Stop();
-            HollowHighlightDriver.GetDefaultInstance().Clear();
-            BtnMouseCapture.Content = "随鼠标捕获";
-            TxtCaptureStatus.Text = "";
+            TxtStatus.Text = "未选中有效元素，未添加监测目标";
+            return;
         }
+
+        CmbTargetKind.SelectedIndex = 0; // 目标种类：进程名（触发 SelectionChanged 会先重置目标值）
+        TxtTargetValue.Text = result.ProcessName ?? result.ProcessId.ToString();
+        TxtTaskName.Text = $"{result.ProcessName}-{result.ControlType}";
+        TxtStatus.Text = $"已添加监测目标：{result.ProcessName} — {result.Name}，点击『添加并启动任务』启动监控";
     }
 
     private void OnCaptureResult(MouseCaptureResult result)
@@ -225,6 +257,7 @@ public partial class MainWindow : Window
                 continue;
             }
             driver.SetElement(el); // el 归 DataManager/SelectAction 管理，严禁 Dispose（原版同款）
+            _lastHoverResult = result; // 供烧杯按钮回调（OnSnapshotAddTarget）取当前悬停元素
 
             // 未加载树或目标进程变化 → 自动抓新窗口树
             if (_currentTree is null || _currentTarget is null || _currentTarget.ProcessId != result.ProcessId)
