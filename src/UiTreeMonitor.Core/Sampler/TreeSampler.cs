@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using Axe.Windows.Core.Bases;
+using Axe.Windows.Desktop.UIAutomation;
 using UiTreeMonitor.Core.Models;
 using UiTreeMonitor.Core.Uia;
 
@@ -69,6 +70,11 @@ public sealed class TreeSampler
 
     private static ElementNode BuildNode(int id, int parentId, int depth, A11yElement el)
     {
+        // ★ 关键：必须调用此方法从 UIA 获取实时 Pattern 数据填充到 el.Patterns
+        // 原版在每次操作元素前都会调用（DesktopElementExtensionMethods）
+        // 不调用的话 el.Patterns 永远为 null/空 → Details 面板 Patterns 区域空白
+        try { el.PopulateAllPropertiesWithLiveData(); } catch { /* 某些元素可能不支持 */ }
+
         string? rectStr = null;
         try
         {

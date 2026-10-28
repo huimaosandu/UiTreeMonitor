@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using Axe.Windows.Core.Bases;
+using Axe.Windows.Desktop.UIAutomation;
 using UiTreeMonitor.Core.Models;
 using UiTreeMonitor.Core.Sampler;
 
@@ -106,6 +107,10 @@ public sealed class TreeNodeViewModel
     /// </summary>
     public static (IReadOnlyList<PropertyItem> Properties, IReadOnlyList<PatternItem> Patterns) FromA11yElement(A11yElement el, string? processName)
     {
+        // ★ 关键：必须调用此方法从 UIA 获取实时 Pattern 数据填充到 el.Patterns
+        // 不调用的话 el.Patterns 永远为 null/空 → Details 面板 Patterns 区域空白
+        try { el.PopulateAllPropertiesWithLiveData(); } catch { /* 某些元素可能不支持 */ }
+
         var props = new List<PropertyItem>();
         var pats = new List<PatternItem>();
         var hasValue = new HashSet<string>();
