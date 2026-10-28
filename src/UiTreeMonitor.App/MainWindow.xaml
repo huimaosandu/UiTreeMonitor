@@ -150,6 +150,7 @@
                                         <RowDefinition Height="Auto"/>
                                         <RowDefinition Height="Auto"/>
                                         <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
                                     </Grid.RowDefinitions>
 
                                     <TextBlock Text="任务名：" VerticalAlignment="Center"/>
@@ -184,6 +185,21 @@
                                         <ComboBoxItem Content="值变化时" Tag="ValueChange"/>
                                         <ComboBoxItem Content="达到阈值" Tag="Threshold"/>
                                     </ComboBox>
+
+                                    <!-- 第4行：动作 -->
+                                    <TextBlock Text="初始动作：" Grid.Row="3" VerticalAlignment="Center"
+                                               ToolTip="任务创建后的初始状态，后续可通过按钮行控制"/>
+                                    <ComboBox x:Name="CmbInitialAction" Grid.Row="3" Grid.Column="1" Margin="4,2">
+                                        <ComboBoxItem Content="立即开始采样" Tag="Start"/>
+                                        <ComboBoxItem Content="仅创建不启动" Tag="CreateOnly"/>
+                                    </ComboBox>
+                                    <TextBlock Text="跨任务联动：" Grid.Row="3" Grid.Column="2" VerticalAlignment="Center" Margin="8,0,0,0"
+                                               ToolTip="可选：用其他已创建任务的值作为本任务的额外触发条件"/>
+                                    <ComboBox x:Name="CmbCrossTaskTrigger" Grid.Row="3" Grid.Column="3" Margin="4,2" IsEditable="False">
+                                        <ComboBoxItem Content="(无)" Tag=""/>
+                                        <ComboBoxItem Content="值变化时联动" Tag="CrossValueChange"/>
+                                        <ComboBoxItem Content="达到阈值时联动" Tag="CrossThreshold"/>
+                                    </ComboBox>
                                 </Grid>
                             </GroupBox>
 
@@ -192,6 +208,8 @@
                                 <Button x:Name="BtnAddTask" Content="添加并启动" Padding="14,6" Margin="0,0,8,0" Click="BtnAddTask_Click"
                                         ToolTip="创建监控任务并立即开始采样"/>
                                 <Button x:Name="BtnStopTask" Content="停止选中" Padding="14,6" Margin="0,0,8,0" Click="BtnStopTask_Click"/>
+                                <Button x:Name="BtnResumeTask" Content="继续选中" Padding="14,6" Margin="0,0,8,0" Click="BtnResumeTask_Click"
+                                        ToolTip="恢复已停止或已创建的任务采样"/>
                                 <Button x:Name="BtnRemoveTask" Content="移除选中" Padding="14,6" Margin="0,0,8,0" Click="BtnRemoveTask_Click"/>
                                 <Button x:Name="BtnExport" Content="导出报告" Padding="14,6" Click="BtnExport_Click"/>
                             </StackPanel>

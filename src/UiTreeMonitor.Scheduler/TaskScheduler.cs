@@ -62,6 +62,11 @@ public sealed class TaskScheduler : IDisposable
         if (_hosts.TryGetValue(id, out var h)) h.RequestStop();
     }
 
+    public void Resume(Guid id)
+    {
+        if (_hosts.TryGetValue(id, out var h)) h.Resume();
+    }
+
     public void RequestStopAll()
     {
         foreach (var h in _hosts.Values) h.RequestStop();

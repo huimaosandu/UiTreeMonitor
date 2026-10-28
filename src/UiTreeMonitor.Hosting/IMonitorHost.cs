@@ -16,6 +16,7 @@ public interface IMonitorHost : IDisposable
     event EventHandler<TaskRunState>? StateChanged;
     void Start();
     void RequestStop();
+    void Resume(); // 从 Stopped 恢复采样
 
     /// <summary>注入跨树值提供器（跨树触发器需要）。</summary>
     void SetCrossTreeProvider(Func<Guid, string, string?> provider);
@@ -51,6 +52,7 @@ public sealed class ThreadHost : IMonitorHost
 
     public void Start() => _task.Start();
     public void RequestStop() => _task.RequestStop();
+    public void Resume() => _task.Resume();
     public IReadOnlyList<SampleRecord> Records => _task.Records;
     public void Dispose() => _task.Dispose();
 }

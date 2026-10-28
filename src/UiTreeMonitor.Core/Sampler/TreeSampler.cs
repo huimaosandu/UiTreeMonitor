@@ -106,28 +106,34 @@ public sealed class TreeSampler
 
     private static string? Safe(string? s) => string.IsNullOrEmpty(s) ? null : s;
 
-    /// <summary>反射读取 Pattern 的当前值属性（Value/RangeValue/ToggleState）。</summary>
+    /// <summary>反射读取 Pattern 的当前值属性（Value/RangeValue/ToggleState/等）。</summary>
     private static string? ReadPatternValue(A11yElement el, string kind)
     {
         try
         {
+            // ★ PatternType 正确 ID（从 Axe.Windows.Core.Types.PatternType 反射获取）
             int patternId = kind switch
             {
-                "Value" => 10018,        // ValuePattern
-                "RangeValue" => 10007,   // RangeValuePattern
-                "ToggleState" => 10015,  // TogglePattern
-                "IsSelected" => 10026,   // SelectionItemPattern
-                "ExpandCollapseState" => 10005, // ExpandCollapsePattern
+                "Value" => 10002,              // UIA_ValuePatternId
+                "RangeValue" => 10003,         // UIA_RangeValuePatternId
+                "ToggleState" => 10015,        // UIA_TogglePatternId
+                "IsSelected" => 10010,         // UIA_SelectionItemPatternId
+                "ExpandCollapseState" => 10005,// UIA_ExpandCollapsePatternId
                 _ => -1,
             };
+            if (patternId < 0) return null;
+
             var p = el.GetPattern(patternId);
             if (p is null) return null;
 
+            // 取当前值属性名
             string propName = kind switch
             {
                 "Value" => "Value",
                 "RangeValue" => "Value",
                 "ToggleState" => "ToggleState",
+                "IsSelected" => "IsSelected",
+                "ExpandCollapseState" => "ExpandCollapseState",
                 _ => "Value",
             };
             var prop = p.GetType().GetProperty(propName);
@@ -143,12 +149,13 @@ public sealed class TreeSampler
     private static IReadOnlyList<string> DetectSupportedPatterns(A11yElement el)
     {
         var patterns = new List<string>();
-        // (PatternId, DisplayName) 映射
+        // (PatternId, DisplayName) —— ID 来自 Axe.Windows.Core.Types.PatternType
         var candidates = new[]
-        { (10018, "ValuePattern"), (10007, "RangeValuePattern"), (10015, "TogglePattern"),
-          (10026, "SelectionItemPattern"), (10005, "ExpandCollapsePattern"),
-          (10024, "LegacyIAccessiblePattern"), (10030, "ScrollPattern"),
-          (10031, "GridPattern"), (10028, "TablePattern"), (10029, "TextPattern") };
+        { (10002, "ValuePattern"), (10003, "RangeValuePattern"), (10015, "TogglePattern"),
+          (10010, "SelectionItemPattern"), (10005, "ExpandCollapsePattern"),
+          (10018, "LegacyIAccessiblePattern"), (10004, "ScrollPattern"),
+          (10006, "GridPattern"), (10012, "TablePattern"), (10014, "TextPattern"),
+          (10000, "InvokePattern"), (10024, "TextPattern2") };
         foreach (var (id, name) in candidates)
         {
             try

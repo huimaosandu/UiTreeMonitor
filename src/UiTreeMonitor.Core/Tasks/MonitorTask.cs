@@ -31,7 +31,7 @@ public sealed class MonitorTaskEventArgs : EventArgs
 public sealed class MonitorTask : IDisposable
 {
     private readonly MonitorTaskConfig _config;
-    private readonly Thread _thread;
+    private Thread _thread; // 非 readonly：Resume 需要重建线程
     private volatile bool _stopRequested;
     private TaskRunState _state = TaskRunState.Idle;
 
@@ -65,6 +65,18 @@ public sealed class MonitorTask : IDisposable
         if (_state != TaskRunState.Idle) return;
         StartedAt = DateTime.Now;
         State = TaskRunState.Running;
+        _thread.Start();
+        RaiseState();
+    }
+
+    /// <summary>从 Stopped 状态恢复采样（创建新线程）。</summary>
+    public void Resume()
+    {
+        if (_state != TaskRunState.Stopped) return;
+        _stopRequested = false;
+        State = TaskRunState.Running;
+        _thread = new Thread(Run) { IsBackground = true, Name = $"Monitor:{Name}" };
+        _thread.SetApartmentState(ApartmentState.STA);
         _thread.Start();
         RaiseState();
     }

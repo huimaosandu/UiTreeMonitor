@@ -528,9 +528,13 @@ public partial class MainWindow : Window
             _ => new ImmediateTriggerSpec(),
         };
 
+        // 初始动作
+        var actionTag = (CmbInitialAction.SelectedItem as ComboBoxItem)?.Tag as string;
+        var startImmediately = actionTag != "CreateOnly";
+
         _scheduler.Register(config);
         var item = new TaskListItem { Config = config };
-        item.State = "Running";
+        item.State = startImmediately ? "Running" : "Created";
         _taskItems.Add(item);
         TaskList.SelectedItem = item;
 
@@ -566,6 +570,17 @@ public partial class MainWindow : Window
             _scheduler.RequestStop(item.Config.Id);
             item.State = "Stopped";
             TaskList.Items.Refresh();
+        }
+    }
+
+    private void BtnResumeTask_Click(object sender, RoutedEventArgs e)
+    {
+        if (TaskList.SelectedItem is TaskListItem item)
+        {
+            _scheduler.Resume(item.Config.Id);
+            item.State = "Running";
+            TaskList.Items.Refresh();
+            TxtStatus.Text = $"任务 [{item.Name}] 已恢复采样";
         }
     }
 

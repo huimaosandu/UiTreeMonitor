@@ -76,6 +76,13 @@ public sealed class ProcessHost : IMonitorHost
         StateChanged?.Invoke(this, State);
     }
 
+    /// <summary>重新启动 worker 进程恢复采样（进程模式）。</summary>
+    public void Resume()
+    {
+        if (_process is not null && !_process.HasExited) return; // 还在跑
+        Start(); // 重新启动进程
+    }
+
     public void SetCrossTreeProvider(Func<Guid, string, string?> provider)
     {
         // 进程模式下跨树联动依赖 worker 内部实现，此处暂不支持
