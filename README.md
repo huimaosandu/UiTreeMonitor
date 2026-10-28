@@ -41,16 +41,23 @@ Windows 桌面应用：基于 Microsoft UI Automation (UIA)，读取任意 Windo
 
 ## 运行
 
-```powershell
-# 前置：.NET 8 SDK（本机已装于 D:\dotnet，已入 PATH）
-dotnet run --project src\UiTreeMonitor.App
-```
+### 运行方式（重要：dotnet 路径）
 
-或直接运行已构建产物：
+本机 .NET SDK 安装在 **`D:\dotnet`**（8.0.427）。PATH 中 `C:\Program Files\dotnet` 只有运行时、**没有 SDK**，直接 `dotnet` 会报
+`No .NET SDKs were found`。请用以下任一方式：
 
 ```powershell
+# 方式一：双击运行（推荐）
+.\run.cmd
+
+# 方式二：指定 SDK 路径运行
+D:\dotnet\dotnet.exe run --project src\UiTreeMonitor.App
+
+# 方式三：直接运行已构建产物
 .\src\UiTreeMonitor.App\bin\Debug\net8.0-windows\UiTreeMonitor.App.exe
 ```
+
+> 测试同理：`D:\dotnet\dotnet.exe test`
 
 ### 使用流程
 
@@ -70,10 +77,27 @@ dotnet run --project src\UiTreeMonitor.App
 
 ---
 
+## 被测测试面板 test_ui（Python）
+
+`test_ui\test_ui.py` 是一个**用于被监测的测试界面**（检测数据展示面板），专供监控工具抓取验证：
+
+- 结构树按检测软件层级设计：**组1 → 组2 → 组3 → 组4** 层层嵌套（UIA 中为嵌套 Group），最深层含状态项；
+- 右侧参数 **深度/μm、峰值坐标、最大峰值** 数值每 **500ms 随机波动**，便于观测采集效果；
+- 仅依赖 Python 标准库（Tkinter），中文界面。
+
+```powershell
+cd test_ui
+uv run test_ui.py      # 或 python test_ui.py
+```
+
+打开面板后，用监控平台「随鼠标捕获」指向面板任意参数，即可看到结构树与蓝色高亮框，再建任务定时采集实时波动的数值。
+
+---
+
 ## 测试
 
 ```powershell
-dotnet test
+D:\dotnet\dotnet.exe test
 ```
 
 现有 11 个单元测试覆盖：正则过滤（含命名组提取）、触发器（立刻/定时/值变化/阈值）、时间器（时长到期）、目标解析。
@@ -85,6 +109,7 @@ dotnet test
 ```
 E:\ui-tree-monitor\
 ├── UiTreeMonitor.sln
+├── run.cmd                        # 一键启动脚本（固定用 D:\dotnet\dotnet.exe）
 ├── src\
 │   ├── UiTreeMonitor.Core\        # 采集内核：窗口枚举、鼠标捕获、UIA 会话、树采样、
 │   │   │                          #   正则过滤、七要素任务模型（Trigger/Timer/TimeBox/StopCond/MonitorTask）
@@ -94,6 +119,7 @@ E:\ui-tree-monitor\
 │   ├── UiTreeMonitor.Persistence\ # 任务配置 JSON 存档 + 采样 CSV 落盘
 │   ├── UiTreeMonitor.Export\      # 导出：CSV / JSON / HTML 报告
 │   └── UiTreeMonitor.App\         # WPF 桌面界面（仅中文）
+├── test_ui\                       # 被测测试面板（Python/Tkinter）：嵌套组 + 实时波动参数
 ├── tests\UiTreeMonitor.Tests\     # xUnit 单元测试
 ├── accessibility-insights-windows\  # 外部开源工程（已 .gitignore 排除，仅作参考）
 └── 重构设计方案.md                # 需求分析与重构方案（已确认）
