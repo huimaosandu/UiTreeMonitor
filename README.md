@@ -1,22 +1,27 @@
-# ui-tree-monitor
+# ui-tree-monitor — UI 结构树监控平台
 
-Windows 应用 **UI 结构树数值/属性变化监控工具**。
+Windows 桌面应用：基于 Microsoft UI Automation (UIA)，读取任意 Windows 应用的可访问性结构树，按**七要素**配置监控任务，多任务并发采集属性/数值变化，支持正则过滤、鼠标捕获、数据导出。数据获取完全走 UIA 官方能力，**无需通过底层协议（Win32 消息、Hook、驱动等）**。
 
-基于 Microsoft UI Automation (UIA)，读取任意 Windows 应用的可访问性结构树，勾选其中的节点与属性，用**定时器周期轮询**监控其数值/属性变化并记录历史。全程走 UIA 官方能力，**无需通过底层协议（Win32 消息、Hook、驱动等）**获取数据。
+基于微软开源工程 [accessibility-insights-windows](https://github.com/microsoft/accessibility-insights-windows)（其采集内核为 NuGet 包 `Axe.Windows 2.4.2`）与 UIA COM 接口重构，语言 **C# / .NET 8 / WPF**，界面**仅中文**。
 
 ---
 
 ## 功能特性
 
 - **窗口枚举**：列出当前系统所有可见顶层窗口（进程名 / 标题 / PID / 句柄）。
-- **结构树抓取**：一键抓取目标窗口完整 UIA 结构树（类型 / 名称 / AutomationId）。
-- **随光标捕获（Element Inspector）**：开启后移动光标，自动加载光标下窗口的结构树（自动展开前两层），并用**黄色高亮**标记光标所指的节点；状态栏实时显示命中的窗口与控件。无需手动选窗口。
-- **节点监控**：在树中选中任意节点 + 属性，加入监控列表。
-- **定时轮询**：可调轮询间隔（秒），独立线程周期抓取属性值。
-- **变化检测**：对比新旧值，记录每次变化的旧值→新值、时间戳与变化次数。
-- **历史日志**：所有变化事件实时写入日志区。
-- **多语言**：中 / 英 / 日 / 韩 / 俄 5 种语言，界面一键切换并持久化。
-- **免底层协议**：数据获取完全依赖 UIA 的控件属性 / 值模式（Value、RangeValue、Toggle 等），不触碰 Win32 底层消息或钩子。
+- **结构树抓取**：一键抓取目标窗口完整 UIA 结构树（类型 / 名称 / AutomationId / ClassName / 进程等）。
+- **随鼠标捕获（常用功能）**：开启后移动鼠标，自动加载光标下窗口的结构树并**黄色高亮**光标所指节点；无需手动选窗口。
+- **七要素监控任务**：每个任务独立配置以下要素，可多任务并发：
+  1. **目标**：进程名 / 窗口句柄 / 窗口标题
+  2. **属性**：Name / Value / RangeValue / ToggleState / IsEnabled 等 17 项
+  3. **过滤**：正则表达式（包含性 + 命名组提取）
+  4. **定时器**：采集间隔（毫秒）
+  5. **触发器**：立刻 / 定时 / 值变化 / 阈值 / 跨树联动
+  6. **时间器**：运行时长 / 到指定时刻 / 时间窗口 / 间歇循环
+  7. **结束条件**：定时长 / 采样数 / 阈值 / 值变化或不变 / 永不
+- **并发模型**：默认**线程模式**（每任务独立 STA 线程）；可选**进程模式**（独立 worker 进程硬隔离）。
+- **数据导出**：CSV + JSON + HTML 三格式报告。
+- **免底层协议**：数据获取完全依赖 UIA 的控件属性 / 值模式（Value、RangeValue、Toggle 等）。
 
 ### 可监控属性
 
@@ -26,69 +31,52 @@ Windows 应用 **UI 结构树数值/属性变化监控工具**。
 | `Value` | 文本值（文本框等） | ValuePattern |
 | `RangeValue` | 数值（滑块、进度条等） | RangeValuePattern |
 | `ToggleState` | 开关状态 | TogglePattern |
-| `IsEnabled` | 可用状态 | 直接属性 |
-| `IsOffscreen` | 是否在屏幕外 | 直接属性 |
-| `AutomationId` | 自动化标识 | 直接属性 |
-| `ClassName` | 类名 | 直接属性 |
-| `ControlType` | 控件类型 | 直接属性 |
+| `IsSelected` | 选中状态 | SelectionItemPattern |
+| `ExpandCollapseState` | 展开/折叠状态 | ExpandCollapsePattern |
+| `IsEnabled` / `IsOffScreen` | 可用 / 屏幕外状态 | 直接属性 |
+| `AutomationId` / `ClassName` / `Framework` / `ProcessId` | 身份与归属 | 直接属性 |
+| `BoundingRectangle` / `ItemStatus` / `HelpText` / `AccessKey` | 几何与辅助信息 | 直接属性 |
 
 ---
 
-## 环境要求
-
-- Windows（本工具为 Windows 专属）
-- Python ≥ 3.13（开发基于 anaconda 3.13，需含 Tkinter；**不要用不含 Tk 的裸 Python 运行时**）
-- [uv](https://docs.astral.sh/uv/)（环境与依赖管理）
-- 可选：`git`（分步提交）
-
----
-
-## 安装与启动
+## 运行
 
 ```powershell
-# 1. 进入工程目录
-cd E:\ui-tree-monitor
-
-# 2. 用系统 Python 创建虚拟环境并安装依赖（必须带完整 Tk 的解释器，如 anaconda）
-uv venv --python D:\ProgramData\anaconda3\python.exe
-uv sync
-
-# 3. 启动 GUI
-uv run main.py
-# 或
-uv run python -m ui_tree_monitor
+# 前置：.NET 8 SDK（本机已装于 D:\dotnet，已入 PATH）
+dotnet run --project src\UiTreeMonitor.App
 ```
 
-> 若 `uv venv` 后启动报 `Can't find a usable init.tcl`，说明虚拟环境基于不含 Tk 的 Python 创建，请删除 `.venv` 并用带完整 Tk 的解释器（如 anaconda）重建。
-
----
-
-## 独立演示面板（test_ui）
-
-`test_ui/test_ui.py` 是一个与监控工具解耦的独立演示面板，按参考图布局（左侧 4 组，右侧 深度/μm、峰值坐标、最大峰值 三项参数），数据为随机数生成、每 500ms 实时变动刷新。
+或直接运行已构建产物：
 
 ```powershell
-cd E:\ui-tree-monitor\test_ui
-uv run test_ui.py
-# 或从工程根目录
-uv run test_ui/test_ui.py
+.\src\UiTreeMonitor.App\bin\Debug\net8.0-windows\UiTreeMonitor.App.exe
 ```
 
-无需任何额外依赖（仅 Tkinter，需带完整 Tk 的 Python）。
+### 使用流程
+
+1. **选窗口**：顶部下拉框选目标窗口 → 「刷新窗口」→ 「抓取结构树」。
+2. **鼠标捕获**：点「随鼠标捕获」，移动鼠标到目标控件，左侧树自动加载并高亮。
+3. **建任务**：右侧「任务管理」填七要素 → 「添加并启动任务」。
+4. **看历史**：切到「采样历史」页，选任务查看实时采样记录。
+5. **导出**：选中任务 → 「导出选中任务报告」，生成 CSV / JSON / HTML 到 `%USERPROFILE%\.ui-tree-monitor\exports`。
+
+### 配置与产物位置
+
+| 内容 | 位置 |
+|------|------|
+| 任务配置存档 | `%USERPROFILE%\.ui-tree-monitor\tasks` |
+| 采样历史 CSV（实时追加） | `%USERPROFILE%\.ui-tree-monitor\exports` |
+| 导出报告（CSV/JSON/HTML） | `%USERPROFILE%\.ui-tree-monitor\exports\{任务名}_{时间戳}` |
 
 ---
 
-## 使用步骤
+## 测试
 
-1. 顶部工具栏 **选择目标窗口**（下拉框已按进程+标题排序，含 PID）。
-2. 点击 **抓取结构树**，左侧显示目标窗口的完整 UI 树。
-   - 也可点击 **随光标捕获**：开启后把光标移到任意窗口，工具会自动加载该窗口的结构树并高亮光标所指节点（相当于 Element Inspector），无需手动选窗口；再点一次即停止。
-3. 在树中 **选中一个节点**，在右侧 **选择要监控的属性**（默认 Name）。
-4. 点击 **添加监控**，节点出现在下方“已监控项”表格。
-5. 设置 **轮询间隔（秒）**（默认 1.0）。
-6. 点击 **开始监控** → 底部日志实时打印每次变化，表格显示当前值与变化次数。
-7. 点击 **停止监控** 结束；**移除选中 / 清空全部** 管理监控列表。
-8. 右上角 **Lang** 下拉可切换 中/英/日/韩/俄。
+```powershell
+dotnet test
+```
+
+现有 11 个单元测试覆盖：正则过滤（含命名组提取）、触发器（立刻/定时/值变化/阈值）、时间器（时长到期）、目标解析。
 
 ---
 
@@ -96,77 +84,42 @@ uv run test_ui/test_ui.py
 
 ```
 E:\ui-tree-monitor\
-├── main.py                         # 启动入口（主监控工具）
-├── test_ui\
-│   └── test_ui.py                  # 独立演示面板：检测数据展示（随机数实时刷新）
-├── pyproject.toml                  # 工程与依赖声明（uv）
-├── README.md                       # 本文档
+├── UiTreeMonitor.sln
 ├── src\
-│   └── ui_tree_monitor\
-│       ├── __init__.py
-│       ├── app.py                  # 桌面 GUI（Tkinter）
-│       ├── tree_reader.py          # 结构树读取 / 窗口枚举 / 路径定位
-│       ├── monitor.py              # 监控引擎（定时轮询 + 变化检测）
-│       ├── config.py               # 用户配置持久化
-│       ├── i18n.py                 # 多语言加载
-│       └── locales\
-│           ├── zh.json             # 中文
-│           ├── en.json             # English
-│           ├── ja.json             # 日本語
-│           ├── ko.json             # 한국어
-│           └── ru.json             # Русский
+│   ├── UiTreeMonitor.Core\        # 采集内核：窗口枚举、鼠标捕获、UIA 会话、树采样、
+│   │   │                          #   正则过滤、七要素任务模型（Trigger/Timer/TimeBox/StopCond/MonitorTask）
+│   │   └── lib\Interop.UIAutomationClient.dll   # UIA COM 互操作（随工程分发）
+│   ├── UiTreeMonitor.Hosting\     # 宿主抽象：线程宿主（默认）/ 进程宿主（隔离）
+│   ├── UiTreeMonitor.Scheduler\   # 任务调度器：注册/启停/跨树值引用
+│   ├── UiTreeMonitor.Persistence\ # 任务配置 JSON 存档 + 采样 CSV 落盘
+│   ├── UiTreeMonitor.Export\      # 导出：CSV / JSON / HTML 报告
+│   └── UiTreeMonitor.App\         # WPF 桌面界面（仅中文）
+├── tests\UiTreeMonitor.Tests\     # xUnit 单元测试
+├── accessibility-insights-windows\  # 外部开源工程（已 .gitignore 排除，仅作参考）
+└── 重构设计方案.md                # 需求分析与重构方案（已确认）
 ```
 
-### 模块说明
+### 分层依赖
 
-| 模块 | 职责 |
-|------|------|
-| `tree_reader.py` | `list_windows()` 枚举窗口；`build_tree(hwnd)` 抓树；`build_path()` / `locate_by_path()` 节点定位；`read_attribute()` 读属性；`cursor_position()` / `element_from_point()` / `window_from_element()` / `locate_in_tree()` 随光标捕获；`ATTRIBUTES` 可监控属性清单 |
-| `monitor.py` | `Monitor` 定时轮询引擎：`set_interval` / `add` / `remove` / `start` / `stop`；`MonitoredNode` 监控项；`ChangeEvent` 变化事件 |
-| `app.py` | Tkinter 主界面：工具栏 / 结构树 / 监控表格 / 日志 / 状态栏；监控与光标捕获回调经 `after()` + 线程安全队列更新 UI |
-| `config.py` | 语言、轮询间隔、上次窗口等设置，持久化到 `~/.ui-tree-monitor/config.json` |
-| `i18n.py` | 按语言取翻译，缺失回退中文 |
-
----
-
-## 技术说明
-
-- **节点定位**：每个监控项保存从窗口根到目标节点的路径（每层记录 控件类型 / AutomationId / 名称 / 子索引）。轮询时按路径重新定位，**优先精确匹配**（类型+ID+名称），找不到再按索引兜底，对兄弟节点顺序变动有一定鲁棒性。
-- **值读取**：对不同属性走对应 UIA Pattern（Value / RangeValue / Toggle），读不到返回空串，不会抛异常中断轮询。
-- **线程与 COM 初始化**：uiautomation 在子线程使用前必须先 `CoInitialize`。监控轮询线程与随光标捕获线程均用 `auto.UIAutomationInitializerInThread(True)` 上下文包裹。
-- **线程安全**：监控轮询与光标捕获在独立后台线程执行；线程内**绝不直接操作 Tk**。变化回调经 `after(0, ...)` 回主线程；随光标捕获的结果先写入 `queue.Queue`，主线程用定时器 `_drain_cursor_queue()` 周期取走并更新界面，避免跨线程 Tk 访问崩溃。
-- **光标捕获竞态处理**：光标线程**自带最新树引用**（`_cursor_current_root`），窗口切换后立即用它定位，避免与主线程加载树的时序竞态导致定位到旧树、高亮落空。
-- **高亮可见性**：命中节点用 `cursor_hl` tag 渲染**黄色背景**高亮，加载树时自动展开前两层并 `see()` 滚动到目标，确保光标指向的节点始终可见；状态栏实时显示命中的窗口与控件。
-- **历史长度**：单监控项保留最近 500 条变化记录，防止内存膨胀。
-
-### 依赖
-
-- `uiautomation`（含 `comtypes`）— 唯一第三方依赖，封装 Microsoft UIAutomation。
-
----
-
-## 验证
-
-工程内含一次性自检脚本（运行后删除，非交付物）：
-
-```powershell
-uv run python _verify_cursor.py       # i18n 键一致性 + 光标捕获冒烟（窗口识别/抓树/定位）
-uv run python _verify_cursor_gui.py   # GUI 光标捕获全流程（开启→自动加载→高亮→停止）
+```
+App (WPF) → Scheduler → Hosting → Core
+         → Persistence → Core
+         → Export → Core
+Tests → Core / Scheduler / Persistence / Export
 ```
 
-已实测通过：窗口枚举、结构树抓取、路径重定位、监控引擎轮询、随光标捕获（自动加载光标下窗口树并高亮节点，如 “德擎标光测试平台”）、5 语言键一致均正常。
+---
+
+## 设计要点
+
+- **采集内核**：`Axe.Windows`（netstandard2.0）仅用于属性读取模型（`A11yElement`），树遍历用 UIA COM `CUIAutomation` 的 `ControlViewWalker`，避免 Axe.Windows 私有构造的不可用路径。
+- **线程要求**：UIA COM 必须在 STA 线程使用——采集、捕获均在独立 STA 线程执行，UI 线程仅通过队列 + `DispatcherTimer` 消费结果。
+- **正则安全**：所有过滤正则编译时带 1 秒超时，防灾难性回溯。
+- **任务生命周期**：每任务独立线程，`State` = Idle / Running / Paused / Completed / Stopped / Error。
+- **git 提示**：`accessibility-insights-windows` 已从版本库排除（.gitignore + gitlink 移除），仅作本地参考。
 
 ---
 
-## 后续可扩展
+## 更新记录
 
-- 变化事件追加导出 CSV / 写入日志文件。
-- 阈值告警（数值越界 / 状态翻转提醒）。
-- 监控方案（窗口+节点+属性+间隔）保存与加载。
-- 通过 `seedance` / 智能体定时任务实现无人值守巡检。
-
----
-
-## 许可
-
-仅供内部使用。
+- 2026-10-28：按已确认方案完成 C#/.NET 8 + WPF 重构（删除原 Python 工程）；实现采集内核、七要素任务模型、线程/进程宿主、调度器、持久化、导出、桌面 UI；11 项单元测试通过。
