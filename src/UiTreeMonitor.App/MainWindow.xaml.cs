@@ -188,7 +188,7 @@ public partial class MainWindow : Window
             _mouseCapture.Start();
             _mouseCapture.ResultProduced += OnCaptureResult;
             BtnMouseCapture.Content = "停止捕获";
-            TxtCaptureStatus.Text = "捕获中：移动鼠标到目标控件上…";
+            TxtCaptureStatus.Text = "捕获中：将鼠标悬停到目标控件上（停顿片刻即选中）…";
         }
         else
         {

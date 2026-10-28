@@ -1,6 +1,11 @@
 // 鼠标捕获：直接使用 accessibility-insights-windows 的捕获技术（Axe.Windows.SelectAction）
-// SelectAction 是原版"随光标捕获"内核：内部维护鼠标选择器，Select() 时把光标下元素
-// 登记到 ElementContext，通过 GetDataAction.GetElementContext(ecId).Element 取回 A11yElement。
+// 机制（对照 axe-windows 2.4.2 源码 + 原版 Timers.cs/Initialize.cs）：
+//  1) sa.IsMouseSelectOn / IntervalMouseSelector(毫秒) / Scope 只是配置；
+//  2) sa.Start() 才会启动 MouseTracker（System.Timers.Timer 周期取光标下元素，
+//     且要求鼠标在连续两个 tick 间停住才产生候选——"悬停"语义，同一位置只取一次）；
+//  3) sa.Select() 把 tracker 异步塞入的候选元素转正为 POIElementContext 并返回 true；
+//  4) 通过 GetDataAction.GetElementContext(sa.SelectedElementContextId).Element 取回 A11yElement，
+//     与上一个 POI 用 IsSameUIElement 比较去重，过滤桌面根元素。
 using System;
 using System.Collections.Concurrent;
 using System.Drawing;
@@ -8,6 +13,7 @@ using System.Threading;
 using Axe.Windows.Actions;
 using Axe.Windows.Actions.Enums;
 using Axe.Windows.Core.Bases;
+using Axe.Windows.Core.Misc;
 using UiTreeMonitor.Core.Models;
 using UiTreeMonitor.Core.Sampler;
 
@@ -72,40 +78,58 @@ public sealed class MouseCapture : IDisposable
     private void Loop()
     {
         var sa = SelectAction.GetDefaultInstance();
-        sa.IsMouseSelectOn = true;                       // 开启鼠标选择
-        sa.IntervalMouseSelector = _pollMs / 1000.0;     // 原版: MouseSelectionDelayMilliSeconds
-        sa.Scope = SelectionScope.Element;               // 原版默认 Element 范围
+        // 配置照原版 Initialize.cs：
+        //   sa.IntervalMouseSelector = AppConfig.MouseSelectionDelayMilliSeconds;  ← 单位是毫秒
+        //   sa.IsMouseSelectOn = AppConfig.SelectionByMouse;
+        //   sa.Scope = Element/App
+        // 注意：IsMouseSelectOn 只是属性开关，MouseTracker(内部 System.Timers.Timer 轮询光标)
+        // 必须由 sa.Start() 真正启动，否则永远没有候选元素（此前 bug 根因）。
+        sa.IntervalMouseSelector = _pollMs;                 // 毫秒，不是 /1000
+        sa.IsMouseSelectOn = true;                          // 开启鼠标选择
+        sa.Scope = SelectionScope.Element;                  // 原版默认 Element 范围
+        sa.Start();                                         // ★ 启动 MouseTracker
 
+        // 取结果模式照原版 Timers.cs(OntimerSelectorElapsedEvent)：
+        // sa.Select() 只是把 tracker 异步塞入的候选元素转正（内部有 _candidateEC），
+        // 需与上一个 POI 比较 IsSameUIElement 判定"是否新选择"，并过滤桌面根元素。
+        // ★ 严禁 Dispose 新取回的 ElementContext：它由 SelectAction/DataManager 持有，
+        //   POIElementContext 被替换时 setter 会自动清理，外部 Dispose 会毒化单例状态。
         while (_running)
         {
             try
             {
-                if (!sa.Select()) { Thread.Sleep(_pollMs); continue; }
+                var cecId = sa.SelectedElementContextId;
+                var cecEl = cecId.HasValue ? GetDataAction.GetElementContext(cecId.Value)?.Element : null;
 
-                var ecId = sa.SelectedElementContextId;
-                if (ecId is not Guid id) { Thread.Sleep(_pollMs); continue; }
+                if (sa.Select())
+                {
+                    var ecId = sa.SelectedElementContextId;
+                    var el = ecId.HasValue ? GetDataAction.GetElementContext(ecId.Value)?.Element : null;
 
-                using var ec = GetDataAction.GetElementContext(id);
-                var el = ec.Element;
-                if (el is null) { Thread.Sleep(_pollMs); continue; }
-
-                var fp = Fingerprint(el);
-                if (fp == _lastFingerprint) { Thread.Sleep(_pollMs); continue; } // 未变化不重复触发
-                _lastFingerprint = fp;
-
-                var r = new MouseCaptureResult(
-                    X: 0, Y: 0,   // SelectAction 不直接暴露光标像素坐标，树定位用矩形/属性
-                    Safe(el.Name),
-                    TreeSampler.ControlTypeName(el.ControlTypeId),
-                    Safe(el.AutomationId),
-                    Safe(el.ClassName),
-                    el.ProcessId,
-                    Safe(el.ProcessName),
-                    NormalizeRect(el.BoundingRectangle),
-                    el.IsKeyboardFocusable,
-                    TreeNodeId: null,
-                    IsValid: true);
-                ResultProduced?.Invoke(r);
+                    if (el is not null
+                        && (cecEl is null || !cecEl.IsSameUIElement(el))
+                        && !el.IsRootElement())
+                    {
+                        var fp = Fingerprint(el);
+                        if (fp != _lastFingerprint) // 防御性去重（tracker 内部亦有 RuntimeId 去重）
+                        {
+                            _lastFingerprint = fp;
+                            var r = new MouseCaptureResult(
+                                X: 0, Y: 0,   // SelectAction 不直接暴露光标像素坐标，树定位用矩形/属性
+                                Safe(el.Name),
+                                TreeSampler.ControlTypeName(el.ControlTypeId),
+                                Safe(el.AutomationId),
+                                Safe(el.ClassName),
+                                el.ProcessId,
+                                Safe(el.ProcessName),
+                                NormalizeRect(el.BoundingRectangle),
+                                el.IsKeyboardFocusable,
+                                TreeNodeId: null,
+                                IsValid: true);
+                            ResultProduced?.Invoke(r);
+                        }
+                    }
+                }
             }
             catch
             {
