@@ -60,6 +60,8 @@ public sealed record ElementNode
     public string? AccessKey { get; init; }
     public string? IsSelected { get; init; }
     public string? ExpandCollapseState { get; init; }
+    /// <summary>该节点支持的 Pattern 名称列表（即使当前值为空也列入）。</summary>
+    public IReadOnlyList<string> SupportedPatterns { get; init; } = Array.Empty<string>();
     public IReadOnlyList<int> Children { get; init; } = Array.Empty<int>();
 
     /// <summary>按属性名取值（供监控与过滤统一使用）。</summary>

@@ -70,7 +70,6 @@ public partial class MainWindow : Window
 
         TreeView.ItemsSource = _treeRoots;
         TaskList.ItemsSource = _taskItems;
-        CmbTargetKind.SelectedIndex = 0;
 
         RefreshWindows();
         LoadSavedTasks();
@@ -236,10 +235,10 @@ public partial class MainWindow : Window
             return;
         }
 
-        CmbTargetKind.SelectedIndex = 0; // 目标种类：进程名（触发 SelectionChanged 会先重置目标值）
-        TxtTargetValue.Text = result.ProcessName ?? result.ProcessId.ToString();
+        // 填入新表单：监控目标默认 Name（最常用属性）
+        CmbMonitorProperty.Text = "Name";
         TxtTaskName.Text = $"{result.ProcessName}-{result.ControlType}";
-        TxtStatus.Text = $"已添加监测目标：{result.ProcessName} — {result.Name}，点击『添加并启动任务』启动监控";
+        TxtStatus.Text = $"已添加监测目标：{result.ProcessName} — {result.Name}，点击『添加并启动』开始监控";
     }
 
     private void OnCaptureResult(MouseCaptureResult result)
@@ -421,28 +420,30 @@ public partial class MainWindow : Window
             propValue = _selectedNode.Name ?? "";
         }
 
-        // 填入右侧表单
-        CmbTargetKind.SelectedIndex = 0; // 进程名
-        TxtTargetValue.Text = _selectedNode.ProcessId > 0
-            ? $"PID:{_selectedNode.ProcessId}"
-            : (_currentTarget?.ProcessName ?? "");
-        TxtProperties.Text = propName;
+        // 填入右侧表单（新表单：监控目标=属性名）
+        var propText = CmbMonitorProperty.Text;
+        if (!string.IsNullOrEmpty(propName) && string.IsNullOrEmpty(propText))
+            CmbMonitorProperty.Text = propName;
 
-        // 正则过滤：文本类属性自动生成 Name~^模式
-        if (IsTextProperty(propName))
+        TxtTaskName.Text = $"{_selectedNode.ProcessName ?? "app"}-{_selectedNode.ControlType}-{propName}";
+
+        // 正则过滤：文本类属性自动生成模式
+        if (IsTextProperty(propName) && !string.IsNullOrEmpty(propValue))
         {
             TxtFilter.Text = $"{propName}~^{Regex.Escape(propValue)}";
         }
-        else
+        else if (string.IsNullOrEmpty(TxtFilter.Text))
         {
             TxtFilter.Text = $"{propName}~.*";
         }
-
-        TxtTaskName.Text = $"{_selectedNode.ProcessName ?? "app"}-{_selectedNode.ControlType}-{propName}";
         TxtStatus.Text = $"已填入监测目标：{propName}={propValue}，点击『添加并启动任务』启动监控";
 
-        // 切到"任务管理" tab 引导用户操作
-        ((TabControl)TaskList.Parent).SelectedIndex = 0;
+        // 切到"任务管理" tab 引导用户操作（沿 VisualTree 找 TabControl）
+        var parent = TaskList.Parent;
+        while (parent is not null and not TabControl)
+            parent = LogicalTreeHelper.GetParent(parent);
+        if (parent is TabControl tc)
+            tc.SelectedIndex = 0;
     }
 
     private void PropertiesGrid_MouseRightButtonUp(object sender, MouseButtonEventArgs e)
@@ -476,23 +477,13 @@ public partial class MainWindow : Window
     };
 
     // ========== 任务管理 ==========
-    private void CmbTargetKind_SelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (CmbTargetKind.SelectedItem is ComboBoxItem cbi)
-            TxtTargetValue.Text = (string)cbi.Tag switch
-            {
-                "Process" => "notepad",
-                "WindowHandle" => "",
-                "WindowTitle" => "",
-                _ => TxtTargetValue.Text,
-            };
-    }
-
     private void BtnAddTask_Click(object sender, RoutedEventArgs e)
     {
-        if (string.IsNullOrWhiteSpace(TxtTargetValue.Text))
+        // 监控目标（属性名）不能为空
+        var monitorProp = CmbMonitorProperty.Text.Trim();
+        if (string.IsNullOrEmpty(monitorProp))
         {
-            TxtStatus.Text = "请填写目标值";
+            TxtStatus.Text = "请填写监控目标（属性名，如 Name、Value、ToggleState）";
             return;
         }
 
@@ -501,19 +492,21 @@ public partial class MainWindow : Window
             Name = string.IsNullOrWhiteSpace(TxtTaskName.Text) ? "任务" : TxtTaskName.Text.Trim(),
             Target = new MonitorTarget
             {
-                Kind = ParseTargetKind(),
-                Value = TxtTargetValue.Text.Trim(),
+                Kind = TargetKind.Process, // 固定：监控基于已抓取的窗口树
+                Value = _currentTarget?.ProcessName ?? "",
+                ElementControlType = _selectedNode?.ControlType,
+                ElementName = _selectedNode?.Name,
             },
-            Properties = TxtProperties.Text.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
+            Properties = new[] { monitorProp }, // 监控目标=单个属性
             Timer = new TimerSpec { IntervalMs = int.TryParse(TxtInterval.Text, out var iv) ? Math.Max(50, iv) : 1000 },
             OutputDirectory = OutputDir,
         };
 
-        // 过滤：支持 Name~pattern 语法
+        // 正则过滤：支持 Name~pattern 语法
         var filterText = TxtFilter.Text.Trim();
         if (!string.IsNullOrEmpty(filterText))
         {
-            var rule = new FilterRule { Property = "Name", Pattern = filterText };
+            var rule = new FilterRule { Property = monitorProp, Pattern = filterText };
             if (filterText.Contains("~"))
             {
                 var parts = filterText.Split('~', 2);
@@ -530,14 +523,10 @@ public partial class MainWindow : Window
         config.Trigger = triggerTag switch
         {
             "Schedule" => new ScheduleTriggerSpec { RepeatIntervalMs = config.Timer.IntervalMs },
-            "ValueChange" => new ValueChangeTriggerSpec { Property = "Value" },
-            "Threshold" => new ThresholdTriggerSpec { Property = "Value", Threshold = 0, Op = ComparisonOp.GreaterOrEqual },
+            "ValueChange" => new ValueChangeTriggerSpec { Property = monitorProp },
+            "Threshold" => new ThresholdTriggerSpec { Property = monitorProp, Threshold = 0, Op = ComparisonOp.GreaterOrEqual },
             _ => new ImmediateTriggerSpec(),
         };
-
-        // 时间器
-        if (double.TryParse(TxtTimeBox.Text, out var sec) && sec > 0)
-            config.TimeBox = new TimeBoxSpec { Boxes = new[] { new DurationTimeBoxSpec { Seconds = sec } } };
 
         _scheduler.Register(config);
         var item = new TaskListItem { Config = config };
@@ -567,18 +556,7 @@ public partial class MainWindow : Window
         }
 
         _configStore.Save(config);
-        TxtStatus.Text = $"任务 [{config.Name}] 已启动";
-    }
-
-    private TargetKind ParseTargetKind()
-    {
-        var tag = (CmbTargetKind.SelectedItem as ComboBoxItem)?.Tag as string;
-        return tag switch
-        {
-            "WindowHandle" => TargetKind.WindowHandle,
-            "WindowTitle" => TargetKind.WindowTitle,
-            _ => TargetKind.Process,
-        };
+        TxtStatus.Text = $"任务 [{config.Name}] 已启动，监控 [{monitorProp}]";
     }
 
     private void BtnStopTask_Click(object sender, RoutedEventArgs e)

@@ -75,25 +75,25 @@ public sealed class TreeNodeViewModel
         return list;
     }
 
-    /// <summary>从 ElementNode 构建 Pattern 列表（只包含有值的 pattern）。</summary>
+    /// <summary>从 ElementNode 构建 Pattern 列表（优先有值的，其次支持的）。</summary>
     private static IReadOnlyList<PatternItem> BuildPatterns(ElementNode node)
     {
         var list = new List<PatternItem>();
+        var hasValue = new HashSet<string>();
 
-        if (node.Value is not null)
-            list.Add(new PatternItem { Name = "ValuePattern", Value = node.Value });
+        // 有具体值的 Pattern（高优先级）
+        if (node.Value is not null) { list.Add(new PatternItem { Name = "ValuePattern", Value = node.Value }); hasValue.Add("ValuePattern"); }
+        if (node.RangeValue is not null) { list.Add(new PatternItem { Name = "RangeValuePattern", Value = node.RangeValue }); hasValue.Add("RangeValuePattern"); }
+        if (node.ToggleState is not null) { list.Add(new PatternItem { Name = "TogglePattern", Value = node.ToggleState }); hasValue.Add("TogglePattern"); }
+        if (node.IsSelected is not null) { list.Add(new PatternItem { Name = "SelectionItemPattern", Value = node.IsSelected }); hasValue.Add("SelectionItemPattern"); }
+        if (node.ExpandCollapseState is not null) { list.Add(new PatternItem { Name = "ExpandCollapsePattern", Value = node.ExpandCollapseState }); hasValue.Add("ExpandCollapsePattern"); }
 
-        if (node.RangeValue is not null)
-            list.Add(new PatternItem { Name = "RangeValuePattern", Value = node.RangeValue });
-
-        if (node.ToggleState is not null)
-            list.Add(new PatternItem { Name = "TogglePattern", Value = node.ToggleState });
-
-        if (node.IsSelected is not null)
-            list.Add(new PatternItem { Name = "SelectionItemPattern", Value = node.IsSelected });
-
-        if (node.ExpandCollapseState is not null)
-            list.Add(new PatternItem { Name = "ExpandCollapsePattern", Value = node.ExpandCollapseState });
+        // 支持但当前无值的 Pattern（标记为"支持"）
+        foreach (var sp in node.SupportedPatterns)
+        {
+            if (!hasValue.Contains(sp))
+                list.Add(new PatternItem { Name = sp, Value = "(supported, no current value)" });
+        }
 
         return list;
     }

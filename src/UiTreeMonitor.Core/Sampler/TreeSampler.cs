@@ -99,6 +99,7 @@ public sealed class TreeSampler
             AccessKey = Safe(el.AccessKey),
             IsSelected = ReadPatternValue(el, "IsSelected"),
             ExpandCollapseState = ReadPatternValue(el, "ExpandCollapseState"),
+            SupportedPatterns = DetectSupportedPatterns(el),
             Children = Array.Empty<int>(),
         };
     }
@@ -136,5 +137,27 @@ public sealed class TreeSampler
         {
             return null;
         }
+    }
+
+    /// <summary>检测元素支持哪些 Pattern（GetPattern 非空即视为支持）。</summary>
+    private static IReadOnlyList<string> DetectSupportedPatterns(A11yElement el)
+    {
+        var patterns = new List<string>();
+        // (PatternId, DisplayName) 映射
+        var candidates = new[]
+        { (10018, "ValuePattern"), (10007, "RangeValuePattern"), (10015, "TogglePattern"),
+          (10026, "SelectionItemPattern"), (10005, "ExpandCollapsePattern"),
+          (10024, "LegacyIAccessiblePattern"), (10030, "ScrollPattern"),
+          (10031, "GridPattern"), (10028, "TablePattern"), (10029, "TextPattern") };
+        foreach (var (id, name) in candidates)
+        {
+            try
+            {
+                if (el.GetPattern(id) is not null)
+                    patterns.Add(name);
+            }
+            catch { /* 某些 pattern 查询可能抛异常 */ }
+        }
+        return patterns;
     }
 }
