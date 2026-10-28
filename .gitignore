@@ -22,3 +22,6 @@ _e2e_test.py
 _probe*.py
 _verify*.py
 _diag*.py
+
+# 外部开源工程（accessibility-insights-windows），不纳入本仓库管理
+/accessibility-insights-windows/
