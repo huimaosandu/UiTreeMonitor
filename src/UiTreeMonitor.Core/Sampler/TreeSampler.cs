@@ -94,6 +94,11 @@ public sealed class TreeSampler
             RangeValue = ReadPatternValue(el, "RangeValue"),
             ToggleState = ReadPatternValue(el, "ToggleState"),
             BoundingRectangle = rectStr,
+            ItemStatus = Safe(el.ItemStatus),
+            HelpText = Safe(el.HelpText),
+            AccessKey = Safe(el.AccessKey),
+            IsSelected = ReadPatternValue(el, "IsSelected"),
+            ExpandCollapseState = ReadPatternValue(el, "ExpandCollapseState"),
             Children = Array.Empty<int>(),
         };
     }
@@ -110,6 +115,8 @@ public sealed class TreeSampler
                 "Value" => 10018,        // ValuePattern
                 "RangeValue" => 10007,   // RangeValuePattern
                 "ToggleState" => 10015,  // TogglePattern
+                "IsSelected" => 10026,   // SelectionItemPattern
+                "ExpandCollapseState" => 10005, // ExpandCollapsePattern
                 _ => -1,
             };
             var p = el.GetPattern(patternId);

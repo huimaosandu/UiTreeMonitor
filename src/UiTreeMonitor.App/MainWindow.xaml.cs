@@ -4,8 +4,10 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Linq;
+using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
 using AccessibilityInsights.SharedUx.Enums;
@@ -51,6 +53,8 @@ public partial class MainWindow : Window
     private DispatcherTimer? _drainTimer;
     private bool _capturing;
     private MouseCaptureResult? _lastHoverResult; // 当前悬停选中的元素（烧杯按钮回调用）
+    private TreeNodeViewModel? _selectedNode; // 当前树选中节点（Details 面板联动）
+    private object? _rightClickedItem; // 右键点击的属性/Pattern 项（ContextMenu 回调用）
 
     private static readonly string AppDataDir =
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".ui-tree-monitor");
@@ -141,8 +145,9 @@ public partial class MainWindow : Window
 
         // 构建树（只展开前两层）
         _treeRoots.Clear();
+        var procName = snap.Target?.ProcessName;
         var root = snap.Nodes[snap.RootId];
-        var rootVm = TreeNodeViewModel.FromNode(root);
+        var rootVm = TreeNodeViewModel.FromNode(root, procName);
         _nodeLookup[rootVm.Id] = rootVm;
         _treeRoots.Add(rootVm);
 
@@ -154,7 +159,7 @@ public partial class MainWindow : Window
             foreach (var childId in node.Children)
             {
                 if (!snap.Nodes.TryGetValue(childId, out var cn)) continue;
-                var cvm = TreeNodeViewModel.FromNode(cn);
+                var cvm = TreeNodeViewModel.FromNode(cn, procName);
                 _nodeLookup[cvm.Id] = cvm;
                 vm.Children.Add(cvm);
                 stack.Push((cn, cvm));
@@ -352,6 +357,123 @@ public partial class MainWindow : Window
         foreach (var child in item.Items.OfType<TreeViewItem>())
             UpdateItemRecursive(child);
     }
+
+    // ========== Details 面板 ==========
+    private void TreeView_SelectedItemChanged(object sender, RoutedPropertyChangedEventArgs<object> e)
+    {
+        if (e.NewValue is TreeNodeViewModel vm)
+        {
+            _selectedNode = vm;
+            TxtDetailsTitle.Text = vm.Display;
+            PropertiesGrid.ItemsSource = vm.Properties;
+            PatternsTree.ItemsSource = vm.Patterns;
+        }
+        else
+        {
+            _selectedNode = null;
+            TxtDetailsTitle.Text = "选中节点查看详情";
+            PropertiesGrid.ItemsSource = null;
+            PatternsTree.ItemsSource = null;
+        }
+    }
+
+    /// <summary>
+    /// 右键菜单："添加为监测目标"——从 Properties 或 Patterns 中选中一行后，
+    /// 自动填入右侧任务表单（目标值/属性/正则过滤/任务名）。
+    /// </summary>
+    private void MenuItem_AddAsTarget_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selectedNode is null)
+        {
+            TxtStatus.Text = "请先在结构树中选中一个节点";
+            return;
+        }
+
+        // 判断来源：PropertyItem 还是 PatternItem
+        string propName;
+        string propValue;
+        var source = (sender as MenuItem)?.Parent as ContextMenu;
+        if (source?.PlacementTarget is DataGrid) // 来自 Properties
+        {
+            if (PropertiesGrid.SelectedItem is not PropertyItem pi)
+            {
+                TxtStatus.Text = "请先选中一个属性";
+                return;
+            }
+            propName = pi.Name;
+            propValue = pi.FullValue;
+        }
+        else if (source?.PlacementTarget is TreeView) // 来自 Patterns
+        {
+            var pat = (PatternsTree.SelectedItem ?? _rightClickedItem) as PatternItem;
+            if (pat is null)
+            {
+                TxtStatus.Text = "请先选中一个 Pattern";
+                return;
+            }
+            propName = pat.Name; // 如 "ValuePattern", "TogglePattern"
+            propValue = pat.Value;
+        }
+        else
+        {
+            // 兜底：用节点自身信息
+            propName = "Name";
+            propValue = _selectedNode.Name ?? "";
+        }
+
+        // 填入右侧表单
+        CmbTargetKind.SelectedIndex = 0; // 进程名
+        TxtTargetValue.Text = _selectedNode.ProcessId > 0
+            ? $"PID:{_selectedNode.ProcessId}"
+            : (_currentTarget?.ProcessName ?? "");
+        TxtProperties.Text = propName;
+
+        // 正则过滤：文本类属性自动生成 Name~^模式
+        if (IsTextProperty(propName))
+        {
+            TxtFilter.Text = $"{propName}~^{Regex.Escape(propValue)}";
+        }
+        else
+        {
+            TxtFilter.Text = $"{propName}~.*";
+        }
+
+        TxtTaskName.Text = $"{_selectedNode.ProcessName ?? "app"}-{_selectedNode.ControlType}-{propName}";
+        TxtStatus.Text = $"已填入监测目标：{propName}={propValue}，点击『添加并启动任务』启动监控";
+
+        // 切到"任务管理" tab 引导用户操作
+        ((TabControl)TaskList.Parent).SelectedIndex = 0;
+    }
+
+    private void PropertiesGrid_MouseRightButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        // 确保右键点击的行被选中
+        var dep = e.OriginalSource as DependencyObject;
+        while (dep is not null and not DataGridRow)
+            dep = VisualTreeHelper.GetParent(dep);
+        if (dep is DataGridRow row && row.Item is PropertyItem)
+        {
+            PropertiesGrid.SelectedItem = row.Item;
+            _rightClickedItem = row.Item;
+        }
+    }
+
+    private void PatternsTree_MouseRightButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        // 找到右键点击的 TreeViewItem（TreeView.SelectedItem 是只读的，用临时变量传给 ContextMenu）
+        var dep = e.OriginalSource as DependencyObject;
+        while (dep is not null and not TreeViewItem)
+            dep = VisualTreeHelper.GetParent(dep);
+        if (dep is TreeViewItem tvi && tvi.DataContext is PatternItem)
+            _rightClickedItem = tvi.DataContext;
+    }
+
+    /// <summary>判断属性是否为文本类（适合用正则提取值变化）。</summary>
+    private static bool IsTextProperty(string name) => name switch
+    {
+        "Name" or "Value" or "HelpText" or "ItemStatus" or "AccessKey" or "ToggleState" or "RangeValue" => true,
+        _ => false,
+    };
 
     // ========== 任务管理 ==========
     private void CmbTargetKind_SelectionChanged(object sender, SelectionChangedEventArgs e)

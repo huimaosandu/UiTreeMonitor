@@ -31,29 +31,88 @@
                 <ColumnDefinition Width="3*"/>
             </Grid.ColumnDefinitions>
 
-            <!-- 左侧：结构树 -->
-            <Border Grid.Column="0" BorderBrush="#DDDDDD" BorderThickness="0,0,1,0" Padding="6">
-                <DockPanel>
-                    <TextBlock Text="结构树" FontWeight="Bold" DockPanel.Dock="Top" Margin="2,0,0,6"/>
-                    <TreeView x:Name="TreeView" DockPanel.Dock="Top">
-                        <TreeView.Resources>
-                            <HierarchicalDataTemplate DataType="{x:Type local:TreeNodeViewModel}" ItemsSource="{Binding Children}">
-                                <TextBlock Text="{Binding Display}">
-                                    <TextBlock.Style>
-                                        <Style TargetType="TextBlock">
-                                            <Style.Triggers>
-                                                <DataTrigger Binding="{Binding IsHighlighted}" Value="True">
-                                                    <Setter Property="Background" Value="#FFD666"/>
-                                                </DataTrigger>
-                                            </Style.Triggers>
-                                        </Style>
-                                    </TextBlock.Style>
-                                </TextBlock>
-                            </HierarchicalDataTemplate>
-                        </TreeView.Resources>
-                    </TreeView>
-                </DockPanel>
-            </Border>
+            <!-- 左侧：结构树 + Details -->
+            <Grid Grid.Column="0">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="300"/>
+                </Grid.RowDefinitions>
+
+                <!-- 上半：结构树 -->
+                <Border Grid.Row="0" BorderBrush="#DDDDDD" BorderThickness="0,0,0,1" Padding="6">
+                    <DockPanel>
+                        <TextBlock Text="结构树" FontWeight="Bold" DockPanel.Dock="Top" Margin="2,0,0,6"/>
+                        <TreeView x:Name="TreeView" DockPanel.Dock="Top" SelectedItemChanged="TreeView_SelectedItemChanged">
+                            <TreeView.Resources>
+                                <HierarchicalDataTemplate DataType="{x:Type local:TreeNodeViewModel}" ItemsSource="{Binding Children}">
+                                    <TextBlock Text="{Binding Display}">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding IsHighlighted}" Value="True">
+                                                        <Setter Property="Background" Value="#FFD666"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                </HierarchicalDataTemplate>
+                            </TreeView.Resources>
+                        </TreeView>
+                    </DockPanel>
+                </Border>
+
+                <!-- 下半：Details 面板（Properties + Patterns） -->
+                <Border Grid.Row="1" Background="#FAFAFA" BorderBrush="#CCCCCC" BorderThickness="0,1,0,0" Padding="4">
+                    <DockPanel>
+                        <TextBlock x:Name="TxtDetailsTitle" Text="选中节点查看详情" FontWeight="Bold"
+                                   DockPanel.Dock="Top" Margin="2,2,0,4" Foreground="#333333"/>
+
+                        <StackPanel DockPanel.Dock="Top">
+                            <!-- Properties Expander -->
+                            <Expander Header="Properties" IsExpanded="True" Margin="0,2">
+                                <DataGrid x:Name="PropertiesGrid" AutoGenerateColumns="False"
+                                          IsReadOnly="True" HeadersVisibility="Column"
+                                          GridLinesVisibility="Horizontal" RowHeight="24"
+                                          FontSize="12" Background="White"
+                                          SelectionMode="Single" SelectionUnit="FullRow"
+                                          MouseRightButtonUp="PropertiesGrid_MouseRightButtonUp">
+                                    <DataGrid.Columns>
+                                        <DataGridTextColumn Header="属性名" Binding="{Binding Name}" Width="120"/>
+                                        <DataGridTextColumn Header="值" Binding="{Binding Value}" Width="*"/>
+                                    </DataGrid.Columns>
+                                    <DataGrid.ContextMenu>
+                                        <ContextMenu>
+                                            <MenuItem Header="添加为监测目标" Click="MenuItem_AddAsTarget_Click"/>
+                                        </ContextMenu>
+                                    </DataGrid.ContextMenu>
+                                </DataGrid>
+                            </Expander>
+
+                            <!-- Patterns Expander -->
+                            <Expander Header="Patterns" IsExpanded="True" Margin="0,2">
+                                <TreeView x:Name="PatternsTree" FontSize="12" Background="White"
+                                          BorderThickness="1" BorderBrush="#DDDDDD"
+                                          MouseRightButtonUp="PatternsTree_MouseRightButtonUp">
+                                    <TreeView.ContextMenu>
+                                        <ContextMenu>
+                                            <MenuItem Header="添加为监测目标" Click="MenuItem_AddAsTarget_Click"/>
+                                        </ContextMenu>
+                                    </TreeView.ContextMenu>
+                                    <TreeView.ItemTemplate>
+                                        <HierarchicalDataTemplate DataType="{x:Type local:PatternItem}" ItemsSource="{Binding SubProperties}">
+                                            <StackPanel Orientation="Horizontal">
+                                                <TextBlock Text="{Binding Name}" FontWeight="Bold" Margin="0,0,6,0"/>
+                                                <TextBlock Text="{Binding Value}" Foreground="#0066CC"/>
+                                            </StackPanel>
+                                        </HierarchicalDataTemplate>
+                                    </TreeView.ItemTemplate>
+                                </TreeView>
+                            </Expander>
+                        </StackPanel>
+                    </DockPanel>
+                </Border>
+            </Grid>
 
             <!-- 右侧：任务 + 历史 -->
             <Grid Grid.Column="1">
