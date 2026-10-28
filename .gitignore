@@ -1,27 +1,14 @@
-# Python-generated files
-__pycache__/
-*.py[oc]
-build/
-dist/
-wheels/
-*.egg-info
-
-# Virtual environments
-.venv
+# .NET build outputs
+bin/
+obj/
+*.user
 
 # IDE
 .idea/
 .vscode/
 
-# uiautomation 运行日志（子线程 UIA 调用自动生成）
-@AutomationLog.txt
-
-# 临时自检脚本（非交付物）
-_smoke_test.py
-_e2e_test.py
-_probe*.py
-_verify*.py
-_diag*.py
-
 # 外部开源工程（accessibility-insights-windows），不纳入本仓库管理
 /accessibility-insights-windows/
+
+# 临时文件
+*.tmp
