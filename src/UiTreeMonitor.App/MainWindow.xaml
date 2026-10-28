@@ -204,7 +204,7 @@
                                             <GridViewColumn Header="任务名" Width="130" DisplayMemberBinding="{Binding Name}"/>
                                             <GridViewColumn Header="状态" Width="70" DisplayMemberBinding="{Binding State}"/>
                                             <GridViewColumn Header="采样数" Width="60" DisplayMemberBinding="{Binding SampleCount}"/>
-                                            <GridViewColumn Header="监控目标" Width="*" DisplayMemberBinding="{Binding TargetText}"/>
+                                            <GridViewColumn Header="监控目标" Width="180" DisplayMemberBinding="{Binding TargetText}"/>
                                         </GridView>
                                     </ListView.View>
                                 </ListView>
