@@ -2,6 +2,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Windows;
@@ -41,6 +42,8 @@ public partial class MainWindow : Window
     private readonly SampleCsvWriter _csvWriter;
     private readonly ReportExporter _exporter;
     private readonly MouseCapture _mouseCapture = new(pollMs: 120);
+
+    private HighlightOverlayWindow? _overlay;
 
     private TreeSnapshot? _currentTree;
     private Dictionary<int, TreeNodeViewModel> _nodeLookup = new();
@@ -181,6 +184,7 @@ public partial class MainWindow : Window
         _capturing = !_capturing;
         if (_capturing)
         {
+            _overlay ??= new HighlightOverlayWindow();
             _mouseCapture.Start();
             _mouseCapture.ResultProduced += OnCaptureResult;
             BtnMouseCapture.Content = "停止捕获";
@@ -190,6 +194,7 @@ public partial class MainWindow : Window
         {
             _mouseCapture.ResultProduced -= OnCaptureResult;
             _mouseCapture.Stop();
+            _overlay?.HideOverlay();
             BtnMouseCapture.Content = "随鼠标捕获";
             TxtCaptureStatus.Text = "";
         }
@@ -204,7 +209,15 @@ public partial class MainWindow : Window
     {
         while (_captureQueue.TryDequeue(out var result))
         {
-            if (!result.IsValid) continue;
+            if (!result.IsValid)
+            {
+                _overlay?.HideOverlay();
+                continue;
+            }
+
+            // 无论树是否已加载，先画蓝框：让用户直观看到当前选中的元素
+            UpdateOverlay(result);
+
             // 未加载树或目标进程变化 → 自动抓新窗口树
             if (_currentTree is null || _currentTarget is null || _currentTarget.ProcessId != result.ProcessId)
             {
@@ -228,6 +241,14 @@ public partial class MainWindow : Window
                 TxtCaptureStatus.Text = $"{result.ProcessName} — 未在树中定位 ({result.ControlType})";
             }
         }
+    }
+
+    /// <summary>把高亮蓝框移动到捕获元素矩形处（UIA 物理像素 → DIP 换算）。</summary>
+    private void UpdateOverlay(MouseCaptureResult result)
+    {
+        if (_overlay is null || result.BoundingRectangle is not System.Drawing.Rectangle rect) return;
+        var dpi = VisualTreeHelper.GetDpi(this);
+        _overlay.MoveTo(rect, dpi.DpiScaleX, result);
     }
 
     private void ClearHighlight()
@@ -291,8 +312,8 @@ public partial class MainWindow : Window
         if (item.DataContext is TreeNodeViewModel vm)
         {
             var brush = vm.IsHighlighted
-                ? new SolidColorBrush(Color.FromRgb(0xFF, 0xD6, 0x66)) // 黄色高亮
-                : Brushes.Transparent;
+                ? new SolidColorBrush(System.Windows.Media.Color.FromRgb(0xFF, 0xD6, 0x66)) // 黄色高亮
+                : System.Windows.Media.Brushes.Transparent;
             item.Background = brush;
         }
         foreach (var child in item.Items.OfType<TreeViewItem>())

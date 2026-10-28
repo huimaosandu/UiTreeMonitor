@@ -10,7 +10,7 @@ Windows 桌面应用：基于 Microsoft UI Automation (UIA)，读取任意 Windo
 
 - **窗口枚举**：列出当前系统所有可见顶层窗口（进程名 / 标题 / PID / 句柄）。
 - **结构树抓取**：一键抓取目标窗口完整 UIA 结构树（类型 / 名称 / AutomationId / ClassName / 进程等）。
-- **随鼠标捕获（常用功能）**：开启后移动鼠标，自动加载光标下窗口的结构树并**黄色高亮**光标所指节点；无需手动选窗口。
+- **随鼠标捕获（常用功能）**：**直接复用 accessibility-insights-windows 的捕获技术**（Axe.Windows `SelectAction` 鼠标选择内核），开启后移动鼠标，自动加载光标下窗口的结构树，并在**目标窗口元素上绘制原版同款蓝色高亮框**（#0C5186 + 悬浮信息卡，显示类型/名称/聚焦状态），同时左侧树黄色高亮对应节点；无需手动选窗口。
 - **七要素监控任务**：每个任务独立配置以下要素，可多任务并发：
   1. **目标**：进程名 / 窗口句柄 / 窗口标题
   2. **属性**：Name / Value / RangeValue / ToggleState / IsEnabled 等 17 项
@@ -112,7 +112,8 @@ Tests → Core / Scheduler / Persistence / Export
 
 ## 设计要点
 
-- **采集内核**：`Axe.Windows`（netstandard2.0）仅用于属性读取模型（`A11yElement`），树遍历用 UIA COM `CUIAutomation` 的 `ControlViewWalker`，避免 Axe.Windows 私有构造的不可用路径。
+- **采集内核**：`Axe.Windows`（netstandard2.0）用于属性读取模型（`A11yElement`）与鼠标捕获内核（`SelectAction`/`GetDataAction`，与原版 accessibility-insights-windows 完全一致）；树遍历用 UIA COM `CUIAutomation` 的 `ControlViewWalker`，避免 Axe.Windows 私有构造的不可用路径。
+- **鼠标捕获**：直接调用原版 `SelectAction.GetDefaultInstance()`（`IsMouseSelectOn`/`IntervalMouseSelector`/`Select`/`SelectedElementContextId`）→ `GetDataAction.GetElementContext(ecId).Element` 取回选中元素；高亮框复用原版配色（边框 #0C5186、信息卡浅黄底），覆盖在目标元素矩形上，点击穿透、不抢焦点。
 - **线程要求**：UIA COM 必须在 STA 线程使用——采集、捕获均在独立 STA 线程执行，UI 线程仅通过队列 + `DispatcherTimer` 消费结果。
 - **正则安全**：所有过滤正则编译时带 1 秒超时，防灾难性回溯。
 - **任务生命周期**：每任务独立线程，`State` = Idle / Running / Paused / Completed / Stopped / Error。
@@ -123,3 +124,4 @@ Tests → Core / Scheduler / Persistence / Export
 ## 更新记录
 
 - 2026-10-28：按已确认方案完成 C#/.NET 8 + WPF 重构（删除原 Python 工程）；实现采集内核、七要素任务模型、线程/进程宿主、调度器、持久化、导出、桌面 UI；11 项单元测试通过。
+- 2026-10-28：鼠标捕获改用 accessibility-insights-windows 原生 `SelectAction` 捕获技术；新增目标窗口上的蓝色高亮框（#0C5186）+ 悬浮信息卡（类型/名称/聚焦状态），与左侧树黄色高亮联动。
