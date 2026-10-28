@@ -77,6 +77,30 @@ public sealed class TreeSampler
         }
         catch { /* 矩形可能无效 */ }
 
+        // ★ 用 el.Patterns 直接获取 Pattern 数据（原版 PatternInfoControl 同款方式）
+        // A11yPattern 结构: Id, Name, Properties(IList<A11yPatternProperty>: Name, Value)
+        var patternNames = new List<string>();
+        var patternValues = new Dictionary<string, string?>(); // key = "PatternName.PropertyName"
+
+        try
+        {
+            if (el.Patterns is not null)
+                foreach (var p in el.Patterns)
+                {
+                    patternNames.Add(p.Name);
+                    if (p.Properties is not null)
+                        foreach (var pp in p.Properties)
+                            patternValues[$"{p.Name}.{pp.Name}"] = pp.Value;
+                    else
+                        patternValues[p.Name] = "(no properties)";
+                }
+        }
+        catch { /* Patterns 可能为空或异常 */ }
+
+        // 从 patternValues 中提取已知 Pattern 的主属性值
+        string? GetVal(string patName, string propName) =>
+            patternValues.TryGetValue($"{patName}.{propName}", out var v) ? v : null;
+
         return new ElementNode
         {
             Id = id,
@@ -90,81 +114,19 @@ public sealed class TreeSampler
             ProcessId = el.ProcessId,
             IsEnabled = el.IsEnabled,
             IsOffScreen = el.IsOffScreen,
-            Value = ReadPatternValue(el, "Value"),
-            RangeValue = ReadPatternValue(el, "RangeValue"),
-            ToggleState = ReadPatternValue(el, "ToggleState"),
+            Value = GetVal("ValuePattern", "Value"),
+            RangeValue = GetVal("RangeValuePattern", "Value"),
+            ToggleState = GetVal("TogglePattern", "ToggleState"),
             BoundingRectangle = rectStr,
             ItemStatus = Safe(el.ItemStatus),
             HelpText = Safe(el.HelpText),
             AccessKey = Safe(el.AccessKey),
-            IsSelected = ReadPatternValue(el, "IsSelected"),
-            ExpandCollapseState = ReadPatternValue(el, "ExpandCollapseState"),
-            SupportedPatterns = DetectSupportedPatterns(el),
+            IsSelected = GetVal("SelectionItemPattern", "IsSelected"),
+            ExpandCollapseState = GetVal("ExpandCollapsePattern", "ExpandCollapseState"),
+            SupportedPatterns = patternNames,
             Children = Array.Empty<int>(),
         };
     }
 
     private static string? Safe(string? s) => string.IsNullOrEmpty(s) ? null : s;
-
-    /// <summary>反射读取 Pattern 的当前值属性（Value/RangeValue/ToggleState/等）。</summary>
-    private static string? ReadPatternValue(A11yElement el, string kind)
-    {
-        try
-        {
-            // ★ PatternType 正确 ID（从 Axe.Windows.Core.Types.PatternType 反射获取）
-            int patternId = kind switch
-            {
-                "Value" => 10002,              // UIA_ValuePatternId
-                "RangeValue" => 10003,         // UIA_RangeValuePatternId
-                "ToggleState" => 10015,        // UIA_TogglePatternId
-                "IsSelected" => 10010,         // UIA_SelectionItemPatternId
-                "ExpandCollapseState" => 10005,// UIA_ExpandCollapsePatternId
-                _ => -1,
-            };
-            if (patternId < 0) return null;
-
-            var p = el.GetPattern(patternId);
-            if (p is null) return null;
-
-            // 取当前值属性名
-            string propName = kind switch
-            {
-                "Value" => "Value",
-                "RangeValue" => "Value",
-                "ToggleState" => "ToggleState",
-                "IsSelected" => "IsSelected",
-                "ExpandCollapseState" => "ExpandCollapseState",
-                _ => "Value",
-            };
-            var prop = p.GetType().GetProperty(propName);
-            return prop?.GetValue(p)?.ToString();
-        }
-        catch
-        {
-            return null;
-        }
-    }
-
-    /// <summary>检测元素支持哪些 Pattern（GetPattern 非空即视为支持）。</summary>
-    private static IReadOnlyList<string> DetectSupportedPatterns(A11yElement el)
-    {
-        var patterns = new List<string>();
-        // (PatternId, DisplayName) —— ID 来自 Axe.Windows.Core.Types.PatternType
-        var candidates = new[]
-        { (10002, "ValuePattern"), (10003, "RangeValuePattern"), (10015, "TogglePattern"),
-          (10010, "SelectionItemPattern"), (10005, "ExpandCollapsePattern"),
-          (10018, "LegacyIAccessiblePattern"), (10004, "ScrollPattern"),
-          (10006, "GridPattern"), (10012, "TablePattern"), (10014, "TextPattern"),
-          (10000, "InvokePattern"), (10024, "TextPattern2") };
-        foreach (var (id, name) in candidates)
-        {
-            try
-            {
-                if (el.GetPattern(id) is not null)
-                    patterns.Add(name);
-            }
-            catch { /* 某些 pattern 查询可能抛异常 */ }
-        }
-        return patterns;
-    }
 }
