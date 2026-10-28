@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
     <ProjectReference Include="..\UiTreeMonitor.Core\UiTreeMonitor.Core.csproj" />
@@ -6,6 +6,7 @@
     <ProjectReference Include="..\UiTreeMonitor.Scheduler\UiTreeMonitor.Scheduler.csproj" />
     <ProjectReference Include="..\UiTreeMonitor.Persistence\UiTreeMonitor.Persistence.csproj" />
     <ProjectReference Include="..\UiTreeMonitor.Export\UiTreeMonitor.Export.csproj" />
+    <ProjectReference Include="..\UiTreeMonitor.A11ySharedUx\UiTreeMonitor.A11ySharedUx.csproj" />
   </ItemGroup>
 
   <PropertyGroup>

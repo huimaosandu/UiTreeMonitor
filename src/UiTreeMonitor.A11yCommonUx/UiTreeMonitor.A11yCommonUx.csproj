@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- 原版 accessibility-insights-windows/src/AccessibilityInsights.CommonUxComponents 中
+       高亮链路所需部分（SharedResources + FabMDL2.ttf 字体）原样复制。
+       AssemblyName 必须保持 AccessibilityInsights.CommonUxComponents：
+       SharedResources.cs 内 pack URI 按程序集名解析，不可更改。 -->
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <RootNamespace>AccessibilityInsights.CommonUxComponents</RootNamespace>
+    <AssemblyName>AccessibilityInsights.CommonUxComponents</AssemblyName>
+    <UseWPF>true</UseWPF>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Resource Include="Resources\FabMDL2.ttf" />
+  </ItemGroup>
+
+</Project>

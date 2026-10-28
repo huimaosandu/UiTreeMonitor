@@ -1,9 +1,19 @@
-﻿<Application x:Class="UiTreeMonitor.App.App"
+<Application x:Class="UiTreeMonitor.App.App"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:local="clr-namespace:UiTreeMonitor.App"
              StartupUri="MainWindow.xaml">
     <Application.Resources>
-         
+        <!-- 以下画刷取自原版 accessibility-insights-windows/src/AccessibilityInsights.SharedUx/Resources/Light/Brushes.xaml，
+             供原样复制的 Highlighter/Win32SnapshotWindow 使用（Application.Current.Resources 按键查找） -->
+        <SolidColorBrush x:Key="HLbrushRed" Color="#CC0000"/>
+        <SolidColorBrush x:Key="HLbrushGreen" Color="#107c10"/>
+        <SolidColorBrush x:Key="HLbrushPurple" Color="#A45EF4"/>
+        <SolidColorBrush x:Key="HLDefaultBrush" Color="#0C5186"/>
+        <SolidColorBrush x:Key="HLGreenTextBrush" Color="#00FF00"/>
+        <SolidColorBrush x:Key="HLTextBrush" Color="#FFFF00"/>
+        <SolidColorBrush x:Key="SnapshotBtnBGBrush" Color="#0C5186"/>
+        <SolidColorBrush x:Key="SnapshotBtnHoverBrush" Color="#0E78C8"/>
+        <SolidColorBrush x:Key="SnapshotBtnFGBrush" Color="#FFFFFF"/>
     </Application.Resources>
 </Application>

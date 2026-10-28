@@ -27,7 +27,8 @@ public sealed record MouseCaptureResult(
     Rectangle? BoundingRectangle,        // 屏幕物理像素坐标（UIA 原生）
     bool? IsKeyboardFocusable,           // 是否可键盘聚焦（高亮信息卡用）
     int? TreeNodeId,                     // 在已加载树中定位到的节点 id（可能为 null）
-    bool IsValid);
+    bool IsValid,
+    Guid? ElementContextId = null);      // SelectAction 的 POI ElementContext id（供 UI 取 A11yElement 驱动原版高亮）
 
 /// <summary>
 /// 鼠标捕获器（Element Inspector）。
@@ -125,7 +126,8 @@ public sealed class MouseCapture : IDisposable
                                 NormalizeRect(el.BoundingRectangle),
                                 el.IsKeyboardFocusable,
                                 TreeNodeId: null,
-                                IsValid: true);
+                                IsValid: true,
+                                ElementContextId: ecId);
                             ResultProduced?.Invoke(r);
                         }
                     }

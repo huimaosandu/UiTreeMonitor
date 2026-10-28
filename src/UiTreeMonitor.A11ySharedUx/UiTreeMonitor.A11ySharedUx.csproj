@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- 原版 accessibility-insights-windows/src/AccessibilityInsights.SharedUx 中
+       “悬停高亮”链路所需部分原样复制：
+       HollowHighlightDriver(驱动器) → Highlighter(边框+文字提示+快照按钮)
+       → LineBorder / TextTip / Win32SnapshotButton + Highlighter* 枚举 + ReferenceHolder。
+       MouseTracker/SelectAction 捕获内核与原版一致，来自 Axe.Windows 2.4.2 NuGet 包。 -->
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <RootNamespace>AccessibilityInsights.SharedUx</RootNamespace>
+    <AssemblyName>AccessibilityInsights.SharedUx</AssemblyName>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Axe.Windows" Version="2.4.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\UiTreeMonitor.A11yWin32\UiTreeMonitor.A11yWin32.csproj" />
+    <ProjectReference Include="..\UiTreeMonitor.A11yCommonUx\UiTreeMonitor.A11yCommonUx.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Update="Properties\Resources.resx">
+      <Generator>PublicResXFileCodeGenerator</Generator>
+      <LastGenOutput>Resources.Designer.cs</LastGenOutput>
+    </EmbeddedResource>
+  </ItemGroup>
+
+</Project>

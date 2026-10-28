@@ -2,13 +2,14 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
-using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Threading;
+using AccessibilityInsights.SharedUx.Highlighting;
+using Axe.Windows.Actions;
 using UiTreeMonitor.Core.Filters;
 using UiTreeMonitor.Core.Models;
 using UiTreeMonitor.Core.Sampler;
@@ -43,8 +44,6 @@ public partial class MainWindow : Window
     private readonly ReportExporter _exporter;
     private readonly MouseCapture _mouseCapture = new(pollMs: 120);
 
-    private HighlightOverlayWindow? _overlay;
-
     private TreeSnapshot? _currentTree;
     private Dictionary<int, TreeNodeViewModel> _nodeLookup = new();
     private TargetWindowInfo? _currentTarget;
@@ -73,7 +72,12 @@ public partial class MainWindow : Window
         _drainTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(100) };
         _drainTimer.Tick += (_, _) => DrainCaptureQueue();
         _drainTimer.Start();
-        Closed += (_, _) => { _mouseCapture.Stop(); _scheduler.Dispose(); };
+        Closed += (_, _) =>
+        {
+            _mouseCapture.Stop();
+            HollowHighlightDriver.ClearAllHighlighters(); // 原版退出时清理全部高亮器
+            _scheduler.Dispose();
+        };
     }
 
     // ========== 窗口 ==========
@@ -184,7 +188,8 @@ public partial class MainWindow : Window
         _capturing = !_capturing;
         if (_capturing)
         {
-            _overlay ??= new HighlightOverlayWindow();
+            // 原版 HollowHighlightDriver（悬停蓝框 + 文字提示 + 快照按钮），默认高亮模式
+            HollowHighlightDriver.GetDefaultInstance().IsEnabled = true;
             _mouseCapture.Start();
             _mouseCapture.ResultProduced += OnCaptureResult;
             BtnMouseCapture.Content = "停止捕获";
@@ -194,7 +199,7 @@ public partial class MainWindow : Window
         {
             _mouseCapture.ResultProduced -= OnCaptureResult;
             _mouseCapture.Stop();
-            _overlay?.HideOverlay();
+            HollowHighlightDriver.GetDefaultInstance().Clear();
             BtnMouseCapture.Content = "随鼠标捕获";
             TxtCaptureStatus.Text = "";
         }
@@ -207,16 +212,19 @@ public partial class MainWindow : Window
 
     private void DrainCaptureQueue()
     {
+        var driver = HollowHighlightDriver.GetDefaultInstance();
+
         while (_captureQueue.TryDequeue(out var result))
         {
-            if (!result.IsValid)
+            // 原版高亮链路：HollowHighlightDriver.SetElement(A11yElement)
+            // 内部完成 SetLocation(蓝框) + SetText(Glimpse + Focusable/NotFocusable) + 显隐控制
+            if (!result.IsValid || result.ElementContextId is not Guid ecId
+                || GetDataAction.GetElementContext(ecId)?.Element is not { } el)
             {
-                _overlay?.HideOverlay();
+                driver.Clear();
                 continue;
             }
-
-            // 无论树是否已加载，先画蓝框：让用户直观看到当前选中的元素
-            UpdateOverlay(result);
+            driver.SetElement(el); // el 归 DataManager/SelectAction 管理，严禁 Dispose（原版同款）
 
             // 未加载树或目标进程变化 → 自动抓新窗口树
             if (_currentTree is null || _currentTarget is null || _currentTarget.ProcessId != result.ProcessId)
@@ -241,14 +249,6 @@ public partial class MainWindow : Window
                 TxtCaptureStatus.Text = $"{result.ProcessName} — 未在树中定位 ({result.ControlType})";
             }
         }
-    }
-
-    /// <summary>把高亮蓝框移动到捕获元素矩形处（UIA 物理像素 → DIP 换算）。</summary>
-    private void UpdateOverlay(MouseCaptureResult result)
-    {
-        if (_overlay is null || result.BoundingRectangle is not System.Drawing.Rectangle rect) return;
-        var dpi = VisualTreeHelper.GetDpi(this);
-        _overlay.MoveTo(rect, dpi.DpiScaleX, result);
     }
 
     private void ClearHighlight()
