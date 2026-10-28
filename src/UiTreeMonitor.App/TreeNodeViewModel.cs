@@ -1,7 +1,9 @@
 // 树节点视图模型 + Details 面板数据项
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using Axe.Windows.Core.Bases;
 using UiTreeMonitor.Core.Models;
+using UiTreeMonitor.Core.Sampler;
 
 namespace UiTreeMonitor.App;
 
@@ -75,20 +77,20 @@ public sealed class TreeNodeViewModel
         return list;
     }
 
-    /// <summary>从 ElementNode 构建 Pattern 列表（优先有值的，其次支持的）。</summary>
+    /// <summary>从 ElementNode 构建 Pattern 列表（直接来自 el.Patterns 数据）。</summary>
     private static IReadOnlyList<PatternItem> BuildPatterns(ElementNode node)
     {
         var list = new List<PatternItem>();
         var hasValue = new HashSet<string>();
 
-        // 有具体值的 Pattern（高优先级）
-        if (node.Value is not null) { list.Add(new PatternItem { Name = "ValuePattern", Value = node.Value }); hasValue.Add("ValuePattern"); }
-        if (node.RangeValue is not null) { list.Add(new PatternItem { Name = "RangeValuePattern", Value = node.RangeValue }); hasValue.Add("RangeValuePattern"); }
-        if (node.ToggleState is not null) { list.Add(new PatternItem { Name = "TogglePattern", Value = node.ToggleState }); hasValue.Add("TogglePattern"); }
-        if (node.IsSelected is not null) { list.Add(new PatternItem { Name = "SelectionItemPattern", Value = node.IsSelected }); hasValue.Add("SelectionItemPattern"); }
-        if (node.ExpandCollapseState is not null) { list.Add(new PatternItem { Name = "ExpandCollapsePattern", Value = node.ExpandCollapseState }); hasValue.Add("ExpandCollapsePattern"); }
+        // 有具体值的 Pattern（高优先级）——来自 el.Patterns 的 Properties
+        if (!string.IsNullOrEmpty(node.Value)) { list.Add(new PatternItem { Name = "ValuePattern", Value = node.Value }); hasValue.Add("ValuePattern"); }
+        if (!string.IsNullOrEmpty(node.RangeValue)) { list.Add(new PatternItem { Name = "RangeValuePattern", Value = node.RangeValue }); hasValue.Add("RangeValuePattern"); }
+        if (!string.IsNullOrEmpty(node.ToggleState)) { list.Add(new PatternItem { Name = "TogglePattern", Value = node.ToggleState }); hasValue.Add("TogglePattern"); }
+        if (!string.IsNullOrEmpty(node.IsSelected)) { list.Add(new PatternItem { Name = "SelectionItemPattern", Value = node.IsSelected }); hasValue.Add("SelectionItemPattern"); }
+        if (!string.IsNullOrEmpty(node.ExpandCollapseState)) { list.Add(new PatternItem { Name = "ExpandCollapsePattern", Value = node.ExpandCollapseState }); hasValue.Add("ExpandCollapsePattern"); }
 
-        // 支持但当前无值的 Pattern（标记为"支持"）
+        // 支持但当前无值的 Pattern
         foreach (var sp in node.SupportedPatterns)
         {
             if (!hasValue.Contains(sp))
@@ -96,5 +98,81 @@ public sealed class TreeNodeViewModel
         }
 
         return list;
+    }
+
+    /// <summary>
+    /// 从 A11yElement 直接构建 Details 数据（用于鼠标捕获场景，无 ElementNode）。
+    /// 原版 PatternInfoControl/PatternViewModel 同款方式：el.Patterns → A11yPattern.Properties → NodeValue
+    /// </summary>
+    public static (IReadOnlyList<PropertyItem> Properties, IReadOnlyList<PatternItem> Patterns) FromA11yElement(A11yElement el, string? processName)
+    {
+        var props = new List<PropertyItem>();
+        var pats = new List<PatternItem>();
+        var hasValue = new HashSet<string>();
+
+        // === Properties（A11yElement 直接属性）===
+        var propMap = new (string Name, Func<string?> Getter)[]
+        {
+            ("Name", () => el.Name),
+            ("ControlType", () => TreeSampler.ControlTypeName(el.ControlTypeId)),
+            ("AutomationId", () => el.AutomationId),
+            ("ClassName", () => el.ClassName),
+            ("Framework", () => el.Framework),
+            ("ProcessId", () => el.ProcessId.ToString()),
+            ("ProcessName", () => processName),
+            ("IsEnabled", () => el.IsEnabled.ToString()),
+            ("IsOffScreen", () => el.IsOffScreen.ToString()),
+            ("HelpText", () => el.HelpText),
+            ("AccessKey", () => el.AccessKey),
+            ("ItemStatus", () => el.ItemStatus),
+        };
+        foreach (var (name, getter) in propMap)
+        {
+            try
+            {
+                var val = getter();
+                if (!string.IsNullOrEmpty(val))
+                {
+                    var display = val.Length > 120 ? val.Substring(0, 117) + "..." : val;
+                    props.Add(new PropertyItem { Name = name, Value = display, FullValue = val });
+                }
+            }
+            catch { /* 某些属性可能抛异常 */ }
+        }
+
+        // BoundingRectangle
+        try { var r = el.BoundingRectangle; props.Add(new PropertyItem { Name = "BoundingRectangle", Value = $"{r.Left},{r.Top},{r.Right},{r.Bottom}", FullValue = $"{r.Left},{r.Top},{r.Right},{r.Bottom}" }); } catch { }
+
+        // === Patterns（原版 PatternViewModel 同款：遍历 el.Patterns）===
+        try
+        {
+            if (el.Patterns is not null)
+                foreach (var p in el.Patterns)
+                {
+                    if (p.Properties is not null && p.Properties.Count > 0)
+                    {
+                        // 有属性值：显示每个子属性
+                        var subProps = new List<PropertyItem>();
+                        foreach (var pp in p.Properties)
+                        {
+                            var nodeVal = pp.NodeValue ?? "(null)";
+                            var display = nodeVal.Length > 120 ? nodeVal.Substring(0, 117) + "..." : nodeVal;
+                            subProps.Add(new PropertyItem { Name = pp.Name, Value = display, FullValue = nodeVal });
+                        }
+                        // 用第一个属性的值作为 Pattern 的主显示值
+                        var mainVal = p.Properties[0].NodeValue ?? "(null)";
+                        pats.Add(new PatternItem { Name = p.Name, Value = mainVal, SubProperties = subProps });
+                        hasValue.Add(p.Name);
+                    }
+                    else
+                    {
+                        pats.Add(new PatternItem { Name = p.Name, Value = "(supported, no current value)" });
+                        hasValue.Add(p.Name);
+                    }
+                }
+        }
+        catch { /* Patterns 读取异常 */ }
+
+        return (props, pats);
     }
 }

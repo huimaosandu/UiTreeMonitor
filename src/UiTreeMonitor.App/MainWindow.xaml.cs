@@ -55,6 +55,7 @@ public partial class MainWindow : Window
     private MouseCaptureResult? _lastHoverResult; // 当前悬停选中的元素（烧杯按钮回调用）
     private TreeNodeViewModel? _selectedNode; // 当前树选中节点（Details 面板联动）
     private object? _rightClickedItem; // 右键点击的属性/Pattern 项（ContextMenu 回调用）
+    private bool _detailsLocked; // 烧杯按钮点击后锁定 Details 不再刷新
 
     private static readonly string AppDataDir =
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".ui-tree-monitor");
@@ -198,6 +199,7 @@ public partial class MainWindow : Window
         }
 
         _capturing = true;
+        _detailsLocked = false; // 开始捕获时解锁 Details 跟随刷新
         // 原版 HollowHighlightDriver：默认实例自带烧杯按钮（Highlighter 构造 hasSnapshot:true）
         var driver = HollowHighlightDriver.GetDefaultInstance();
         driver.HighlighterMode = HighlighterMode.HighlighterBeakerTooltip; // 原版 ConfigurationModel 默认模式：边框+烧杯+文字提示
@@ -228,6 +230,7 @@ public partial class MainWindow : Window
     {
         var result = _lastHoverResult;
         StopMouseCapture(); // 点击后退出随鼠标捕获
+        _detailsLocked = true; // ★ 锁定 Details 不再刷新，用户可右键操作
 
         if (result is null || !result.IsValid)
         {
@@ -262,6 +265,15 @@ public partial class MainWindow : Window
             }
             driver.SetElement(el); // el 归 DataManager/SelectAction 管理，严禁 Dispose（原版同款）
             _lastHoverResult = result; // 供烧杯按钮回调（OnSnapshotAddTarget）取当前悬停元素
+
+            // ★ Details 跟随鼠标捕获刷新（未锁定时）
+            if (!_detailsLocked)
+            {
+                var (props, pats) = TreeNodeViewModel.FromA11yElement(el, result.ProcessName);
+                TxtDetailsTitle.Text = $"[{result.ControlType}] {result.Name ?? ""}";
+                PropertiesGrid.ItemsSource = props;
+                PatternsTree.ItemsSource = pats;
+            }
 
             // 未加载树或目标进程变化 → 自动抓新窗口树
             if (_currentTree is null || _currentTarget is null || _currentTarget.ProcessId != result.ProcessId)
@@ -360,6 +372,7 @@ public partial class MainWindow : Window
     // ========== Details 面板 ==========
     private void TreeView_SelectedItemChanged(object sender, RoutedPropertyChangedEventArgs<object> e)
     {
+        _detailsLocked = false; // 用户手动选中树节点 → 解锁 Details
         if (e.NewValue is TreeNodeViewModel vm)
         {
             _selectedNode = vm;

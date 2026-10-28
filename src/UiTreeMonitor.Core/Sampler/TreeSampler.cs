@@ -77,8 +77,9 @@ public sealed class TreeSampler
         }
         catch { /* 矩形可能无效 */ }
 
-        // ★ 用 el.Patterns 直接获取 Pattern 数据（原版 PatternInfoControl 同款方式）
-        // A11yPattern 结构: Id, Name, Properties(IList<A11yPatternProperty>: Name, Value)
+        // ★ 用 el.Patterns 直接获取 Pattern 数据（原版 PatternInfoControl/PatternViewModel 同款方式）
+        // A11yPattern: Id, Name, Properties(IList<A11yPatternProperty>)
+        // A11yPatternProperty: Name, Value(Object), NodeValue(String) ← 原版用 NodeValue
         var patternNames = new List<string>();
         var patternValues = new Dictionary<string, string?>(); // key = "PatternName.PropertyName"
 
@@ -90,7 +91,8 @@ public sealed class TreeSampler
                     patternNames.Add(p.Name);
                     if (p.Properties is not null)
                         foreach (var pp in p.Properties)
-                            patternValues[$"{p.Name}.{pp.Name}"] = pp.Value;
+                            // ★ 原版 PatternPropertyUIWrapper 用 p.NodeValue（String），不是 p.Value（Object）
+                            patternValues[$"{p.Name}.{pp.Name}"] = pp.NodeValue;
                     else
                         patternValues[p.Name] = "(no properties)";
                 }
