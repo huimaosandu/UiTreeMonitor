@@ -88,10 +88,18 @@ D:\dotnet\dotnet.exe run --project src\UiTreeMonitor.App
 - 中文界面。
 
 ```powershell
+# 方式一（推荐）：进入 test_ui 目录运行
 cd test_ui
 uv sync          # 首次运行安装 PySide6
 uv run test_ui.py
+
+# 方式二：从工程根目录直接指定项目（uv 依赖需从 test_ui\pyproject.toml 解析）
+uv run --project .\test_ui .\test_ui\test_ui.py
 ```
+
+> 注意：PySide6 声明在 `test_ui\pyproject.toml`，**不要**在根目录直接
+> `uv run .\test_ui\test_ui.py`——uv 会在根目录找依赖声明，找不到 PySide6 会报
+> `ModuleNotFoundError`。
 
 > 注：Tkinter 的 UIA/MSAA 桥有缺陷（Label 文本不暴露、Entry 不暴露为 Edit），
 > Accessibility Insights 抓不到数值，因此被测面板改用 PySide6 实现。
