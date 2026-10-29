@@ -20,6 +20,8 @@
                 <Button x:Name="BtnRefreshWindows" Content="刷新窗口" Margin="8,0,0,0" Padding="10,4" Click="BtnRefreshWindows_Click" DockPanel.Dock="Left"/>
                 <Button x:Name="BtnCaptureTree" Content="抓取结构树" Margin="8,0,0,0" Padding="10,4" Click="BtnCaptureTree_Click" DockPanel.Dock="Left"/>
                 <Button x:Name="BtnMouseCapture" Content="随鼠标捕获" Margin="8,0,0,0" Padding="10,4" Click="BtnMouseCapture_Click" DockPanel.Dock="Left"/>
+                <Button x:Name="BtnOpenDataDir" Content="数据目录" Margin="8,0,0,0" Padding="10,4" Click="BtnOpenDataDir_Click"
+                        DockPanel.Dock="Left" ToolTip="打开数据保存文件夹（D:\uitreemonitor\当日日期）"/>
                 <TextBlock x:Name="TxtCaptureStatus" Text="" VerticalAlignment="Center" Margin="12,0,0,0" Foreground="#666666"/>
             </DockPanel>
         </Border>
@@ -139,30 +141,36 @@
 
                             <!-- 提示 + 操作按钮 -->
                             <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
-                                <TextBlock Text="操作：在左侧 Details 面板右键属性/Pattern →「添加为监控对象」" 
+                                <TextBlock Text="右键任务行可单独操作；按钮作用于全部任务：" 
                                            VerticalAlignment="Center" Foreground="#666666" Margin="0,0,16,0"/>
-                                <Button x:Name="BtnStopTask" Content="停止选中" Padding="10,4" Margin="0,0,6,0" Click="BtnStopTask_Click"
-                                        ToolTip="暂停选中的监控任务"/>
-                                <Button x:Name="BtnResumeTask" Content="继续选中" Padding="10,4" Margin="0,0,6,0" Click="BtnResumeTask_Click"
-                                        ToolTip="恢复选中的监控任务"/>
-                                <Button x:Name="BtnRemoveTask" Content="移除选中" Padding="10,4" Margin="0,0,6,0" Click="BtnRemoveTask_Click"
-                                        ToolTip="移除选中的监控任务"/>
-                                <Button x:Name="BtnExport" Content="导出报告" Padding="10,4" Click="BtnExport_Click"
-                                        ToolTip="导出采样数据报告"/>
+                                <Button x:Name="BtnStopAllTasks" Content="停止所有任务" Padding="10,4" Margin="0,0,6,0" Click="BtnStopAllTasks_Click"
+                                        ToolTip="停止全部监控任务"/>
+                                <Button x:Name="BtnRemoveAllTasks" Content="移除所有任务" Padding="10,4" Click="BtnRemoveAllTasks_Click"
+                                        ToolTip="移除全部监控任务（剩余采样数据自动落盘）"/>
                             </StackPanel>
 
-                            <!-- 监控任务列表（显示实时值） -->
+                            <!-- 监控任务列表（显示实时值；右键行操作） -->
                             <GroupBox Header="监控任务" Grid.Row="2" Padding="8">
-                                <ListView x:Name="TaskList" SelectionChanged="TaskList_SelectionChanged">
+                                <ListView x:Name="TaskList" SelectionChanged="TaskList_SelectionChanged"
+                                          MouseRightButtonUp="TaskList_MouseRightButtonUp">
+                                    <ListView.ContextMenu>
+                                        <ContextMenu>
+                                            <MenuItem Header="停止采集" Click="MenuStopTask_Click"/>
+                                            <MenuItem Header="继续采集" Click="MenuResumeTask_Click"/>
+                                            <MenuItem Header="移除任务" Click="MenuRemoveTask_Click"/>
+                                            <Separator/>
+                                            <MenuItem Header="导出报告" Click="MenuExportTask_Click"/>
+                                        </ContextMenu>
+                                    </ListView.ContextMenu>
                                     <ListView.View>
                                         <GridView>
-                                            <GridViewColumn Header="任务名" Width="100" DisplayMemberBinding="{Binding Name}"/>
+                                            <GridViewColumn Header="任务名" Width="120" DisplayMemberBinding="{Binding Name}"/>
                                             <GridViewColumn Header="监控目标" Width="130" DisplayMemberBinding="{Binding MonitorProperty}"/>
-                                            <GridViewColumn Header="当前值" Width="140" DisplayMemberBinding="{Binding CurrentValue}"/>
+                                            <GridViewColumn Header="当前值" Width="130" DisplayMemberBinding="{Binding CurrentValue}"/>
                                             <GridViewColumn Header="采样数" Width="55" DisplayMemberBinding="{Binding SampleCount}"/>
                                             <GridViewColumn Header="状态" Width="60" DisplayMemberBinding="{Binding State}"/>
                                             <GridViewColumn Header="间隔" Width="55" DisplayMemberBinding="{Binding IntervalMs}"/>
-                                            <GridViewColumn Header="上次采样" Width="120" DisplayMemberBinding="{Binding LastSampleTime}"/>
+                                            <GridViewColumn Header="上次采样" Width="110" DisplayMemberBinding="{Binding LastSampleTime}"/>
                                         </GridView>
                                     </ListView.View>
                                 </ListView>

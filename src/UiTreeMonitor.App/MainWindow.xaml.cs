@@ -32,8 +32,21 @@ public sealed class TaskListItem : INotifyPropertyChanged
 {
     public required MonitorTaskConfig Config { get; init; }
     public string Name => Config.Name;
-    public string State { get; set; } = "Idle";
-    public int SampleCount { get; set; }
+
+    private string _state = "Idle";
+    public string State
+    {
+        get => _state;
+        set { _state = value; PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(State))); }
+    }
+
+    private int _sampleCount;
+    public int SampleCount
+    {
+        get => _sampleCount;
+        set { _sampleCount = value; PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SampleCount))); }
+    }
+
     public string TargetText => Config.Target.ToString() ?? "";
     
     /// <summary>监控目标属性名（如 ValuePattern.Value、Name 等）</summary>
@@ -74,7 +87,7 @@ public partial class MainWindow : Window
     private readonly ConcurrentQueue<MouseCaptureResult> _captureQueue = new();
     private readonly TaskScheduler _scheduler = new(workerExe: null);
     private readonly TaskConfigStore _configStore;
-    private readonly SampleCsvWriter _csvWriter;
+    private readonly SampleBatchSaver _saver;      // 批量落盘器（内存缓冲+后台写盘，不影响采集速率）
     private readonly ReportExporter _exporter;
     private readonly MouseCapture _mouseCapture = new(pollMs: 120);
 
@@ -96,7 +109,12 @@ public partial class MainWindow : Window
     private static readonly string AppDataDir =
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".ui-tree-monitor");
     private static readonly string TaskConfigDir = Path.Combine(AppDataDir, "tasks");
-    private static readonly string OutputDir = Path.Combine(AppDataDir, "exports");
+
+    /// <summary>数据保存根目录（需求：默认 D:\uitreemonitor，不存在则新建；实际数据写入 当日日期 子目录）。</summary>
+    private static readonly string DataRootDir = @"D:\uitreemonitor";
+
+    /// <summary>当日数据子目录（启动时创建；跨天后由 saver/导出器按当天日期滚动）。</summary>
+    private static string TodayDataDir => Path.Combine(DataRootDir, DateTime.Now.ToString("yyyyMMdd"));
 
     // ========== 日志：写到 E:\ui-tree-monitor\monitor.log ==========
     private static void Log(string msg)
@@ -108,8 +126,10 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         _configStore = new TaskConfigStore(TaskConfigDir);
-        _csvWriter = new SampleCsvWriter(OutputDir);
-        _exporter = new ReportExporter(OutputDir);
+        _saver = new SampleBatchSaver(DataRootDir);
+        _saver.Start();
+        _exporter = new ReportExporter(DataRootDir);
+        Directory.CreateDirectory(TodayDataDir); // 启动即创建当日数据目录
 
         TreeView.ItemsSource = _treeRoots;
         TaskList.ItemsSource = _taskItems;
@@ -125,6 +145,7 @@ public partial class MainWindow : Window
             _mouseCapture.Stop();
             HollowHighlightDriver.ClearAllHighlighters(); // 原版退出时清理全部高亮器
             _scheduler.Dispose();
+            _saver.Dispose(); // 退出前写出全部剩余采样数据
         };
     }
 
@@ -290,7 +311,9 @@ public partial class MainWindow : Window
             processName: dlg.ProcessName,
             intervalMs: dlg.IntervalMs,
             durationSec: dlg.DurationSec,
-            taskName: $"{result.ProcessName ?? "app"}-{dlg.MonitorProperty}");
+            taskName: dlg.TaskName,
+            saveBatchPoints: dlg.SaveBatchPoints,
+            saveIntervalSec: dlg.SaveIntervalSec);
     }
 
     private void OnCaptureResult(MouseCaptureResult result)
@@ -517,11 +540,14 @@ public partial class MainWindow : Window
             processName: dlg.ProcessName,
             intervalMs: dlg.IntervalMs,
             durationSec: dlg.DurationSec,
-            taskName: $"{procName}-{propName.Replace('.', '-')}");
+            taskName: dlg.TaskName,
+            saveBatchPoints: dlg.SaveBatchPoints,
+            saveIntervalSec: dlg.SaveIntervalSec);
     }
 
     /// <summary>创建并启动监控任务（统一入口）。</summary>
-    private void CreateAndStartMonitorTask(string monitorProp, string processName, int intervalMs, int durationSec, string taskName)
+    private void CreateAndStartMonitorTask(string monitorProp, string processName, int intervalMs, int durationSec,
+        string taskName, int saveBatchPoints = 1, int saveIntervalSec = 5)
     {
         if (_currentTarget is null)
         {
@@ -550,10 +576,13 @@ public partial class MainWindow : Window
             },
             Properties = new[] { monitorProp },
             Timer = new TimerSpec { IntervalMs = intervalMs },
-            OutputDirectory = OutputDir,
+            OutputDirectory = TodayDataDir,
             // 定时触发：立即首采 + 每隔 intervalMs 重复（ImmediateTriggerSpec 只触发一次，任务会停在首次采样后空转）
             Trigger = new ScheduleTriggerSpec { Repeat = true, RepeatIntervalMs = intervalMs },
         };
+
+        // 注册落盘策略：内存缓冲，后台按"每N点或每T秒（先到先写）"批量写 CSV 到当日目录
+        _saver.SetPolicy(config.Id, taskName, new SavePolicy(saveBatchPoints, saveIntervalSec));
 
         // ★ 日志：注册前检查
         System.Diagnostics.Debug.WriteLine($"[MONITOR] 准备Register: config.Id={config.Id}, Properties=[{string.Join(",", config.Properties)}]");
@@ -573,7 +602,8 @@ public partial class MainWindow : Window
         // ★ 启动实时值刷新定时器
         StartValueRefreshTimer(item);
 
-        TxtStatus.Text = $"已添加监控任务 [{taskName}]，每 {intervalMs}ms 采样一次{(durationSec > 0 ? $", 共 {durationSec} 秒" : "")}";
+        TxtStatus.Text = $"已添加监控任务 [{taskName}]，每 {intervalMs}ms 采样一次" +
+            $"{(durationSec > 0 ? $"，共 {durationSec} 秒" : "")}；数据每 {saveBatchPoints} 点或每 {saveIntervalSec} 秒落盘 → {TodayDataDir}";
     }
 
     private void PropertiesGrid_MouseRightButtonUp(object sender, MouseButtonEventArgs e)
@@ -682,15 +712,21 @@ public partial class MainWindow : Window
         {
             host.SampleTaken += (_, ev) =>
             {
+                // 仅刷新 UI（INPC 实时生效）；写盘走 saver 内存缓冲（后台批量，不占 UI/采集线程）
                 Dispatcher.Invoke(() =>
                 {
                     item.SampleCount++;
                     item.LastSampleTime = DateTime.Now.ToString("HH:mm:ss.fff");
-                    _csvWriter.Append(item.Config.Name, item.Config.Id, ev.Sample.Records);
                 });
+                _saver.Enqueue(item.Config.Id, item.Config.Name, ev.Sample.Records);
             };
             System.Diagnostics.Debug.WriteLine($"[MONITOR] 已订阅SampleTaken事件: task={item.Name}");
-            host.StateChanged += (_, s) => Dispatcher.Invoke(() => { item.State = s.ToString(); });
+            host.StateChanged += (_, s) => Dispatcher.Invoke(() =>
+            {
+                item.State = s.ToString();
+                if (s is TaskRunState.Stopped or TaskRunState.Completed or TaskRunState.Error)
+                    _saver.FlushAll(); // 任务结束时立即写出该任务剩余数据
+            });
             if (item.DurationSec > 0)
             {
                 // 限时任务：到达时长后自动停止
@@ -771,44 +807,55 @@ public partial class MainWindow : Window
         }
     }
 
-    private void BtnStopTask_Click(object sender, RoutedEventArgs e)
+    // ========== 任务操作（右键菜单 + 全局按钮） ==========
+
+    /// <summary>右键任务行：先选中该行再弹菜单（菜单命令作用于选中项）。</summary>
+    private void TaskList_MouseRightButtonUp(object sender, MouseButtonEventArgs e)
     {
-        if (TaskList.SelectedItem is TaskListItem item)
-        {
-            _scheduler.RequestStop(item.Config.Id);
-            item.State = "Stopped";
-            TaskList.Items.Refresh();
-        }
+        var dep = e.OriginalSource as DependencyObject;
+        while (dep is not null and not ListViewItem)
+            dep = VisualTreeHelper.GetParent(dep);
+        if (dep is ListViewItem row && row.DataContext is TaskListItem item)
+            TaskList.SelectedItem = item;
     }
 
-    private void BtnResumeTask_Click(object sender, RoutedEventArgs e)
+    private void MenuStopTask_Click(object sender, RoutedEventArgs e)
     {
-        if (TaskList.SelectedItem is TaskListItem item)
-        {
-            _scheduler.Resume(item.Config.Id);
-            item.State = "Running";
-            TaskList.Items.Refresh();
-            TxtStatus.Text = $"任务 [{item.Name}] 已恢复采样";
-        }
+        if (TaskList.SelectedItem is not TaskListItem item) return;
+        _scheduler.RequestStop(item.Config.Id);
+        item.State = "Stopped";
     }
 
-    private void BtnRemoveTask_Click(object sender, RoutedEventArgs e)
+    private void MenuResumeTask_Click(object sender, RoutedEventArgs e)
     {
-        if (TaskList.SelectedItem is TaskListItem item)
-        {
-            _scheduler.Remove(item.Config.Id);
-            _configStore.Delete(item.Config.Id);
-            _taskItems.Remove(item);
-        }
+        if (TaskList.SelectedItem is not TaskListItem item) return;
+        _scheduler.Resume(item.Config.Id);
+        item.State = "Running";
+        TxtStatus.Text = $"任务 [{item.Name}] 已恢复采样";
     }
 
-    private void BtnExport_Click(object sender, RoutedEventArgs e)
+    private void MenuRemoveTask_Click(object sender, RoutedEventArgs e)
+    {
+        if (TaskList.SelectedItem is not TaskListItem item) return;
+        _scheduler.Remove(item.Config.Id);
+        _configStore.Delete(item.Config.Id);
+        _saver.RemoveTask(item.Config.Id); // 写出剩余数据并注销
+        _taskItems.Remove(item);
+        StopValueRefreshTimer(item.Config.Id);
+        TxtStatus.Text = $"任务 [{item.Name}] 已移除，数据已落盘";
+    }
+
+    private void MenuExportTask_Click(object sender, RoutedEventArgs e) => ExportSelectedTask();
+
+    /// <summary>导出选中任务报告（CSV/JSON/HTML 含 SVG 走势图）。</summary>
+    private void ExportSelectedTask()
     {
         if (TaskList.SelectedItem is not TaskListItem item)
         {
             TxtStatus.Text = "请先选中一个任务";
             return;
         }
+        _saver.FlushAll(); // 先把内存缓冲写盘，报告与实时数据一致
         var host = _scheduler.GetHost(item.Config.Id);
         var records = host is not null ? host.Records.ToList() : new List<SampleRecord>();
         var files = _exporter.ExportAll(item.Config.Name, item.Config.Id, item.Config,
@@ -816,6 +863,46 @@ public partial class MainWindow : Window
         TxtStatus.Text = $"已导出：{string.Join(" | ", files)}";
         MessageBox.Show($"报告已导出到：\n{string.Join("\n", files)}", "导出完成",
             MessageBoxButton.OK, MessageBoxImage.Information);
+    }
+
+    private void BtnStopAllTasks_Click(object sender, RoutedEventArgs e)
+    {
+        _scheduler.RequestStopAll();
+        foreach (var item in _taskItems) item.State = "Stopped";
+        TxtStatus.Text = $"已停止全部任务（{_taskItems.Count} 个）";
+    }
+
+    private void BtnRemoveAllTasks_Click(object sender, RoutedEventArgs e)
+    {
+        if (_taskItems.Count == 0) return;
+        var count = _taskItems.Count;
+        foreach (var item in _taskItems.ToList())
+        {
+            _scheduler.Remove(item.Config.Id);
+            _configStore.Delete(item.Config.Id);
+            _saver.RemoveTask(item.Config.Id); // 写出剩余数据并注销
+            StopValueRefreshTimer(item.Config.Id);
+        }
+        _taskItems.Clear();
+        TxtStatus.Text = $"已移除全部任务（{count} 个），剩余数据已落盘";
+    }
+
+    /// <summary>打开数据保存文件夹（不存在则新建，默认当日子目录）。</summary>
+    private void BtnOpenDataDir_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            Directory.CreateDirectory(TodayDataDir);
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = TodayDataDir,
+                UseShellExecute = true,
+            });
+        }
+        catch (Exception ex)
+        {
+            TxtStatus.Text = $"打开数据目录失败: {ex.Message}";
+        }
     }
 
     private void TaskList_SelectionChanged(object sender, SelectionChangedEventArgs e)

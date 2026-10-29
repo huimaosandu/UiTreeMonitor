@@ -1,10 +1,22 @@
 <Window x:Class="UiTreeMonitor.App.AddMonitorDialog"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="添加监控对象" Height="400" Width="520"
+        Title="添加监控对象" Height="480" Width="540"
         WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
         FontFamily="Microsoft YaHei" FontSize="13">
     <StackPanel Margin="20,16">
+
+        <!-- 任务名称（可自由编辑） -->
+        <Grid Margin="0,0,0,8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="90"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Text="任务名称：" VerticalAlignment="Center"/>
+            <TextBox x:Name="TxtTaskName" Grid.Column="1" Height="28" VerticalContentAlignment="Center"
+                     ToolTip="可自由编辑，默认：进程-属性"/>
+        </Grid>
+
         <!-- 监控目标 -->
         <Grid Margin="0,0,0,8">
             <Grid.ColumnDefinitions>
@@ -32,34 +44,81 @@
 
         <Separator Margin="0,0,0,12"/>
 
-        <!-- 采集间隔 -->
-        <TextBlock Text="采集间隔：" FontWeight="Bold" Margin="0,0,0,6"/>
-        <WrapPanel Margin="12,0,0,8">
-            <RadioButton x:Name="RbInterval500" Content="500ms" IsChecked="False" GroupName="Interval" Margin="0,0,18,0" FontSize="13"/>
-            <RadioButton x:Name="RbInterval1000" Content="1秒" IsChecked="True" GroupName="Interval" Margin="0,0,18,0" FontSize="13"/>
-            <RadioButton x:Name="RbInterval3000" Content="3秒" IsChecked="False" GroupName="Interval" Margin="0,0,18,0" FontSize="13"/>
-            <TextBlock Text="自定义:" VerticalAlignment="Center" Margin="0,0,6,0"/>
-            <TextBox x:Name="TxtCustomInterval" Width="80" Height="26" VerticalContentAlignment="Center" FontSize="12" ToolTip="毫秒，最小100"/>
-        </WrapPanel>
+        <!-- 采集间隔：数字 + 单位 -->
+        <Grid Margin="0,0,0,10">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="90"/>
+                <ColumnDefinition Width="110"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Text="采集间隔：" VerticalAlignment="Center"/>
+            <TextBox x:Name="TxtIntervalValue" Grid.Column="1" Height="28" VerticalContentAlignment="Center"
+                     Text="500" ToolTip="最小 100ms"/>
+            <ComboBox x:Name="CmbIntervalUnit" Grid.Column="2" Margin="6,0,0,0" Width="70" Height="28"
+                      SelectedIndex="0" VerticalContentAlignment="Center">
+                <ComboBoxItem Content="ms" Tag="1"/>
+                <ComboBoxItem Content="s" Tag="1000"/>
+                <ComboBoxItem Content="min" Tag="60000"/>
+                <ComboBoxItem Content="h" Tag="3600000"/>
+            </ComboBox>
+            <TextBlock Grid.Column="3" Text="（最小 100ms）" VerticalAlignment="Center" Margin="8,0,0,0"
+                       Foreground="#999999" FontSize="12"/>
+        </Grid>
 
-        <!-- 监控时长 -->
-        <TextBlock Text="监控时长：" FontWeight="Bold" Margin="0,0,0,6"/>
-        <WrapPanel Margin="12,0,0,12">
-            <RadioButton x:Name="RbDuration0" Content="无限" IsChecked="True" GroupName="Duration" Margin="0,0,18,0" FontSize="13"/>
-            <RadioButton x:Name="RbDuration60" Content="1分钟" IsChecked="False" GroupName="Duration" Margin="0,0,18,0" FontSize="13"/>
-            <RadioButton x:Name="RbDuration300" Content="5分钟" IsChecked="False" GroupName="Duration" Margin="0,0,18,0" FontSize="13"/>
-            <TextBlock Text="自定义:" VerticalAlignment="Center" Margin="0,0,6,0"/>
-            <TextBox x:Name="TxtCustomDuration" Width="80" Height="26" VerticalContentAlignment="Center" FontSize="12" ToolTip="秒，0=无限"/>
-        </WrapPanel>
+        <!-- 监控时长：数字 + 单位 -->
+        <Grid Margin="0,0,0,10">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="90"/>
+                <ColumnDefinition Width="110"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Text="监控时长：" VerticalAlignment="Center"/>
+            <TextBox x:Name="TxtDurationValue" Grid.Column="1" Height="28" VerticalContentAlignment="Center"
+                     Text="0" ToolTip="0 = 无限监控"/>
+            <ComboBox x:Name="CmbDurationUnit" Grid.Column="2" Margin="6,0,0,0" Width="70" Height="28"
+                      SelectedIndex="1" VerticalContentAlignment="Center">
+                <ComboBoxItem Content="s" Tag="1"/>
+                <ComboBoxItem Content="min" Tag="60"/>
+                <ComboBoxItem Content="h" Tag="3600"/>
+            </ComboBox>
+            <TextBlock Grid.Column="3" Text="（0 = 无限）" VerticalAlignment="Center" Margin="8,0,0,0"
+                       Foreground="#999999" FontSize="12"/>
+        </Grid>
+
+        <Separator Margin="0,0,0,12"/>
+
+        <!-- 数据保存策略 -->
+        <TextBlock Text="数据保存：" FontWeight="Bold" Margin="0,0,0,6"/>
+        <Grid Margin="12,0,0,8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="70"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="70"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Text="每" VerticalAlignment="Center"/>
+            <TextBox x:Name="TxtSavePoints" Grid.Column="1" Height="26" Margin="4,0" VerticalContentAlignment="Center"
+                     Text="1" ToolTip="积攒多少个采样点批量写盘一次；1 = 每点即存"/>
+            <TextBlock Grid.Column="2" Text="点保存，或每" VerticalAlignment="Center" Margin="4,0,4,0"/>
+            <TextBox x:Name="TxtSaveSeconds" Grid.Column="3" Height="26" Width="70" VerticalContentAlignment="Center"
+                     Text="5" ToolTip="最长间隔多少秒写盘一次（先到条件先触发）；0 = 不按时间"/>
+            <TextBlock Grid.Column="4" Text="秒保存" VerticalAlignment="Center" Margin="4,0,0,0"/>
+        </Grid>
+        <TextBlock Foreground="#666666" FontSize="12" TextWrapping="Wrap" Margin="12,0,0,8"
+                   Text="采样先进内存缓冲，后台线程按上述条件批量写入 CSV（先到者先写），不占用采集线程；任务停止/程序退出时自动写完剩余数据。"/>
 
         <TextBlock Foreground="#666666" FontSize="12" TextWrapping="Wrap"
-                 Text="任务启动后将按设定间隔持续采样目标属性的当前值，并在任务列表中实时显示。"/>
+                   Text="任务启动后将按设定间隔持续采样目标属性的当前值，并在任务列表中实时显示。"/>
 
         <!-- 按钮 -->
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,8">
-            <Button x:Name="BtnOK" Content="确定添加并启动" Padding="28,8" Click="BtnOK_Click" 
+            <Button x:Name="BtnOK" Content="确定添加并启动" Padding="28,8" Click="BtnOK_Click"
                     IsDefault="True" MinWidth="150" FontSize="13" FontWeight="Bold"/>
-            <Button x:Name="BtnCancel" Content="取消" Padding="28,8" Margin="20,0,0,0" Click="BtnCancel_Click" 
+            <Button x:Name="BtnCancel" Content="取消" Padding="28,8" Margin="20,0,0,0" Click="BtnCancel_Click"
                     IsCancel="True" MinWidth="80" FontSize="13"/>
         </StackPanel>
     </StackPanel>
