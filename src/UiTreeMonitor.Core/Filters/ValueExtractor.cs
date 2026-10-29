@@ -32,7 +32,9 @@ public static class ValueExtractor
     /// <summary>
     /// 把"用户在示例值中插入标记"的文本编译为锚点提取正则：
     /// 解析第一个标记与第二个标记的位置，标记前文本=前缀锚点、标记之间=捕获组、标记后文本=后缀锚点。
-    /// 示例：Value = "@@614.466@@"（标记 @@）→ \QValue = "\E(.*?)\Q"\E → 对实际值提取 614.466。
+    /// 锚点中的连续数字段模糊为 \d+ 通配（示例里的数字是"占位"：如示例后缀 .561 对实际值 .123 也能匹配）。
+    /// 示例：Value = "@@603.561@@"（标记 @@）→ \QValue = "\E(.*?)\Q"\E → 对实际值提取 603.561；
+    ///       Value = "@@603@@.561" → 后缀 \.\d+ → 实际值 605.123 提取 605（整数部分）。
     /// 返回 null 表示文本中没有成对标记（无法编译）。
     /// </summary>
     public static string? CompileFromMarkedSample(string sample, string marker)
@@ -49,10 +51,31 @@ public static class ValueExtractor
         string suffix = sample[(i2 + marker.Length)..];
 
         var sb = new StringBuilder();
-        if (prefix.Length > 0) sb.Append(Regex.Escape(prefix));
+        if (prefix.Length > 0) sb.Append(AnchorPattern(prefix));
         // 有后缀锚点用非贪婪（取最短）；无后缀必须用贪婪（非贪婪会匹配空串）
         sb.Append(suffix.Length > 0 ? "(.*?)" : "(.*)");
-        if (suffix.Length > 0) sb.Append(Regex.Escape(suffix));
+        if (suffix.Length > 0) sb.Append(AnchorPattern(suffix));
+        return sb.ToString();
+    }
+
+    /// <summary>锚点转正则：连续数字段 → \d+ 通配（示例数字视为占位符），其余字符按字面转义。</summary>
+    private static string AnchorPattern(string text)
+    {
+        var sb = new StringBuilder();
+        int i = 0;
+        while (i < text.Length)
+        {
+            if (char.IsDigit(text[i]))
+            {
+                while (i < text.Length && char.IsDigit(text[i])) i++;
+                sb.Append(@"\d+");
+            }
+            else
+            {
+                sb.Append(Regex.Escape(text[i..(i + 1)]));
+                i++;
+            }
+        }
         return sb.ToString();
     }
 

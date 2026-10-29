@@ -55,14 +55,21 @@ public sealed class ExtractRuleItem : INotifyPropertyChanged
     public event PropertyChangedEventHandler? PropertyChanged;
 }
 
+/// <summary>监控目标下拉选项（Properties/Patterns 属性名 + 当前值示例）。</summary>
+public sealed record TargetOption(string Name, string? Value);
+
 /// <summary>"添加监控对象"弹窗（右键 Details 属性/Pattern 时弹出）。</summary>
 public partial class AddMonitorDialog : Window
 {
     private readonly ObservableCollection<ExtractRuleItem> _rules = new();
     private string _marker = "@@"; // 当前截取标记（构造时按全局设置初始化）
+    private readonly Func<string, bool>? _nameExists; // 重名校验（弹窗内提示，不关弹窗）
+    private readonly string _monitorProperty; // 下拉初始选中项（兜底：下拉无此项时用）
+    private string _currentSample = ""; // 当前示例值（目标切换时更新未编辑过的规则行）
 
     public string TaskName { get; private set; } = "";
-    public string MonitorProperty { get; private set; } = "";
+    /// <summary>监控目标：下拉选择（Properties 属性名 / Pattern.子属性 路径）。</summary>
+    public string MonitorProperty => (CmbMonitorProperty.SelectedItem as TargetOption)?.Name ?? _monitorProperty;
     public string ProcessName { get; private set; } = "";
     public int IntervalMs { get; private set; } = 500;
     public int DurationSec { get; private set; } = 0; // 0=无限
@@ -75,14 +82,29 @@ public partial class AddMonitorDialog : Window
     public bool Confirmed { get; private set; }
 
     public AddMonitorDialog(string monitorProperty, string processName, string? defaultMarker = null,
-        string? sampleValue = null)
+        string? sampleValue = null, Func<string, bool>? nameExists = null,
+        IReadOnlyList<TargetOption>? targetOptions = null)
     {
         InitializeComponent();
-        TxtMonitorProperty.Text = monitorProperty;
+        // 打开即完整显示全部内容（超出屏幕时仍可滚动/拉伸：MaxHeight 限制 + 用户拖动后自动转手动尺寸）
+        MaxHeight = SystemParameters.WorkArea.Height - 60;
+        _nameExists = nameExists;
+        _monitorProperty = monitorProperty;
         TxtProcessName.Text = processName;
-        MonitorProperty = monitorProperty;
         ProcessName = processName;
         TxtSampleValue.Text = sampleValue ?? "";
+        _currentSample = TxtSampleValue.Text;
+
+        // 监控目标下拉：当前元素 Properties + Patterns 的全部可监控属性；初始选中右键项
+        var options = targetOptions is { Count: > 0 }
+            ? targetOptions.ToList()
+            : new List<TargetOption> { new(monitorProperty, sampleValue) };
+        if (options.All(o => o.Name != monitorProperty))
+            options.Insert(0, new TargetOption(monitorProperty, sampleValue));
+        CmbMonitorProperty.ItemsSource = options;
+        CmbMonitorProperty.SelectedItem = options.First(o => o.Name == monitorProperty);
+        CmbMonitorProperty.SelectionChanged += CmbMonitorProperty_SelectionChanged;
+
         // 任务名默认：进程-属性（属性中的 . 换成 -，可自由编辑）
         TxtTaskName.Text = $"{processName}-{monitorProperty.Replace('.', '-')}";
         // 默认一条规则：预填当前值（用户在其中插入标记圈出要提取的部分）
@@ -96,6 +118,17 @@ public partial class AddMonitorDialog : Window
         // 保存策略候选联动：切换单选时启用/禁用对应输入
         RbSaveByPoints.Checked += (_, _) => SetSaveModeEnabled(byPoints: true);
         RbSaveByTime.Checked += (_, _) => SetSaveModeEnabled(byPoints: false);
+    }
+
+    /// <summary>切换监控目标：更新示例值；未编辑过的规则行（仍等于旧示例）跟随重置。</summary>
+    private void CmbMonitorProperty_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (CmbMonitorProperty.SelectedItem is not TargetOption opt || opt.Value is null) return;
+        TxtSampleValue.Text = opt.Value;
+        foreach (var r in _rules)
+            if (string.Equals(r.Sample, _currentSample, StringComparison.Ordinal))
+                r.Sample = opt.Value; // 预填未动的规则行跟随新示例；已插入标记的保留用户编辑
+        _currentSample = opt.Value;
     }
 
     private void SetSaveModeEnabled(bool byPoints)
@@ -151,6 +184,16 @@ public partial class AddMonitorDialog : Window
         TaskName = string.IsNullOrWhiteSpace(TxtTaskName.Text)
             ? $"{ProcessName}-{MonitorProperty.Replace('.', '-')}"
             : TxtTaskName.Text.Trim();
+
+        // ★ 重名检查：弹窗内提示并留在本弹窗（保留已编辑内容），用户改完再点确定
+        if (_nameExists?.Invoke(TaskName) == true)
+        {
+            MessageBox.Show(this, $"任务名称 \"{TaskName}\" 已存在。\n请修改任务名称后重新点击\"确定添加并启动\"。",
+                "任务名称重复", MessageBoxButton.OK, MessageBoxImage.Warning);
+            TxtTaskName.Focus();
+            TxtTaskName.SelectAll();
+            return;
+        }
 
         // 采集间隔：数字 × 单位（最小 100ms）
         if (!double.TryParse(TxtIntervalValue.Text.Trim(), out var iv)) iv = 500;

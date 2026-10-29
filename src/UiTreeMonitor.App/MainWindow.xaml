@@ -15,15 +15,18 @@
         <!-- ===== 顶部工具条 ===== -->
         <Border Grid.Row="0" Background="#F5F5F5" BorderBrush="#DDDDDD" BorderThickness="0,0,0,1" Padding="10,8">
             <DockPanel>
-                <TextBlock Text="目标窗口：" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                <!-- 数据目录/设置 靠最右（先 Dock Right 占据右端） -->
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                    <Button x:Name="BtnOpenDataDir" Content="数据目录" Margin="8,0,0,0" Padding="10,4"
+                            Click="BtnOpenDataDir_Click" ToolTip="打开数据保存文件夹（D:\uitreemonitor\当日日期）"/>
+                    <Button x:Name="BtnSettings" Content="设置" Margin="8,0,0,0" Padding="10,4"
+                            Click="BtnSettings_Click" ToolTip="设置截取字符等全局选项"/>
+                </StackPanel>
+                <TextBlock Text="目标窗口：" VerticalAlignment="Center" Margin="0,0,6,0" DockPanel.Dock="Left"/>
                 <ComboBox x:Name="WindowCombo" Width="360" VerticalAlignment="Center" DockPanel.Dock="Left"/>
                 <Button x:Name="BtnRefreshWindows" Content="刷新窗口" Margin="8,0,0,0" Padding="10,4" Click="BtnRefreshWindows_Click" DockPanel.Dock="Left"/>
                 <Button x:Name="BtnCaptureTree" Content="抓取结构树" Margin="8,0,0,0" Padding="10,4" Click="BtnCaptureTree_Click" DockPanel.Dock="Left"/>
                 <Button x:Name="BtnMouseCapture" Content="随鼠标捕获" Margin="8,0,0,0" Padding="10,4" Click="BtnMouseCapture_Click" DockPanel.Dock="Left"/>
-                <Button x:Name="BtnOpenDataDir" Content="数据目录" Margin="8,0,0,0" Padding="10,4" Click="BtnOpenDataDir_Click"
-                        DockPanel.Dock="Left" ToolTip="打开数据保存文件夹（D:\uitreemonitor\当日日期）"/>
-                <Button x:Name="BtnSettings" Content="设置" Margin="8,0,0,0" Padding="10,4" Click="BtnSettings_Click"
-                        DockPanel.Dock="Left" ToolTip="设置截取字符等全局选项"/>
                 <TextBlock x:Name="TxtCaptureStatus" Text="" VerticalAlignment="Center" Margin="12,0,0,0" Foreground="#666666"/>
             </DockPanel>
         </Border>
@@ -161,7 +164,7 @@
                                             <MenuItem Header="继续采集" Click="MenuResumeTask_Click"/>
                                             <MenuItem Header="移除任务" Click="MenuRemoveTask_Click"/>
                                             <Separator/>
-                                            <MenuItem Header="导出报告" Click="MenuExportTask_Click"/>
+                                            <MenuItem Header="生成数据图" Click="MenuExportTask_Click"/>
                                         </ContextMenu>
                                     </ListView.ContextMenu>
                                     <ListView.View>

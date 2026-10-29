@@ -308,7 +308,8 @@ public partial class MainWindow : Window
         }
 
         // ★ 烧杯按钮也弹出"添加监控"对话框（与右键菜单统一体验）；传入当前值作提取规则示例
-        var dlg = new AddMonitorDialog("Name", result.ProcessName ?? "", _settings.ExtractMarker, result.Name);
+        var dlg = new AddMonitorDialog("Name", result.ProcessName ?? "", _settings.ExtractMarker, result.Name,
+            nameExists: TaskNameExists, targetOptions: GetTargetOptionsFromDetails());
         dlg.Owner = this;
         if (dlg.ShowDialog() != true || !dlg.Confirmed) return;
 
@@ -537,7 +538,8 @@ public partial class MainWindow : Window
         }
 
         // 弹出"添加监控"对话框（传入当前值作提取规则示例）
-        var dlg = new AddMonitorDialog(propName, procName, _settings.ExtractMarker, propValue);
+        var dlg = new AddMonitorDialog(propName, procName, _settings.ExtractMarker, propValue,
+            nameExists: TaskNameExists, targetOptions: GetTargetOptionsFromDetails());
         dlg.Owner = this;
         if (dlg.ShowDialog() != true || !dlg.Confirmed) return;
 
@@ -551,6 +553,32 @@ public partial class MainWindow : Window
             saveBatchPoints: dlg.SaveBatchPoints,
             saveIntervalSec: dlg.SaveIntervalSec,
             extractors: dlg.Extractors);
+    }
+
+    /// <summary>任务重名校验（传给 AddMonitorDialog 在弹窗内提示，不关闭弹窗）。</summary>
+    private bool TaskNameExists(string name)
+        => _taskItems.Any(t => string.Equals(t.Name, name, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// 从 Details 面板当前元素构建监控目标下拉选项：
+    /// Properties 的属性名 + Patterns 的 "Pattern.子属性" 路径（含各自当前值作示例）。
+    /// </summary>
+    private List<TargetOption> GetTargetOptionsFromDetails()
+    {
+        var options = new List<TargetOption>();
+        if (PropertiesGrid.ItemsSource is IEnumerable<PropertyItem> props)
+            options.AddRange(props.Select(p => new TargetOption(p.Name, p.FullValue)));
+        if (PatternsTree.ItemsSource is IEnumerable<PatternItem> pats)
+        {
+            foreach (var pat in pats)
+            {
+                if (pat.SubProperties.Count > 0)
+                    options.AddRange(pat.SubProperties.Select(sp => new TargetOption($"{pat.Name}.{sp.Name}", sp.FullValue)));
+                else
+                    options.Add(new TargetOption(pat.Name, pat.Value));
+            }
+        }
+        return options;
     }
 
     /// <summary>创建并启动监控任务（统一入口）。</summary>

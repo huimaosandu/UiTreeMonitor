@@ -232,6 +232,29 @@ public class ValueExtractorTests
     }
 
     [Fact]
+    public void CompileMarkedSample_DigitSuffixFuzzy_ExtractsIntegerPart()
+    {
+        // 需求2：示例 Value = "@@603@@.561"（只圈整数部分）——后缀 .561 的数字是占位，
+        // 实际值小数变化（605.123）时仍匹配 → 提取 605（数字可被图表识别）
+        var rule = UiTreeMonitor.Core.Filters.ValueExtractor.CompileFromMarkedSample(
+            "Value = \"@@603@@.561\"", "@@");
+        Assert.NotNull(rule);
+        Assert.Equal("605",
+            UiTreeMonitor.Core.Filters.ValueExtractor.ExtractOne("Value = \"605.123\"", rule!));
+    }
+
+    [Fact]
+    public void CompileMarkedSample_TextCapture_StillCollected()
+    {
+        // 需求3：圈住文本（Value ）也要能提取采集；后缀 ="603.561" 数字模糊后照常匹配实际值
+        var rule = UiTreeMonitor.Core.Filters.ValueExtractor.CompileFromMarkedSample(
+            "Value = \"@@Value @@=\"603.561\"", "@@");
+        Assert.NotNull(rule);
+        Assert.Equal("Value ",
+            UiTreeMonitor.Core.Filters.ValueExtractor.ExtractOne("Value = \"Value =\"605.123\"", rule!));
+    }
+
+    [Fact]
     public void NoRules_ReturnsRawValue()
     {
         var result = UiTreeMonitor.Core.Filters.ValueExtractor.ExtractAll("612.872", Array.Empty<string>());
