@@ -176,7 +176,7 @@
 
         <!-- 按钮区：固定在窗口底部，不随内容滚动 -->
         <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
-            <Button x:Name="BtnOK" Content="确定添加并启动" Padding="28,8" Click="BtnOK_Click"
+            <Button x:Name="BtnOK" Content="确定添加" Padding="28,8" Click="BtnOK_Click"
                     IsDefault="True" MinWidth="150" FontSize="13" FontWeight="Bold"/>
             <Button x:Name="BtnCancel" Content="取消" Padding="28,8" Margin="20,0,0,0" Click="BtnCancel_Click"
                     IsCancel="True" MinWidth="80" FontSize="13"/>

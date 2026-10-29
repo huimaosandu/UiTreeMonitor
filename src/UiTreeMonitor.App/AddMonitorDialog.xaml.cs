@@ -213,7 +213,7 @@ public partial class AddMonitorDialog : Window
         // ★ 重名检查：弹窗内提示并留在本弹窗（保留已编辑内容），用户改完再点确定
         if (_nameExists?.Invoke(TaskName) == true)
         {
-            MessageBox.Show(this, $"任务名称 \"{TaskName}\" 已存在。\n请修改任务名称后重新点击\"确定添加并启动\"。",
+            MessageBox.Show(this, $"任务名称 \"{TaskName}\" 已存在。\n请修改任务名称后重新点击\"确定添加\"。",
                 "任务名称重复", MessageBoxButton.OK, MessageBoxImage.Warning);
             TxtTaskName.Focus();
             TxtTaskName.SelectAll();

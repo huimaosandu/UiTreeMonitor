@@ -3,6 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="clr-namespace:UiTreeMonitor.App"
         Title="UI 结构树监控平台" Height="760" Width="1280"
+        Icon="Assets/app.ico"
         WindowStartupLocation="CenterScreen"
         FontFamily="Microsoft YaHei" FontSize="13">
     <Grid>
@@ -160,6 +161,7 @@
                                           MouseRightButtonUp="TaskList_MouseRightButtonUp">
                                     <ListView.ContextMenu>
                                         <ContextMenu>
+                                            <MenuItem Header="启动采集" Click="MenuStartTask_Click"/>
                                             <MenuItem Header="停止采集" Click="MenuStopTask_Click"/>
                                             <MenuItem Header="继续采集" Click="MenuResumeTask_Click"/>
                                             <MenuItem Header="移除任务" Click="MenuRemoveTask_Click"/>

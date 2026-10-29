@@ -313,7 +313,7 @@ public partial class MainWindow : Window
         dlg.Owner = this;
         if (dlg.ShowDialog() != true || !dlg.Confirmed) return;
 
-        CreateAndStartMonitorTask(
+        CreateMonitorTask(
             monitorProp: dlg.MonitorProperty,
             processName: dlg.ProcessName,
             intervalMs: dlg.IntervalMs,
@@ -544,7 +544,7 @@ public partial class MainWindow : Window
         if (dlg.ShowDialog() != true || !dlg.Confirmed) return;
 
         // 创建监控任务
-        CreateAndStartMonitorTask(
+        CreateMonitorTask(
             monitorProp: dlg.MonitorProperty,
             processName: dlg.ProcessName,
             intervalMs: dlg.IntervalMs,
@@ -581,9 +581,10 @@ public partial class MainWindow : Window
         return options;
     }
 
-    /// <summary>创建并启动监控任务（统一入口）。</summary>
-    private void CreateAndStartMonitorTask(string monitorProp, string processName, int intervalMs, int durationSec,
-        string taskName, int saveBatchPoints = 1, int saveIntervalSec = 5, IReadOnlyList<string>? extractors = null)
+    /// <summary>创建监控任务（统一入口）。autoStart=false（默认）：仅创建不启动，右键任务行"启动采集"开始。</summary>
+    private void CreateMonitorTask(string monitorProp, string processName, int intervalMs, int durationSec,
+        string taskName, int saveBatchPoints = 1, int saveIntervalSec = 5,
+        IReadOnlyList<string>? extractors = null, bool autoStart = false)
     {
         if (_currentTarget is null)
         {
@@ -634,7 +635,7 @@ public partial class MainWindow : Window
 
         // ★ 日志：注册前检查
         System.Diagnostics.Debug.WriteLine($"[MONITOR] 准备Register: config.Id={config.Id}, Properties=[{string.Join(",", config.Properties)}]");
-        try { _scheduler.Register(config); System.Diagnostics.Debug.WriteLine($"[MONITOR] Register成功"); }
+        try { _scheduler.Register(config, start: autoStart); System.Diagnostics.Debug.WriteLine($"[MONITOR] Register成功 start={autoStart}"); }
         catch (Exception ex) { TxtStatus.Text = $"注册任务失败: {ex.Message}"; System.Diagnostics.Debug.WriteLine($"[MONITOR] Register失败: {ex}"); return; }
         var item = new TaskListItem
         {
@@ -643,7 +644,7 @@ public partial class MainWindow : Window
             TargetProcessName = processName,
             IntervalMs = intervalMs,
             DurationSec = durationSec,
-            State = "Running",
+            State = autoStart ? "Running" : "Idle",
         };
         _taskItems.Add(item);
 
@@ -654,8 +655,10 @@ public partial class MainWindow : Window
         var saveDesc = saveBatchPoints == int.MaxValue
             ? $"每 {saveIntervalSec} 秒落盘"
             : $"每 {saveBatchPoints} 点落盘";
-        TxtStatus.Text = $"已添加监控任务 [{taskName}]，每 {intervalMs}ms 采样一次" +
-            $"{(durationSec > 0 ? $"，共 {durationSec} 秒" : "")}；数据{saveDesc} → {TodayDataDir}";
+        TxtStatus.Text = autoStart
+            ? $"已添加监控任务 [{taskName}]，每 {intervalMs}ms 采样一次" +
+              $"{(durationSec > 0 ? $"，共 {durationSec} 秒" : "")}；数据{saveDesc} → {TodayDataDir}"
+            : $"已创建监控任务 [{taskName}]（未启动），右键任务行 →「启动采集」开始采样；数据{saveDesc} → {TodayDataDir}";
     }
 
     private void PropertiesGrid_MouseRightButtonUp(object sender, MouseButtonEventArgs e)
@@ -737,7 +740,7 @@ public partial class MainWindow : Window
             return;
         }
         // 兜底：直接用当前选中节点的 Name 属性
-        CreateAndStartMonitorTask(
+        CreateMonitorTask(
             monitorProp: "Name",
             processName: _selectedNode.ProcessName ?? _currentTarget?.ProcessName ?? "",
             intervalMs: 1000,
@@ -784,12 +787,14 @@ public partial class MainWindow : Window
             });
             if (item.DurationSec > 0)
             {
-                // 限时任务：到达时长后自动停止
-                var stopAt = DateTime.Now.AddSeconds(item.DurationSec);
+                // 限时任务：从任务真正进入 Running（首次启动）起算，Idle（未启动）不计时
+                DateTime? startedAt = null;
                 var checkTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
                 checkTimer.Tick += (_, _) =>
                 {
-                    if (DateTime.Now >= stopAt)
+                    if (string.Equals(item.State, "Idle", StringComparison.OrdinalIgnoreCase)) return; // 未启动：等待
+                    startedAt ??= DateTime.Now; // 首次启动时刻
+                    if (DateTime.Now - startedAt.Value >= TimeSpan.FromSeconds(item.DurationSec))
                     {
                         checkTimer.Stop();
                         StopValueRefreshTimer(item.Config.Id);
@@ -879,6 +884,19 @@ public partial class MainWindow : Window
             dep = VisualTreeHelper.GetParent(dep);
         if (dep is ListViewItem row && row.DataContext is TaskListItem item)
             TaskList.SelectedItem = item;
+    }
+
+    /// <summary>启动采集：未启动（Idle）→ 首次启动；已停止（Stopped）→ 恢复采样。</summary>
+    private void MenuStartTask_Click(object sender, RoutedEventArgs e)
+    {
+        if (TaskList.SelectedItem is not TaskListItem item) return;
+        if (string.Equals(item.State, "Running", StringComparison.OrdinalIgnoreCase)) return; // 已在运行
+        if (string.Equals(item.State, "Idle", StringComparison.OrdinalIgnoreCase))
+            _scheduler.Start(item.Config.Id);
+        else
+            _scheduler.Resume(item.Config.Id);
+        item.State = "Running";
+        TxtStatus.Text = $"任务 [{item.Name}] 已启动采集（每 {item.IntervalMs}ms 采样一次）";
     }
 
     private void MenuStopTask_Click(object sender, RoutedEventArgs e)

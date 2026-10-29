@@ -21,8 +21,8 @@ public sealed class TaskScheduler : IDisposable
         _workerExe = workerExe;
     }
 
-    /// <summary>注册任务并启动。hostMode: thread=默认线程；process=进程隔离（需 workerExe）。</summary>
-    public Guid Register(MonitorTaskConfig config, string hostMode = "thread")
+    /// <summary>注册任务。hostMode: thread=默认线程；process=进程隔离（需 workerExe）。start=false 时仅创建不启动（后续用 Start 启动）。</summary>
+    public Guid Register(MonitorTaskConfig config, string hostMode = "thread", bool start = true)
     {
         IMonitorHost host = hostMode switch
         {
@@ -42,8 +42,14 @@ public sealed class TaskScheduler : IDisposable
         if (!_hosts.TryAdd(config.Id, host))
             throw new InvalidOperationException($"任务 {config.Name} 已存在");
 
-        host.Start();
+        if (start) host.Start();
         return config.Id;
+    }
+
+    /// <summary>启动已注册但未启动的任务（Idle → Running）。</summary>
+    public void Start(Guid id)
+    {
+        if (_hosts.TryGetValue(id, out var h)) h.Start();
     }
 
     /// <summary>查询其他任务最新值（跨树触发器用）。</summary>
