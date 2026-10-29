@@ -137,92 +137,32 @@
                                 <RowDefinition Height="*"/>
                             </Grid.RowDefinitions>
 
-                            <!-- 新建监控任务表单（简化版：监控目标=属性项） -->
-                            <GroupBox Header="新建监控任务" Grid.Row="0" Padding="8" Margin="0,0,0,8">
-                                <Grid>
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="Auto"/>
-                                        <ColumnDefinition Width="*"/>
-                                        <ColumnDefinition Width="Auto"/>
-                                        <ColumnDefinition Width="*"/>
-                                    </Grid.ColumnDefinitions>
-                                    <Grid.RowDefinitions>
-                                        <RowDefinition Height="Auto"/>
-                                        <RowDefinition Height="Auto"/>
-                                        <RowDefinition Height="Auto"/>
-                                        <RowDefinition Height="Auto"/>
-                                    </Grid.RowDefinitions>
-
-                                    <TextBlock Text="任务名：" VerticalAlignment="Center"/>
-                                    <TextBox x:Name="TxtTaskName" Grid.Column="1" Margin="4,2" Text="任务1"/>
-
-                                    <TextBlock Text="监控目标：" Grid.Column="2" VerticalAlignment="Center" Margin="8,0,0,0"
-                                               ToolTip="从左侧 Details 面板的 Properties/Patterns 中右键选择，或手动输入属性名（如 Name、Value、ToggleState）"/>
-                                    <ComboBox x:Name="CmbMonitorProperty" Grid.Column="3" Margin="4,2" IsEditable="True"
-                                              ToolTip="要监控的 UIA 属性或 Pattern 值">
-                                        <ComboBoxItem Content="Name"/>
-                                        <ComboBoxItem Content="Value"/>
-                                        <ComboBoxItem Content="ToggleState"/>
-                                        <ComboBoxItem Content="RangeValue"/>
-                                        <ComboBoxItem Content="IsEnabled"/>
-                                        <ComboBoxItem Content="BoundingRectangle"/>
-                                        <ComboBoxItem Content="HelpText"/>
-                                        <ComboBoxItem Content="ClassName"/>
-                                        <ComboBoxItem Content="AutomationId"/>
-                                    </ComboBox>
-
-                                    <TextBlock Text="正则过滤：" Grid.Row="1" VerticalAlignment="Center"
-                                               ToolTip="提取规则：如 Value~^37\.5 或 ToggleState~On"/>
-                                    <TextBox x:Name="TxtFilter" Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="3"
-                                             Margin="4,2" Text="" ToolTip="留空=监控全部变化；格式：属性名~正则表达式"/>
-
-                                    <TextBlock Text="采集间隔(ms)：" Grid.Row="2" VerticalAlignment="Center"/>
-                                    <TextBox x:Name="TxtInterval" Grid.Row="2" Grid.Column="1" Margin="4,2" Text="1000"/>
-                                    <TextBlock Text="触发条件：" Grid.Row="2" Grid.Column="2" VerticalAlignment="Center" Margin="8,0,0,0"/>
-                                    <ComboBox x:Name="CmbTrigger" Grid.Row="2" Grid.Column="3" Margin="4,2">
-                                        <ComboBoxItem Content="立刻启动" Tag="Immediate"/>
-                                        <ComboBoxItem Content="定时触发" Tag="Schedule"/>
-                                        <ComboBoxItem Content="值变化时" Tag="ValueChange"/>
-                                        <ComboBoxItem Content="达到阈值" Tag="Threshold"/>
-                                    </ComboBox>
-
-                                    <!-- 第4行：动作 -->
-                                    <TextBlock Text="初始动作：" Grid.Row="3" VerticalAlignment="Center"
-                                               ToolTip="任务创建后的初始状态，后续可通过按钮行控制"/>
-                                    <ComboBox x:Name="CmbInitialAction" Grid.Row="3" Grid.Column="1" Margin="4,2">
-                                        <ComboBoxItem Content="立即开始采样" Tag="Start"/>
-                                        <ComboBoxItem Content="仅创建不启动" Tag="CreateOnly"/>
-                                    </ComboBox>
-                                    <TextBlock Text="跨任务联动：" Grid.Row="3" Grid.Column="2" VerticalAlignment="Center" Margin="8,0,0,0"
-                                               ToolTip="可选：用其他已创建任务的值作为本任务的额外触发条件"/>
-                                    <ComboBox x:Name="CmbCrossTaskTrigger" Grid.Row="3" Grid.Column="3" Margin="4,2" IsEditable="False">
-                                        <ComboBoxItem Content="(无)" Tag=""/>
-                                        <ComboBoxItem Content="值变化时联动" Tag="CrossValueChange"/>
-                                        <ComboBoxItem Content="达到阈值时联动" Tag="CrossThreshold"/>
-                                    </ComboBox>
-                                </Grid>
-                            </GroupBox>
-
-                            <!-- 任务操作按钮行 -->
-                            <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,8">
-                                <Button x:Name="BtnAddTask" Content="添加并启动" Padding="14,6" Margin="0,0,8,0" Click="BtnAddTask_Click"
-                                        ToolTip="创建监控任务并立即开始采样"/>
-                                <Button x:Name="BtnStopTask" Content="停止选中" Padding="14,6" Margin="0,0,8,0" Click="BtnStopTask_Click"/>
-                                <Button x:Name="BtnResumeTask" Content="继续选中" Padding="14,6" Margin="0,0,8,0" Click="BtnResumeTask_Click"
-                                        ToolTip="恢复已停止或已创建的任务采样"/>
-                                <Button x:Name="BtnRemoveTask" Content="移除选中" Padding="14,6" Margin="0,0,8,0" Click="BtnRemoveTask_Click"/>
-                                <Button x:Name="BtnExport" Content="导出报告" Padding="14,6" Click="BtnExport_Click"/>
+                            <!-- 提示 + 操作按钮 -->
+                            <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
+                                <TextBlock Text="操作：在左侧 Details 面板右键属性/Pattern →「添加为监控对象」" 
+                                           VerticalAlignment="Center" Foreground="#666666" Margin="0,0,16,0"/>
+                                <Button x:Name="BtnStopTask" Content="停止选中" Padding="10,4" Margin="0,0,6,0" Click="BtnStopTask_Click"
+                                        ToolTip="暂停选中的监控任务"/>
+                                <Button x:Name="BtnResumeTask" Content="继续选中" Padding="10,4" Margin="0,0,6,0" Click="BtnResumeTask_Click"
+                                        ToolTip="恢复选中的监控任务"/>
+                                <Button x:Name="BtnRemoveTask" Content="移除选中" Padding="10,4" Margin="0,0,6,0" Click="BtnRemoveTask_Click"
+                                        ToolTip="移除选中的监控任务"/>
+                                <Button x:Name="BtnExport" Content="导出报告" Padding="10,4" Click="BtnExport_Click"
+                                        ToolTip="导出采样数据报告"/>
                             </StackPanel>
 
-                            <!-- 运行中的任务列表 -->
-                            <GroupBox Header="运行中的任务" Grid.Row="2" Padding="8">
+                            <!-- 监控任务列表（显示实时值） -->
+                            <GroupBox Header="监控任务" Grid.Row="2" Padding="8">
                                 <ListView x:Name="TaskList" SelectionChanged="TaskList_SelectionChanged">
                                     <ListView.View>
                                         <GridView>
-                                            <GridViewColumn Header="任务名" Width="130" DisplayMemberBinding="{Binding Name}"/>
-                                            <GridViewColumn Header="状态" Width="70" DisplayMemberBinding="{Binding State}"/>
-                                            <GridViewColumn Header="采样数" Width="60" DisplayMemberBinding="{Binding SampleCount}"/>
-                                            <GridViewColumn Header="监控目标" Width="180" DisplayMemberBinding="{Binding TargetText}"/>
+                                            <GridViewColumn Header="任务名" Width="100" DisplayMemberBinding="{Binding Name}"/>
+                                            <GridViewColumn Header="监控目标" Width="130" DisplayMemberBinding="{Binding MonitorProperty}"/>
+                                            <GridViewColumn Header="当前值" Width="140" DisplayMemberBinding="{Binding CurrentValue}"/>
+                                            <GridViewColumn Header="采样数" Width="55" DisplayMemberBinding="{Binding SampleCount}"/>
+                                            <GridViewColumn Header="状态" Width="60" DisplayMemberBinding="{Binding State}"/>
+                                            <GridViewColumn Header="间隔" Width="55" DisplayMemberBinding="{Binding IntervalMs}"/>
+                                            <GridViewColumn Header="上次采样" Width="120" DisplayMemberBinding="{Binding LastSampleTime}"/>
                                         </GridView>
                                     </ListView.View>
                                 </ListView>

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
@@ -27,13 +28,43 @@ using TaskScheduler = UiTreeMonitor.Scheduler.TaskScheduler;
 namespace UiTreeMonitor.App;
 
 /// <summary>任务列表项 VM。</summary>
-public sealed class TaskListItem
+public sealed class TaskListItem : INotifyPropertyChanged
 {
     public required MonitorTaskConfig Config { get; init; }
     public string Name => Config.Name;
     public string State { get; set; } = "Idle";
     public int SampleCount { get; set; }
     public string TargetText => Config.Target.ToString() ?? "";
+    
+    /// <summary>监控目标属性名（如 ValuePattern.Value、Name 等）</summary>
+    public string MonitorProperty { get; init; } = "";
+    
+    /// <summary>目标进程名</summary>
+    public string TargetProcessName { get; init; } = "";
+    
+    /// <summary>采集间隔（毫秒）</summary>
+    public int IntervalMs { get; init; } = 1000;
+    
+    /// <summary>监控时长（秒），0=无限</summary>
+    public int DurationSec { get; init; } = 0;
+    
+    /// <summary>当前采样的实时值（定时刷新显示）</summary>
+    private string _currentValue = "-";
+    public string CurrentValue 
+    { 
+        get => _currentValue; 
+        set { _currentValue = value; PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(CurrentValue))); }
+    }
+    
+    /// <summary>上次采样时间</summary>
+    private string _lastSampleTime = "";
+    public string LastSampleTime
+    {
+        get => _lastSampleTime;
+        set { _lastSampleTime = value; PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(LastSampleTime))); }
+    }
+
+    public event PropertyChangedEventHandler? PropertyChanged;
 }
 
 public partial class MainWindow : Window
@@ -238,10 +269,17 @@ public partial class MainWindow : Window
             return;
         }
 
-        // 填入新表单：监控目标默认 Name（最常用属性）
-        CmbMonitorProperty.Text = "Name";
-        TxtTaskName.Text = $"{result.ProcessName}-{result.ControlType}";
-        TxtStatus.Text = $"已添加监测目标：{result.ProcessName} — {result.Name}，点击『添加并启动』开始监控";
+        // ★ 烧杯按钮也弹出"添加监控"对话框（与右键菜单统一体验）
+        var dlg = new AddMonitorDialog("Name", result.ProcessName ?? "");
+        dlg.Owner = this;
+        if (dlg.ShowDialog() != true || !dlg.Confirmed) return;
+
+        CreateAndStartMonitorTask(
+            monitorProp: dlg.MonitorProperty,
+            processName: dlg.ProcessName,
+            intervalMs: dlg.IntervalMs,
+            durationSec: dlg.DurationSec,
+            taskName: $"{result.ProcessName ?? "app"}-{dlg.MonitorProperty}");
     }
 
     private void OnCaptureResult(MouseCaptureResult result)
@@ -390,20 +428,15 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// 右键菜单："添加为监测目标"——从 Properties 或 Patterns 中选中一行后，
-    /// 自动填入右侧任务表单（目标值/属性/正则过滤/任务名）。
+    /// 右键菜单："添加为监控对象"——弹出窗口让用户输入间隔和时长。
     /// </summary>
     private void MenuItem_AddAsTarget_Click(object sender, RoutedEventArgs e)
     {
-        if (_selectedNode is null)
-        {
-            TxtStatus.Text = "请先在结构树中选中一个节点";
-            return;
-        }
-
         // 判断来源：PropertyItem 还是 PatternItem
         string propName;
         string propValue;
+        string procName = "";
+        
         var source = (sender as MenuItem)?.Parent as ContextMenu;
         if (source?.PlacementTarget is DataGrid) // 来自 Properties
         {
@@ -414,6 +447,7 @@ public partial class MainWindow : Window
             }
             propName = pi.Name;
             propValue = pi.FullValue;
+            procName = _selectedNode?.ProcessName ?? _currentTarget?.ProcessName ?? "";
         }
         else if (source?.PlacementTarget is TreeView) // 来自 Patterns
         {
@@ -423,40 +457,76 @@ public partial class MainWindow : Window
                 TxtStatus.Text = "请先选中一个 Pattern";
                 return;
             }
-            propName = pat.Name; // 如 "ValuePattern", "TogglePattern"
+            // Pattern 格式："ValuePattern Value = ""623.912"" → 提取显示名
+            propName = string.IsNullOrEmpty(pat.Value) || pat.Value == "(supported, no current value)"
+                ? pat.Name 
+                : $"{pat.Name} ({pat.SubProperties.FirstOrDefault()?.Name ?? "Value"})";
             propValue = pat.Value;
+            procName = _selectedNode?.ProcessName ?? _currentTarget?.ProcessName ?? "";
         }
         else
         {
-            // 兜底：用节点自身信息
+            if (_selectedNode is null) { TxtStatus.Text = "请先选中节点"; return; }
             propName = "Name";
             propValue = _selectedNode.Name ?? "";
+            procName = _selectedNode.ProcessName ?? _currentTarget?.ProcessName ?? "";
         }
 
-        // 填入右侧表单（新表单：监控目标=属性名）
-        var propText = CmbMonitorProperty.Text;
-        if (!string.IsNullOrEmpty(propName) && string.IsNullOrEmpty(propText))
-            CmbMonitorProperty.Text = propName;
+        // 弹出"添加监控"对话框
+        var dlg = new AddMonitorDialog(propName, procName);
+        dlg.Owner = this;
+        if (dlg.ShowDialog() != true || !dlg.Confirmed) return;
 
-        TxtTaskName.Text = $"{_selectedNode.ProcessName ?? "app"}-{_selectedNode.ControlType}-{propName}";
+        // 创建监控任务
+        CreateAndStartMonitorTask(
+            monitorProp: dlg.MonitorProperty,
+            processName: dlg.ProcessName,
+            intervalMs: dlg.IntervalMs,
+            durationSec: dlg.DurationSec,
+            taskName: $"{procName}-{propName.Replace('.', '-')}");
+    }
 
-        // 正则过滤：文本类属性自动生成模式
-        if (IsTextProperty(propName) && !string.IsNullOrEmpty(propValue))
+    /// <summary>创建并启动监控任务（统一入口）。</summary>
+    private void CreateAndStartMonitorTask(string monitorProp, string processName, int intervalMs, int durationSec, string taskName)
+    {
+        if (_currentTarget is null)
         {
-            TxtFilter.Text = $"{propName}~^{Regex.Escape(propValue)}";
+            TxtStatus.Text = "请先抓取目标窗口的结构树";
+            return;
         }
-        else if (string.IsNullOrEmpty(TxtFilter.Text))
-        {
-            TxtFilter.Text = $"{propName}~.*";
-        }
-        TxtStatus.Text = $"已填入监测目标：{propName}={propValue}，点击『添加并启动任务』启动监控";
 
-        // 切到"任务管理" tab 引导用户操作（沿 VisualTree 找 TabControl）
-        var parent = TaskList.Parent;
-        while (parent is not null and not TabControl)
-            parent = LogicalTreeHelper.GetParent(parent);
-        if (parent is TabControl tc)
-            tc.SelectedIndex = 0;
+        var config = new MonitorTaskConfig
+        {
+            Name = taskName,
+            Target = new MonitorTarget
+            {
+                Kind = TargetKind.Process,
+                Value = processName,
+                ElementControlType = _selectedNode?.ControlType,
+                ElementName = _selectedNode?.Name,
+            },
+            Properties = new[] { monitorProp },
+            Timer = new TimerSpec { IntervalMs = intervalMs },
+            OutputDirectory = OutputDir,
+            Trigger = new ImmediateTriggerSpec(),
+        };
+
+        _scheduler.Register(config);
+        var item = new TaskListItem
+        {
+            Config = config,
+            MonitorProperty = monitorProp,
+            TargetProcessName = processName,
+            IntervalMs = intervalMs,
+            DurationSec = durationSec,
+            State = "Running",
+        };
+        _taskItems.Add(item);
+
+        // ★ 启动实时值刷新定时器
+        StartValueRefreshTimer(item);
+
+        TxtStatus.Text = $"已添加监控任务 [{taskName}]，每 {intervalMs}ms 采样一次{(durationSec > 0 ? $", 共 {durationSec} 秒" : "")}";
     }
 
     private void PropertiesGrid_MouseRightButtonUp(object sender, MouseButtonEventArgs e)
@@ -492,67 +562,35 @@ public partial class MainWindow : Window
     // ========== 任务管理 ==========
     private void BtnAddTask_Click(object sender, RoutedEventArgs e)
     {
-        // 监控目标（属性名）不能为空
-        var monitorProp = CmbMonitorProperty.Text.Trim();
-        if (string.IsNullOrEmpty(monitorProp))
+        // 旧入口保留兼容：如果没有选中节点，提示用户用右键
+        if (_selectedNode is null)
         {
-            TxtStatus.Text = "请填写监控目标（属性名，如 Name、Value、ToggleState）";
+            TxtStatus.Text = "请先在左侧 Details 面板右键属性/Pattern →「添加为监控对象」";
             return;
         }
+        // 兜底：直接用当前选中节点的 Name 属性
+        CreateAndStartMonitorTask(
+            monitorProp: "Name",
+            processName: _selectedNode.ProcessName ?? _currentTarget?.ProcessName ?? "",
+            intervalMs: 1000,
+            durationSec: 0,
+            taskName: $"{_selectedNode.ProcessName ?? "app"}-Name");
+    }
 
-        var config = new MonitorTaskConfig
-        {
-            Name = string.IsNullOrWhiteSpace(TxtTaskName.Text) ? "任务" : TxtTaskName.Text.Trim(),
-            Target = new MonitorTarget
-            {
-                Kind = TargetKind.Process, // 固定：监控基于已抓取的窗口树
-                Value = _currentTarget?.ProcessName ?? "",
-                ElementControlType = _selectedNode?.ControlType,
-                ElementName = _selectedNode?.Name,
-            },
-            Properties = new[] { monitorProp }, // 监控目标=单个属性
-            Timer = new TimerSpec { IntervalMs = int.TryParse(TxtInterval.Text, out var iv) ? Math.Max(50, iv) : 1000 },
-            OutputDirectory = OutputDir,
-        };
-
-        // 正则过滤：支持 Name~pattern 语法
-        var filterText = TxtFilter.Text.Trim();
-        if (!string.IsNullOrEmpty(filterText))
-        {
-            var rule = new FilterRule { Property = monitorProp, Pattern = filterText };
-            if (filterText.Contains("~"))
-            {
-                var parts = filterText.Split('~', 2);
-                rule.Property = parts[0].Trim();
-                rule.Pattern = parts[1].Trim();
-            }
-            if (rule.Pattern.Contains("(?<") || rule.Pattern.Contains("(?P<"))
-                rule.IsExtract = true;
-            config.Filter = new FilterSet { Rules = new[] { rule }, IsAnd = true };
-        }
-
-        // 触发器
-        var triggerTag = (CmbTrigger.SelectedItem as ComboBoxItem)?.Tag as string;
-        config.Trigger = triggerTag switch
-        {
-            "Schedule" => new ScheduleTriggerSpec { RepeatIntervalMs = config.Timer.IntervalMs },
-            "ValueChange" => new ValueChangeTriggerSpec { Property = monitorProp },
-            "Threshold" => new ThresholdTriggerSpec { Property = monitorProp, Threshold = 0, Op = ComparisonOp.GreaterOrEqual },
-            _ => new ImmediateTriggerSpec(),
-        };
-
-        // 初始动作
-        var actionTag = (CmbInitialAction.SelectedItem as ComboBoxItem)?.Tag as string;
-        var startImmediately = actionTag != "CreateOnly";
-
-        _scheduler.Register(config);
-        var item = new TaskListItem { Config = config };
-        item.State = startImmediately ? "Running" : "Created";
-        _taskItems.Add(item);
-        TaskList.SelectedItem = item;
-
-        // 订阅采样 → 更新列表 + 历史
-        var host = _scheduler.GetHost(config.Id);
+    /// <summary>启动实时值刷新定时器（每个运行中的任务一个）。</summary>
+    private readonly Dictionary<Guid, DispatcherTimer> _refreshTimers = new();
+    
+    private void StartValueRefreshTimer(TaskListItem item)
+    {
+        if (_refreshTimers.ContainsKey(item.Config.Id)) return;
+        
+        var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(item.IntervalMs) };
+        timer.Tick += (_, _) => RefreshMonitorValue(item);
+        _refreshTimers[item.Config.Id] = timer;
+        timer.Start();
+        
+        // 订阅采样事件 → 更新采样数
+        var host = _scheduler.GetHost(item.Config.Id);
         if (host is not null)
         {
             host.SampleTaken += (_, ev) =>
@@ -560,20 +598,106 @@ public partial class MainWindow : Window
                 Dispatcher.Invoke(() =>
                 {
                     item.SampleCount++;
-                    _csvWriter.Append(config.Name, config.Id, ev.Sample.Records);
-                    if (TaskList.SelectedItem is TaskListItem sel && sel.Config.Id == config.Id)
-                    {
-                        HistoryGrid.ItemsSource = null;
-                        HistoryGrid.ItemsSource = GetHistory(config.Id);
-                    }
-                    TxtHistoryStatus.Text = $"历史记录（实时追加）";
+                    item.LastSampleTime = DateTime.Now.ToString("HH:mm:ss.fff");
+                    _csvWriter.Append(item.Config.Name, item.Config.Id, ev.Sample.Records);
                 });
             };
-            host.StateChanged += (_, s) => Dispatcher.Invoke(() => { item.State = s.ToString(); TaskList.Items.Refresh(); });
+            host.StateChanged += (_, s) => Dispatcher.Invoke(() => { item.State = s.ToString(); });
+            if (item.DurationSec > 0)
+            {
+                // 限时任务：到达时长后自动停止
+                var stopAt = DateTime.Now.AddSeconds(item.DurationSec);
+                var checkTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+                checkTimer.Tick += (_, _) =>
+                {
+                    if (DateTime.Now >= stopAt)
+                    {
+                        checkTimer.Stop();
+                        StopValueRefreshTimer(item.Config.Id);
+                        _scheduler.RequestStop(item.Config.Id);
+                        item.State = "Completed";
+                        TxtStatus.Text = $"任务 [{item.Name}] 已完成（{item.DurationSec} 秒）";
+                    }
+                };
+                checkTimer.Start();
+            }
         }
+        
+        _configStore.Save(item.Config);
+    }
 
-        _configStore.Save(config);
-        TxtStatus.Text = $"任务 [{config.Name}] 已启动，监控 [{monitorProp}]";
+    /// <summary>刷新单个任务的监控值（重新抓取目标元素属性）。</summary>
+    private void RefreshMonitorValue(TaskListItem item)
+    {
+        try
+        {
+            if (_currentTarget is null || _currentTree is null) return;
+            
+            // 在后台线程抓取目标窗口树，找到匹配元素后读取属性值
+            var thread = new Thread(() =>
+            {
+                try
+                {
+                    using var session = UiaSession.Create();
+                    var snap = new TreeSampler().CaptureWindow(session, _currentTarget);
+                    if (snap?.NodeCount == 0) return;
+                    
+                    // 找到与监控目标匹配的节点（按进程名+控件类型+名称）
+                    var matchNode = snap.Nodes.Values.FirstOrDefault(n =>
+                        n.ProcessId == _currentTarget.ProcessId &&
+                        (n.ControlType == item.Config.Target.ElementControlType || 
+                         string.IsNullOrEmpty(item.Config.Target.ElementControlType)) &&
+                        (n.Name == item.Config.Target.ElementName ||
+                         string.IsNullOrEmpty(item.Config.Target.ElementName)));
+                    
+                    if (matchNode is not null)
+                    {
+                        // 从 PatternDataList 中查找监控属性的值
+                        var propParts = item.MonitorProperty.Split('.');
+                        string? foundVal = null;
+                        
+                        // 先查离散字段
+                        foundVal = matchNode.GetProperty(propParts[0]);
+                        
+                        // 再查 Pattern 数据
+                        if (string.IsNullOrEmpty(foundVal) || foundVal == "")
+                        {
+                            foreach (var pd in matchNode.PatternDataList)
+                            {
+                                if (pd.Name == propParts[0])
+                                {
+                                    foundVal = pd.DisplayValue;
+                                    break;
+                                }
+                                foreach (var spp in pd.SubProps)
+                                {
+                                    if (spp.Name == propParts.ElementAtOrDefault(1))
+                                    { foundVal = spp.Value; break; }
+                                }
+                                if (!string.IsNullOrEmpty(foundVal) && foundVal != "(null)" && foundVal != "(supported, no current value)") 
+                                    break;
+                            }
+                        }
+                        
+                        Dispatcher.Invoke(() => item.CurrentValue = foundVal ?? "-");
+                    }
+                }
+                catch { /* 单次刷新失败不影响后续 */ }
+            })
+            { IsBackground = true };
+            thread.SetApartmentState(ApartmentState.STA);
+            thread.Start();
+        }
+        catch { /* 定时器异常 */ }
+    }
+
+    private void StopValueRefreshTimer(Guid configId)
+    {
+        if (_refreshTimers.TryGetValue(configId, out var timer))
+        {
+            timer.Stop();
+            _refreshTimers.Remove(configId);
+        }
     }
 
     private void BtnStopTask_Click(object sender, RoutedEventArgs e)
