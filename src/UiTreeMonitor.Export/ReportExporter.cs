@@ -20,9 +20,11 @@ public sealed class ReportExporter
     }
 
     /// <summary>导出全部格式，返回已生成的文件路径列表。输出到 {dataRoot}\{当日yyyyMMdd}\{任务名}_{时刻}\。</summary>
+    /// <param name="chartSourcePath">可选：已渲染好的走势图 PNG，将复制为导出目录下 chart.png 并在报告中引用。</param>
     public IReadOnlyList<string> ExportAll(
         string taskName, Guid taskId, MonitorTaskConfig config,
-        IReadOnlyList<SampleRecord> records, DateTime startedAt, DateTime endedAt)
+        IReadOnlyList<SampleRecord> records, DateTime startedAt, DateTime endedAt,
+        string? chartSourcePath = null)
     {
         var dayDir = Path.Combine(_outputRoot, DateTime.Now.ToString("yyyyMMdd"));
         var dir = Path.Combine(dayDir, $"{Sanitize(taskName)}_{DateTime.Now:HHmmss}");
@@ -32,8 +34,14 @@ public sealed class ReportExporter
         {
             ExportCsv(dir, config, records),
             ExportJson(dir, taskName, taskId, config, records, startedAt, endedAt),
-            ExportHtml(dir, taskName, taskId, config, records, startedAt, endedAt),
+            ExportHtml(dir, taskName, taskId, config, records, startedAt, endedAt, chartSourcePath is not null),
         };
+        if (chartSourcePath is not null)
+        {
+            var chartPath = Path.Combine(dir, "chart.png");
+            File.Copy(chartSourcePath, chartPath, overwrite: true);
+            files.Add(chartPath);
+        }
         return files;
     }
 
@@ -83,7 +91,7 @@ public sealed class ReportExporter
     }
 
     private static string ExportHtml(string dir, string name, Guid id, MonitorTaskConfig config,
-        IReadOnlyList<SampleRecord> records, DateTime startedAt, DateTime endedAt)
+        IReadOnlyList<SampleRecord> records, DateTime startedAt, DateTime endedAt, bool hasChart = false)
     {
         var path = Path.Combine(dir, "report.html");
 
@@ -118,7 +126,7 @@ th{{background:#f0f0f0}} .meta{{color:#666;font-size:13px}}
 <tr><th>触发器</th><td>{CsvHtml(config.Trigger.Kind)}</td></tr>
 <tr><th>时间器</th><td>{CsvHtml(config.TimeBox.Boxes.Count > 0 ? string.Join("; ", config.TimeBox.Boxes.Select(b => b.Kind)) : "无")}</td></tr></table>
 <h2>值变化走势</h2>
-{BuildLineCharts(records)}
+{(hasChart ? "<img src='chart.png' alt='走势图' style='max-width:100%;border:1px solid #e0e0e0;background:#fcfcfc'/>" : BuildLineCharts(records))}
 <h2>属性变化摘要</h2>
 <table><tr><th>属性</th><th>条数</th><th>值变化</th><th>时间范围</th></tr>{rows}</table>
 </body></html>";

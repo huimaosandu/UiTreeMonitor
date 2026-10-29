@@ -1,0 +1,59 @@
+<Window x:Class="UiTreeMonitor.App.ChartOptionsDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="走势图选项" Height="420" Width="460"
+        WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
+        FontFamily="Microsoft YaHei" FontSize="13">
+    <Grid Margin="20,16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" FontWeight="Bold" Text="选择要绘制的值曲线（至少一条），并自定义图例名称："/>
+
+        <Grid Grid.Row="1" Margin="0,8,0,4">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="50"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="140"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Text="显示" FontWeight="Bold"/>
+            <TextBlock Grid.Column="1" Text="图例名称（可编辑）" FontWeight="Bold"/>
+        </Grid>
+
+        <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto" MaxHeight="220">
+            <ItemsControl x:Name="SeriesList">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <Grid Margin="0,3">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="50"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="140"/>
+                            </Grid.ColumnDefinitions>
+                            <CheckBox IsChecked="{Binding Selected, Mode=TwoWay}" IsEnabled="{Binding IsNumeric}"
+                                      VerticalAlignment="Center"/>
+                            <TextBox Grid.Column="1" Height="26" VerticalContentAlignment="Center" FontSize="12"
+                                     Text="{Binding Legend, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                     IsEnabled="{Binding IsNumeric}"/>
+                            <TextBlock Grid.Column="2" Text="{Binding Note}" Foreground="Gray"
+                                       VerticalAlignment="Center" FontSize="11"/>
+                        </Grid>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </ScrollViewer>
+
+        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+            <Button x:Name="BtnGenerate" Content="生成图并导出" Padding="20,8" Click="BtnGenerate_Click"
+                    IsDefault="True" MinWidth="130" FontWeight="Bold"/>
+            <Button x:Name="BtnSkip" Content="跳过图，仅导出数据" Padding="20,8" Margin="12,0,0,0" Click="BtnSkip_Click"
+                    MinWidth="120"/>
+            <Button x:Name="BtnCancel" Content="取消导出" Padding="20,8" Margin="12,0,0,0" Click="BtnCancel_Click"
+                    IsCancel="True" MinWidth="90"/>
+        </StackPanel>
+    </Grid>
+</Window>

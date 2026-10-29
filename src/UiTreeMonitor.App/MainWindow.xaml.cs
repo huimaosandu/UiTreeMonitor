@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
@@ -869,7 +870,7 @@ public partial class MainWindow : Window
 
     private void MenuExportTask_Click(object sender, RoutedEventArgs e) => ExportSelectedTask();
 
-    /// <summary>导出选中任务报告（CSV/JSON/HTML 含 SVG 走势图）。</summary>
+    /// <summary>导出选中任务报告（CSV/JSON/HTML + 走势图 PNG：一图多线、可选系列、自定义图例）。</summary>
     private void ExportSelectedTask()
     {
         if (TaskList.SelectedItem is not TaskListItem item)
@@ -880,11 +881,110 @@ public partial class MainWindow : Window
         _saver.FlushAll(); // 先把内存缓冲写盘，报告与实时数据一致
         var host = _scheduler.GetHost(item.Config.Id);
         var records = host is not null ? host.Records.ToList() : new List<SampleRecord>();
-        var files = _exporter.ExportAll(item.Config.Name, item.Config.Id, item.Config,
-            records, DateTime.Now.AddSeconds(-60), DateTime.Now);
-        TxtStatus.Text = $"已导出：{string.Join(" | ", files)}";
-        MessageBox.Show($"报告已导出到：\n{string.Join("\n", files)}", "导出完成",
-            MessageBoxButton.OK, MessageBoxImage.Information);
+        if (records.Count == 0)
+        {
+            MessageBox.Show("该任务还没有采样数据，无法导出。", "导出报告",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var (cancelled, chartPath) = BuildChartPngIfWanted(item, records);
+        if (cancelled)
+        {
+            TxtStatus.Text = "已取消导出";
+            return;
+        }
+
+        try
+        {
+            var files = _exporter.ExportAll(item.Config.Name, item.Config.Id, item.Config,
+                records, DateTime.Now.AddSeconds(-60), DateTime.Now, chartPath);
+            TxtStatus.Text = $"已导出：{string.Join(" | ", files)}";
+            MessageBox.Show($"报告已导出到：\n{string.Join("\n", files)}", "导出完成",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            TxtStatus.Text = $"导出失败: {ex.Message}";
+        }
+        finally
+        {
+            if (chartPath is not null)
+                try { File.Delete(chartPath); } catch { /* 临时文件清理失败可忽略 */ }
+        }
+    }
+
+    /// <summary>
+    /// 检测各值列是否可绘制（≥2 个可解析数值点），可绘则弹窗让用户勾选系列、修改图例，
+    /// 渲染 PNG 到临时文件。返回 (是否取消整个导出, PNG 路径或 null)。
+    /// </summary>
+    private (bool Cancelled, string? ChartPath) BuildChartPngIfWanted(TaskListItem item, List<SampleRecord> records)
+    {
+        int n = item.Config.Extractors.Count > 0 ? item.Config.Extractors.Count : 1;
+
+        // 与实时落盘同规则切行：(时间戳, 值1..值N)
+        var rows = new List<(DateTime Ts, string?[] Vals)>();
+        for (int i = 0; i + n <= records.Count; i += n)
+        {
+            var vals = new string?[n];
+            for (int c = 0; c < n; c++) vals[c] = records[i + c].Value;
+            rows.Add((records[i].Timestamp, vals));
+        }
+
+        // 每列统计可解析数值点数
+        var numericCounts = new int[n];
+        foreach (var (_, vals) in rows)
+            for (int c = 0; c < n; c++)
+                if (double.TryParse(vals[c], NumberStyles.Float, CultureInfo.InvariantCulture, out _))
+                    numericCounts[c]++;
+
+        if (!numericCounts.Any(c => c >= 2))
+        {
+            TxtStatus.Text = "未检测到可绘图的数值列（时间戳/值1 均需数值且≥2个点），仅导出数据";
+            return (false, null);
+        }
+
+        // 弹窗：勾选要画的曲线 + 编辑图例（非数值列禁选）
+        var seriesItems = Enumerable.Range(0, n).Select(c => new ChartSeriesItem
+        {
+            ColumnIndex = c,
+            Key = $"值{c + 1}",
+            IsNumeric = numericCounts[c] >= 2,
+            Selected = numericCounts[c] >= 2,   // 数值列默认全选
+            Legend = $"值{c + 1}",
+        }).ToList();
+
+        var dlg = new ChartOptionsDialog(seriesItems) { Owner = this };
+        if (dlg.ShowDialog() != true || !dlg.Result.Confirmed)
+            return (true, null);
+        if (!dlg.Result.GenerateChart)
+            return (false, null);
+
+        // 组装选中系列（跳过该列不可解析的点）
+        var series = new List<ChartSeries>();
+        foreach (var (index, _, legend) in dlg.Result.SelectedSeries)
+        {
+            var pts = rows
+                .Where(r => double.TryParse(r.Vals[index], NumberStyles.Float, CultureInfo.InvariantCulture, out _))
+                .Select(r => (r.Ts, V: double.Parse(r.Vals[index]!, NumberStyles.Float, CultureInfo.InvariantCulture)))
+                .ToList();
+            if (pts.Count > 0)
+                series.Add(new ChartSeries(legend, pts));
+        }
+        if (series.Count == 0)
+            return (false, null);
+
+        try
+        {
+            var tmp = Path.Combine(Path.GetTempPath(), $"uitm_chart_{Guid.NewGuid():N}.png");
+            ChartImageRenderer.RenderPng(tmp, series, item.Name);
+            return (false, tmp);
+        }
+        catch (Exception ex)
+        {
+            TxtStatus.Text = $"走势图生成失败（仅导出数据）: {ex.Message}";
+            return (false, null);
+        }
     }
 
     private void BtnStopAllTasks_Click(object sender, RoutedEventArgs e)
