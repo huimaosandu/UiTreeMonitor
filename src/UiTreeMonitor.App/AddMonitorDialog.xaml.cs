@@ -45,7 +45,10 @@ public sealed class ExtractRuleItem : INotifyPropertyChanged
         ? Sample.Trim()[3..]
         : ValueExtractor.CompileFromMarkedSample(Sample, _marker);
 
-    /// <summary>提取预览（对示例自身应用规则），随 Sample 变化实时刷新。</summary>
+    /// <summary>
+    /// 提取预览（对示例剥离标记后的原文应用规则），随 Sample 变化实时刷新。
+    /// 自动识别提取值类型并标注：数值（可画数据图）/ 文本。
+    /// </summary>
     public string Preview
     {
         get
@@ -53,8 +56,12 @@ public sealed class ExtractRuleItem : INotifyPropertyChanged
             var rule = Rule;
             if (rule is null)
                 return $"（未识别规则：请在值中用 {_marker}…{_marker} 圈出要提取的部分，或以 re: 开头写正则）";
-            var result = ValueExtractor.ExtractOne(Sample, rule);
-            return result.Length > 0 ? $"提取预览：{result}" : "提取预览：（空，请检查标记位置或正则）";
+            var plain = Sample.Replace(_marker, ""); // 示例去标记 = 原始值形态（预览不含标记字符）
+            var result = ValueExtractor.ExtractOne(plain, rule);
+            if (result.Length == 0) return "提取预览：（空，请检查标记位置或正则）";
+            var type = double.TryParse(result.Trim(), System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out _) ? "数值" : "文本";
+            return $"提取预览：{result}（{type}）";
         }
     }
 
@@ -117,7 +124,8 @@ public partial class AddMonitorDialog : Window
         ExtractRules.ItemsSource = _rules;
         TxtExtractHint.Text = $"规则：点「插入标记」在示例值中要提取部分的前后各插一次 {_marker}" +
             $"（如 Value = \"{_marker}614.466{_marker}\" → 614.466，程序解析两处标记位置生成规则）；" +
-            "或把文本改为 re:(\\d+\\.?\\d*) 形式的正则（取第一捕获组）。多条规则依次产出 值1、值2…；删除全部规则则记录原始值。";
+            "或把文本改为 re:(\\d+\\.?\\d*) 形式的正则（取第一捕获组）。多条规则依次产出 值1、值2…；删除全部规则则记录原始值。" +
+            "标记夹在任意位置均可提取，值类型自动识别（数值可画数据图，文本/布尔仅采集）。";
 
         // 保存策略候选联动：切换单选时启用/禁用对应输入
         RbSaveByPoints.Checked += (_, _) => SetSaveModeEnabled(byPoints: true);

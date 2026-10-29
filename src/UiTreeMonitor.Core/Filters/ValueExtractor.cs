@@ -34,7 +34,8 @@ public static class ValueExtractor
     /// 解析第一个标记与第二个标记的位置，标记前文本=前缀锚点、标记之间=捕获组、标记后文本=后缀锚点。
     /// 锚点中的连续数字段模糊为 \d+ 通配（示例里的数字是"占位"：如示例后缀 .561 对实际值 .123 也能匹配）。
     /// 示例：Value = "@@603.561@@"（标记 @@）→ \QValue = "\E(.*?)\Q"\E → 对实际值提取 603.561；
-    ///       Value = "@@603@@.561" → 后缀 \.\d+ → 实际值 605.123 提取 605（整数部分）。
+    ///       Value = "@@603@@.561" → 后缀 \.\d+ → 实际值 605.123 提取 605（整数部分）；
+    ///       Value = "@@6@@01.582" → 后缀 \d+\.\d+（至少占 1 字符的捕获）→ 实际值 601.582 提取 6。
     /// 返回 null 表示文本中没有成对标记（无法编译）。
     /// </summary>
     public static string? CompileFromMarkedSample(string sample, string marker)
@@ -52,8 +53,11 @@ public static class ValueExtractor
 
         var sb = new StringBuilder();
         if (prefix.Length > 0) sb.Append(AnchorPattern(prefix));
-        // 有后缀锚点用非贪婪（取最短）；无后缀必须用贪婪（非贪婪会匹配空串）
-        sb.Append(suffix.Length > 0 ? "(.*?)" : "(.*)");
+        // 有后缀锚点用非贪婪（取最短），但必须至少占 1 字符（.+?）：
+        // 后缀以数字开头时（模糊化后 \d+ 起头）能从捕获组前方就匹配成功，
+        // 空捕获退化（如 @@6@@01.582 → 后缀 \d+\.\d+ 直接吃掉 601.582 → 提取空串）。
+        // 无后缀必须用贪婪（.* 取前缀后全部）。
+        sb.Append(suffix.Length > 0 ? "(.+?)" : "(.*)");
         if (suffix.Length > 0) sb.Append(AnchorPattern(suffix));
         return sb.ToString();
     }

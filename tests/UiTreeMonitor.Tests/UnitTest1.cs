@@ -244,6 +244,19 @@ public class ValueExtractorTests
     }
 
     [Fact]
+    public void CompileMarkedSample_DigitLeadingSuffix_CapturesAtLeastOneChar()
+    {
+        // 标记夹在任意位置都要能提取：Value = "@@6@@01.582"——后缀锚点以数字开头
+        // （模糊化后 \d+\.\d+ 起头），捕获组必须至少占 1 字符，否则非贪婪退化匹配空串。
+        // 对实际值 601.582 → 提取 6（数值）
+        var rule = UiTreeMonitor.Core.Filters.ValueExtractor.CompileFromMarkedSample(
+            "Value = \"@@6@@01.582\"", "@@");
+        Assert.NotNull(rule);
+        Assert.Equal("6",
+            UiTreeMonitor.Core.Filters.ValueExtractor.ExtractOne("Value = \"601.582\"", rule!));
+    }
+
+    [Fact]
     public void CompileMarkedSample_TextCapture_StillCollected()
     {
         // 需求3：圈住文本（Value ）也要能提取采集；后缀 ="603.561" 数字模糊后照常匹配实际值
