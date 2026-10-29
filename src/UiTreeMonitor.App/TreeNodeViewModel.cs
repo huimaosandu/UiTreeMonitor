@@ -78,24 +78,18 @@ public sealed class TreeNodeViewModel
         return list;
     }
 
-    /// <summary>从 ElementNode 构建 Pattern 列表（直接来自 el.Patterns 数据）。</summary>
+    /// <summary>从 ElementNode 构建 Pattern 列表（使用 PatternDataList，与 FromA11yElement 统一格式）。</summary>
     private static IReadOnlyList<PatternItem> BuildPatterns(ElementNode node)
     {
         var list = new List<PatternItem>();
-        var hasValue = new HashSet<string>();
 
-        // 有具体值的 Pattern（高优先级）——来自 el.Patterns 的 Properties
-        if (!string.IsNullOrEmpty(node.Value)) { list.Add(new PatternItem { Name = "ValuePattern", Value = node.Value }); hasValue.Add("ValuePattern"); }
-        if (!string.IsNullOrEmpty(node.RangeValue)) { list.Add(new PatternItem { Name = "RangeValuePattern", Value = node.RangeValue }); hasValue.Add("RangeValuePattern"); }
-        if (!string.IsNullOrEmpty(node.ToggleState)) { list.Add(new PatternItem { Name = "TogglePattern", Value = node.ToggleState }); hasValue.Add("TogglePattern"); }
-        if (!string.IsNullOrEmpty(node.IsSelected)) { list.Add(new PatternItem { Name = "SelectionItemPattern", Value = node.IsSelected }); hasValue.Add("SelectionItemPattern"); }
-        if (!string.IsNullOrEmpty(node.ExpandCollapseState)) { list.Add(new PatternItem { Name = "ExpandCollapsePattern", Value = node.ExpandCollapseState }); hasValue.Add("ExpandCollapsePattern"); }
-
-        // 支持但当前无值的 Pattern
-        foreach (var sp in node.SupportedPatterns)
+        // 统一使用 PatternDataList（与 FromA11yElement 同款数据源和格式）
+        foreach (var pd in node.PatternDataList)
         {
-            if (!hasValue.Contains(sp))
-                list.Add(new PatternItem { Name = sp, Value = "(supported, no current value)" });
+            var subProps = pd.SubProps.Select(sp =>
+                new PropertyItem { Name = sp.Name, Value = sp.Value.Length > 120 ? sp.Value.Substring(0, 117) + "..." : sp.Value, FullValue = sp.Value }
+            ).ToList();
+            list.Add(new PatternItem { Name = pd.Name, Value = pd.DisplayValue, SubProperties = subProps });
         }
 
         return list;

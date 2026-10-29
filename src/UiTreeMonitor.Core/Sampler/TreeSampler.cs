@@ -87,7 +87,8 @@ public sealed class TreeSampler
         // A11yPattern: Id, Name, Properties(IList<A11yPatternProperty>)
         // A11yPatternProperty: Name, Value(Object), NodeValue(String) ← 原版用 NodeValue
         var patternNames = new List<string>();
-        var patternValues = new Dictionary<string, string?>(); // key = "PatternName.PropertyName"
+        var patternDataList = new List<PatternData>();
+        var patternValues = new Dictionary<string, string?>(); // key = "PatternName.PropertyName"（便捷访问）
 
         try
         {
@@ -95,17 +96,29 @@ public sealed class TreeSampler
                 foreach (var p in el.Patterns)
                 {
                     patternNames.Add(p.Name);
-                    if (p.Properties is not null)
+                    if (p.Properties is not null && p.Properties.Count > 0)
+                    {
+                        // 有属性值：收集子属性 + 取第一个作为主显示值
+                        var subProps = new List<PatternPropData>();
                         foreach (var pp in p.Properties)
-                            // ★ 原版 PatternPropertyUIWrapper 用 p.NodeValue（String），不是 p.Value（Object）
-                            patternValues[$"{p.Name}.{pp.Name}"] = pp.NodeValue;
+                        {
+                            var nodeVal = pp.NodeValue ?? "(null)";
+                            patternValues[$"{p.Name}.{pp.Name}"] = nodeVal;
+                            subProps.Add(new PatternPropData(pp.Name, nodeVal));
+                        }
+                        var mainVal = p.Properties[0].NodeValue ?? "(null)";
+                        patternDataList.Add(new PatternData(p.Name, mainVal, subProps));
+                    }
                     else
+                    {
+                        patternDataList.Add(new PatternData(p.Name, "(supported, no current value)", Array.Empty<PatternPropData>()));
                         patternValues[p.Name] = "(no properties)";
+                    }
                 }
         }
         catch { /* Patterns 可能为空或异常 */ }
 
-        // 从 patternValues 中提取已知 Pattern 的主属性值
+        // 从 patternValues 中提取已知 Pattern 的主属性值（便捷访问，供 GetProperty 使用）
         string? GetVal(string patName, string propName) =>
             patternValues.TryGetValue($"{patName}.{propName}", out var v) ? v : null;
 
@@ -131,6 +144,7 @@ public sealed class TreeSampler
             AccessKey = Safe(el.AccessKey),
             IsSelected = GetVal("SelectionItemPattern", "IsSelected"),
             ExpandCollapseState = GetVal("ExpandCollapsePattern", "ExpandCollapseState"),
+            PatternDataList = patternDataList,
             SupportedPatterns = patternNames,
             Children = Array.Empty<int>(),
         };

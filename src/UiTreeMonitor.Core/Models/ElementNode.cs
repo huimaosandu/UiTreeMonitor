@@ -37,6 +37,12 @@ public static class UiProperties
     };
 }
 
+/// <summary>单个 Pattern 的原始数据（从 el.Patterns 提取，用于 Details 面板显示）。</summary>
+public sealed record PatternData(string Name, string DisplayValue, IReadOnlyList<PatternPropData> SubProps);
+
+/// <summary>Pattern 的子属性。</summary>
+public sealed record PatternPropData(string Name, string Value);
+
 /// <summary>结构树的一个节点快照（采集结果）。</summary>
 public sealed record ElementNode
 {
@@ -51,7 +57,7 @@ public sealed record ElementNode
     public int ProcessId { get; init; }
     public bool IsEnabled { get; init; } = true;
     public bool IsOffScreen { get; init; }
-    public string? Value { get; init; }          // ValuePattern 当前值
+    public string? Value { get; init; }          // ValuePattern 当前值（便捷访问）
     public string? RangeValue { get; init; }     // RangeValuePattern 当前值
     public string? ToggleState { get; init; }
     public string? BoundingRectangle { get; init; }
@@ -60,7 +66,9 @@ public sealed record ElementNode
     public string? AccessKey { get; init; }
     public string? IsSelected { get; init; }
     public string? ExpandCollapseState { get; init; }
-    /// <summary>该节点支持的 Pattern 名称列表（即使当前值为空也列入）。</summary>
+    /// <summary>该节点支持的 Pattern 完整数据（原版 el.Patterns → NodeValue 同款格式）。</summary>
+    public IReadOnlyList<PatternData> PatternDataList { get; init; } = Array.Empty<PatternData>();
+    /// <summary>该节点支持的 Pattern 名称列表（即使当前值为空也列入，保留兼容）。</summary>
     public IReadOnlyList<string> SupportedPatterns { get; init; } = Array.Empty<string>();
     public IReadOnlyList<int> Children { get; init; } = Array.Empty<int>();
 
