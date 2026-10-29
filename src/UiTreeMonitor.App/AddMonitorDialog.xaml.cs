@@ -29,7 +29,13 @@ public sealed class ExtractRuleItem : INotifyPropertyChanged
     public string Sample
     {
         get => _sample;
-        set { _sample = value; PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Preview))); }
+        set
+        {
+            _sample = value;
+            // 必须同时通知 Sample（程序赋值时 TextBox 回读）与 Preview（预览刷新）
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Sample)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Preview)));
+        }
     }
 
     /// <summary>
@@ -65,7 +71,6 @@ public partial class AddMonitorDialog : Window
     private string _marker = "@@"; // 当前截取标记（构造时按全局设置初始化）
     private readonly Func<string, bool>? _nameExists; // 重名校验（弹窗内提示，不关弹窗）
     private readonly string _monitorProperty; // 下拉初始选中项（兜底：下拉无此项时用）
-    private string _currentSample = ""; // 当前示例值（目标切换时更新未编辑过的规则行）
 
     public string TaskName { get; private set; } = "";
     /// <summary>监控目标：下拉选择（Properties 属性名 / Pattern.子属性 路径）。</summary>
@@ -93,7 +98,6 @@ public partial class AddMonitorDialog : Window
         TxtProcessName.Text = processName;
         ProcessName = processName;
         TxtSampleValue.Text = sampleValue ?? "";
-        _currentSample = TxtSampleValue.Text;
 
         // 监控目标下拉：当前元素 Properties + Patterns 的全部可监控属性；初始选中右键项
         var options = targetOptions is { Count: > 0 }
@@ -120,15 +124,36 @@ public partial class AddMonitorDialog : Window
         RbSaveByTime.Checked += (_, _) => SetSaveModeEnabled(byPoints: false);
     }
 
-    /// <summary>切换监控目标：更新示例值；未编辑过的规则行（仍等于旧示例）跟随重置。</summary>
+    /// <summary>
+    /// 切换监控目标：所有规则行示例跟随新目标的当前值。
+    /// re: 正则行与值无关 → 保留；带标记行 → 用旧锚点在新值上重新定位标记（迁移失败则重置为纯新值）。
+    /// </summary>
     private void CmbMonitorProperty_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (CmbMonitorProperty.SelectedItem is not TargetOption opt || opt.Value is null) return;
-        TxtSampleValue.Text = opt.Value;
+        string newSample = opt.Value;
+        TxtSampleValue.Text = newSample;
         foreach (var r in _rules)
-            if (string.Equals(r.Sample, _currentSample, StringComparison.Ordinal))
-                r.Sample = opt.Value; // 预填未动的规则行跟随新示例；已插入标记的保留用户编辑
-        _currentSample = opt.Value;
+        {
+            if (r.Sample.TrimStart().StartsWith("re:", StringComparison.OrdinalIgnoreCase))
+                continue; // 正则规则与具体值无关，保留
+            r.Sample = RemarkSample(newSample, r.Sample) ?? newSample;
+        }
+    }
+
+    /// <summary>
+    /// 标记迁移：用旧示例（带标记）编译出的锚点正则在新值上定位捕获组位置，
+    /// 在新值对应位置重插标记对。迁移成功返回新示例（带标记）；锚点匹配失败返回 null（调用方重置为纯新值）。
+    /// </summary>
+    private string? RemarkSample(string newSample, string oldMarkedSample)
+    {
+        var pattern = UiTreeMonitor.Core.Filters.ValueExtractor.CompileFromMarkedSample(oldMarkedSample, _marker);
+        if (pattern is null) return null;
+        var m = System.Text.RegularExpressions.Regex.Match(newSample, pattern);
+        if (!m.Success || m.Groups.Count < 2 || !m.Groups[1].Success) return null;
+
+        var g = m.Groups[1];
+        return newSample[..g.Index] + _marker + g.Value + _marker + newSample[(g.Index + g.Length)..];
     }
 
     private void SetSaveModeEnabled(bool byPoints)
