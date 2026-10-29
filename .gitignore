@@ -16,3 +16,5 @@ obj/
 # Python virtual envs (uv)
 .venv/
 
+
+monitor.log
