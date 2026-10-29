@@ -84,20 +84,6 @@ Windows 下也可直接双击 `run.cmd`。
 | 采样 CSV 与导出报告 | `D:\uitreemonitor\{yyyyMMdd}\{任务名}_{HHmmss}\` |
 | 全局设置（截取标记等） | `%USERPROFILE%\.ui-tree-monitor\settings.json` |
 
-## 演示被测面板 test_ui
-
-仓库自带一个**用于被监测的演示界面**（Python / PySide6，中文）：结构树按 组1 → 组2 → 组3 → 组4 层层嵌套，右侧参数（深度/μm、峰值坐标、最大峰值）每 500ms 随机波动，UIA 中暴露为 Edit 控件的 Value 属性——适合快速验证监控流程：
-
-```powershell
-cd test_ui
-uv sync          # 首次运行安装 PySide6
-uv run test_ui.py
-```
-
-> 注意：请在 `test_ui` 目录内运行，不要在仓库根目录直接 `uv run`（依赖声明在 `test_ui\pyproject.toml`）。
-
-打开面板 →「随鼠标捕获」指向参数数字框 → 右键 Value →「添加为监控对象」→ 圈出数值部分（如 `Value = "@@601.582@@"`）→ 确定添加 → 右键「启动采集」即可持续采集波动数值。
-
 ## 从源码构建与测试
 
 ```powershell
@@ -120,7 +106,6 @@ ui-tree-monitor\
 │   ├── UiTreeMonitor.A11ySharedUx\    # 原版悬停高亮链路源码移植
 │   ├── UiTreeMonitor.A11yCommonUx\    # 原版公共控件移植
 │   └── UiTreeMonitor.A11yWin32\       # 原版 Win32 工具移植
-├── test_ui\                       # 演示被测面板（Python/PySide6）
 ├── tests\UiTreeMonitor.Tests\     # xUnit 单元测试
 ├── run.cmd                        # 开发一键启动
 └── publish.cmd / publish.ps1      # 打包脚本：独立单文件 exe → dist\

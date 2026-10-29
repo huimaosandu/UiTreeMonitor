@@ -11,6 +11,9 @@ dist/
 # 外部开源工程（accessibility-insights-windows），不纳入本仓库管理
 /accessibility-insights-windows/
 
+# 演示被测面板（不上传，仅本地使用）
+/test_ui/
+
 # 临时文件
 *.tmp
 
