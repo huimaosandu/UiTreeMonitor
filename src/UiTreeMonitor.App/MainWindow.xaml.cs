@@ -510,6 +510,10 @@ public partial class MainWindow : Window
             return;
         }
 
+        // ★ 日志：任务创建参数
+        System.Diagnostics.Debug.WriteLine($"[MONITOR] 创建任务: {taskName}, 目标={monitorProp}, 进程={processName}, 间隔={intervalMs}ms, 时长={durationSec}s");
+        System.Diagnostics.Debug.WriteLine($"[MONITOR] _currentTarget={_currentTarget?.ProcessName}/{_currentTarget?.ProcessId}, _selectedNode={_selectedNode?.ControlType}/{_selectedNode?.Name}");
+
         var config = new MonitorTaskConfig
         {
             Name = taskName,
@@ -526,7 +530,10 @@ public partial class MainWindow : Window
             Trigger = new ImmediateTriggerSpec(),
         };
 
-        _scheduler.Register(config);
+        // ★ 日志：注册前检查
+        System.Diagnostics.Debug.WriteLine($"[MONITOR] 准备Register: config.Id={config.Id}, Properties=[{string.Join(",", config.Properties)}]");
+        try { _scheduler.Register(config); System.Diagnostics.Debug.WriteLine($"[MONITOR] Register成功"); }
+        catch (Exception ex) { TxtStatus.Text = $"注册任务失败: {ex.Message}"; System.Diagnostics.Debug.WriteLine($"[MONITOR] Register失败: {ex}"); return; }
         var item = new TaskListItem
         {
             Config = config,
@@ -643,8 +650,9 @@ public partial class MainWindow : Window
         _refreshTimers[item.Config.Id] = timer;
         timer.Start();
         
-        // 订阅采样事件 → 更新采样数
+        // ★ 日志：订阅采样事件
         var host = _scheduler.GetHost(item.Config.Id);
+        System.Diagnostics.Debug.WriteLine($"[MONITOR] StartValueRefresh: task={item.Name}, host={(host?.GetType().Name ?? "null")}, host.State={host?.State}");
         if (host is not null)
         {
             host.SampleTaken += (_, ev) =>
@@ -656,6 +664,7 @@ public partial class MainWindow : Window
                     _csvWriter.Append(item.Config.Name, item.Config.Id, ev.Sample.Records);
                 });
             };
+            System.Diagnostics.Debug.WriteLine($"[MONITOR] 已订阅SampleTaken事件: task={item.Name}");
             host.StateChanged += (_, s) => Dispatcher.Invoke(() => { item.State = s.ToString(); });
             if (item.DurationSec > 0)
             {
@@ -685,7 +694,11 @@ public partial class MainWindow : Window
     {
         try
         {
-            if (_currentTarget is null || _currentTree is null) return;
+            if (_currentTarget is null || _currentTree is null)
+            {
+                System.Diagnostics.Debug.WriteLine($"[MONITOR] RefreshValue跳过: _currentTarget={_currentTarget is null}");
+                return;
+            }
             
             // 在后台线程抓取目标窗口树，找到匹配元素后读取属性值
             var thread = new Thread(() =>
@@ -694,7 +707,11 @@ public partial class MainWindow : Window
                 {
                     using var session = UiaSession.Create();
                     var snap = new TreeSampler().CaptureWindow(session, _currentTarget);
-                    if (snap is null || snap.NodeCount == 0) return;
+                    if (snap is null || snap.NodeCount == 0) 
+                    { 
+                        System.Diagnostics.Debug.WriteLine($"[MONITOR] CaptureWindow返回空: task={item.Name}"); 
+                        return; 
+                    }
                     
                     // 找到与监控目标匹配的节点（按进程名+控件类型+名称）
                     var matchNode = snap.Nodes.Values.FirstOrDefault(n =>
