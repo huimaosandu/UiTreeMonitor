@@ -891,6 +891,17 @@ public partial class MainWindow : Window
             TaskList.SelectedItem = item;
     }
 
+    /// <summary>右键菜单打开时按任务状态置灰无效项：Running→"启动/继续"灰；Idle/Stopped→"停止"灰。</summary>
+    private void TaskContextMenu_Opened(object sender, RoutedEventArgs e)
+    {
+        var item = TaskList.SelectedItem as TaskListItem;
+        bool running = item is not null && string.Equals(item.State, "Running", StringComparison.OrdinalIgnoreCase);
+        bool idle = item is not null && string.Equals(item.State, "Idle", StringComparison.OrdinalIgnoreCase);
+        MenuStartTask.IsEnabled = item is not null && !running;       // 运行中不可再启动
+        MenuStopTask.IsEnabled = running;                            // 未启动/已停止不可停止
+        MenuResumeTask.IsEnabled = item is not null && !running && !idle; // 仅已停止过的任务可继续
+    }
+
     /// <summary>启动采集：未启动（Idle）→ 首次启动；已停止（Stopped）→ 恢复采样。</summary>
     private void MenuStartTask_Click(object sender, RoutedEventArgs e)
     {
@@ -1083,8 +1094,56 @@ public partial class MainWindow : Window
             : $"已启动 {started} 个任务（共 {_taskItems.Count} 个）";
     }
 
+    /// <summary>统计当前有采样数据的任务数（用于批量操作前的导出询问）。</summary>
+    private int CountTasksWithData()
+        => _taskItems.Count(item => _scheduler.GetHost(item.Config.Id)?.Records.Count > 0);
+
+    /// <summary>
+    /// 批量导出所有有数据的任务报告（CSV/JSON/HTML，不弹数据图选项）。
+    /// 返回成功导出的任务数；单任务失败跳过继续。
+    /// </summary>
+    private int ExportAllTasksWithData()
+    {
+        int exported = 0;
+        foreach (var item in _taskItems.ToList())
+        {
+            var host = _scheduler.GetHost(item.Config.Id);
+            var records = host is not null ? host.Records.ToList() : new List<SampleRecord>();
+            if (records.Count == 0) continue;
+            try
+            {
+                _exporter.ExportAll(item.Config.Name, item.Config.Id, item.Config, records,
+                    DateTime.Now.AddSeconds(-60), DateTime.Now, chartSourcePath: null);
+                exported++;
+            }
+            catch { /* 单任务导出失败不中断批量 */ }
+        }
+        return exported;
+    }
+
+    /// <summary>批量操作（停止/移除所有）前询问是否先导出报告。返回 false=用户取消操作。</summary>
+    private bool AskExportBeforeBulkAction(string actionName)
+    {
+        int withData = CountTasksWithData();
+        if (withData == 0) return true; // 无数据无需询问导出，直接执行
+
+        var answer = MessageBox.Show(this,
+            $"即将{actionName}全部任务，其中 {withData} 个任务有采样数据。\n是否先导出这些任务的报告（CSV/JSON/HTML）？",
+            "导出报告", MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
+        if (answer == MessageBoxResult.Cancel) return false;
+        if (answer == MessageBoxResult.Yes)
+        {
+            _saver.FlushAll(); // 先落盘，报告与实时数据一致
+            int exported = ExportAllTasksWithData();
+            MessageBox.Show(this, $"已导出 {exported} 个任务的报告到数据目录。", "导出完成",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        return true;
+    }
+
     private void BtnStopAllTasks_Click(object sender, RoutedEventArgs e)
     {
+        if (!AskExportBeforeBulkAction("停止")) { TxtStatus.Text = "已取消停止全部任务"; return; }
         _scheduler.RequestStopAll();
         foreach (var item in _taskItems) item.State = "Stopped";
         TxtStatus.Text = $"已停止全部任务（{_taskItems.Count} 个）";
@@ -1093,6 +1152,7 @@ public partial class MainWindow : Window
     private void BtnRemoveAllTasks_Click(object sender, RoutedEventArgs e)
     {
         if (_taskItems.Count == 0) return;
+        if (!AskExportBeforeBulkAction("移除")) { TxtStatus.Text = "已取消移除全部任务"; return; }
         var count = _taskItems.Count;
         foreach (var item in _taskItems.ToList())
         {

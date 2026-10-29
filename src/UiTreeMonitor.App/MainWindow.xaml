@@ -162,10 +162,10 @@
                                 <ListView x:Name="TaskList" SelectionChanged="TaskList_SelectionChanged"
                                           MouseRightButtonUp="TaskList_MouseRightButtonUp">
                                     <ListView.ContextMenu>
-                                        <ContextMenu>
-                                            <MenuItem Header="启动采集" Click="MenuStartTask_Click"/>
-                                            <MenuItem Header="停止采集" Click="MenuStopTask_Click"/>
-                                            <MenuItem Header="继续采集" Click="MenuResumeTask_Click"/>
+                                        <ContextMenu Opened="TaskContextMenu_Opened">
+                                            <MenuItem Header="启动采集" x:Name="MenuStartTask" Click="MenuStartTask_Click"/>
+                                            <MenuItem Header="停止采集" x:Name="MenuStopTask" Click="MenuStopTask_Click"/>
+                                            <MenuItem Header="继续采集" x:Name="MenuResumeTask" Click="MenuResumeTask_Click"/>
                                             <MenuItem Header="移除任务" Click="MenuRemoveTask_Click"/>
                                             <MenuItem Header="查看监控配置" Click="MenuViewTask_Click"/>
                                             <Separator/>
