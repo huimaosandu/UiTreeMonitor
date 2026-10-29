@@ -1,7 +1,7 @@
 <Window x:Class="UiTreeMonitor.App.ChartOptionsDialog"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="数据图选线选项" SizeToContent="Height" Width="560"
+        Title="数据图选项" SizeToContent="Height" Width="560"
         MinHeight="320" MinWidth="560"
         WindowStartupLocation="CenterOwner" ResizeMode="CanResizeWithGrip"
         FontFamily="Microsoft YaHei" FontSize="13">

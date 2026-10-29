@@ -34,7 +34,7 @@ public sealed class ReportExporter
         {
             ExportCsv(dir, config, records),
             ExportJson(dir, taskName, taskId, config, records, startedAt, endedAt),
-            ExportHtml(dir, taskName, taskId, config, records, startedAt, endedAt, chartSourcePath is not null),
+            ExportHtml(dir, taskName, taskId, config, records, startedAt, endedAt),
         };
         if (chartSourcePath is not null)
         {
@@ -91,7 +91,7 @@ public sealed class ReportExporter
     }
 
     private static string ExportHtml(string dir, string name, Guid id, MonitorTaskConfig config,
-        IReadOnlyList<SampleRecord> records, DateTime startedAt, DateTime endedAt, bool hasChart = false)
+        IReadOnlyList<SampleRecord> records, DateTime startedAt, DateTime endedAt)
     {
         var path = Path.Combine(dir, "report.html");
 
@@ -115,7 +115,11 @@ h1{{font-size:20px}} h2{{font-size:16px;margin-top:24px}}
 table{{border-collapse:collapse;width:100%;margin-top:8px}}
 th,td{{border:1px solid #ccc;padding:6px 10px;text-align:left;font-size:13px}}
 th{{background:#f0f0f0}} .meta{{color:#666;font-size:13px}}
-.chart{{border:1px solid #e0e0e0;background:#fcfcfc;margin-top:8px}}</style></head>
+.chart{{border:1px solid #e0e0e0;background:#fcfcfc;margin-top:8px}}
+.lg{{display:inline-block;margin:2px 14px 2px 0;padding:2px 10px;border:1px solid #ddd;border-radius:3px;cursor:pointer;font-size:13px;background:#fff;user-select:none}}
+.lg i{{display:inline-block;width:18px;height:4px;margin-right:6px;vertical-align:middle}}
+.lg.off{{opacity:.4;text-decoration:line-through}}
+.lg.disabled{{cursor:not-allowed;color:#999}}</style></head>
 <body>
 <h1>监控报告：{CsvHtml(name)}</h1>
 <p class=""meta"">任务ID: {id:N} | 开始: {startedAt:yyyy-MM-dd HH:mm:ss} | 结束: {endedAt:yyyy-MM-dd HH:mm:ss} | 记录数: {records.Count}</p>
@@ -126,7 +130,7 @@ th{{background:#f0f0f0}} .meta{{color:#666;font-size:13px}}
 <tr><th>触发器</th><td>{CsvHtml(config.Trigger.Kind)}</td></tr>
 <tr><th>时间器</th><td>{CsvHtml(config.TimeBox.Boxes.Count > 0 ? string.Join("; ", config.TimeBox.Boxes.Select(b => b.Kind)) : "无")}</td></tr></table>
 <h2>值变化走势</h2>
-{(hasChart ? "<img src='chart.png' alt='走势图' style='max-width:100%;border:1px solid #e0e0e0;background:#fcfcfc'/>" : BuildLineCharts(records))}
+{BuildInteractiveChart(config, records)}
 <h2>属性变化摘要</h2>
 <table><tr><th>属性</th><th>条数</th><th>值变化</th><th>时间范围</th></tr>{rows}</table>
 </body></html>";
@@ -136,79 +140,165 @@ th{{background:#f0f0f0}} .meta{{color:#666;font-size:13px}}
     }
 
     /// <summary>
-    /// 按属性分组生成 SVG 连线图（时间戳→X、数值→Y），数值不可解析的属性不出图。
-    /// 纯内联 SVG，无外部依赖，离线可用。
+    /// 生成交互式走势图（原生 JS + Canvas，无外部依赖、离线可用）：
+    /// 图例点击显示/隐藏值曲线，Y 轴自动适配可见曲线范围，窗口缩放自动重绘；非数值列图例置灰。
     /// </summary>
-    private static string BuildLineCharts(IReadOnlyList<SampleRecord> records)
+    private static string BuildInteractiveChart(MonitorTaskConfig config, IReadOnlyList<SampleRecord> records)
     {
-        var sb = new StringBuilder();
-        foreach (var g in records.GroupBy(r => r.Property))
-        {
-            // 仅数值属性可画折线（InvariantCulture 解析）
-            var pts = g
-                .Select(r => (r.Timestamp, V: Parsed(r.Value)))
-                .Where(p => p.V.HasValue)
-                .Select(p => (p.Timestamp, V: p.V!.Value))
-                .ToList();
-            if (pts.Count < 2)
-            {
-                sb.Append($"<p class='meta'>属性 {CsvHtml(g.Key)}：数值样本不足（{pts.Count}），不生成走势图。</p>");
-                continue;
-            }
+        var n = config.Extractors.Count > 0 ? config.Extractors.Count : 1;
 
-            sb.Append(SvgChart(g.Key, pts));
+        // 与 CSV 同规则切行：(时间戳, 值1..值N)
+        var rows = new List<(DateTime Ts, string?[] Vals)>();
+        for (int i = 0; i + n <= records.Count; i += n)
+        {
+            var vals = new string?[n];
+            for (int c = 0; c < n; c++) vals[c] = records[i + c].Value;
+            rows.Add((records[i].Timestamp, vals));
         }
-        return sb.Length > 0 ? sb.ToString() : "<p class='meta'>无数值型采样数据，未生成走势图。</p>";
+
+        // 每列：可解析数值点 [epoch毫秒, 值]；无数值点的列 numeric=false（图例置灰）
+        var series = new List<object>();
+        for (int c = 0; c < n; c++)
+        {
+            var pts = rows
+                .Select(r => (r.Ts, V: Parsed(r.Vals[c])))
+                .Where(p => p.V.HasValue)
+                .Select(p => (object)new[] { new DateTimeOffset(p.Ts).ToUnixTimeMilliseconds(), p.V!.Value })
+                .ToList();
+            series.Add(new { name = $"值{c + 1}", numeric = pts.Count > 0, points = pts });
+        }
+
+        var json = System.Text.Json.JsonSerializer.Serialize(series);
+        return "<div id='chartWrap' style='margin-top:8px'>" +
+               "<div id='chartLegend'></div>" +
+               "<canvas id='chartCanvas' style='display:block;border:1px solid #e0e0e0;background:#fcfcfc'></canvas>" +
+               "<p class='meta'>点击图例可显示/隐藏对应曲线，纵轴将自动适配可见曲线的数值范围。</p>" +
+               InteractiveChartScript.Replace("__SERIES_JSON__", json) +
+               "</div>";
     }
 
     private static double? Parsed(string? s)
         => double.TryParse(s, System.Globalization.CultureInfo.InvariantCulture, out var v) ? v
          : (double.TryParse(s, out var v2) ? v2 : null);
 
-    /// <summary>单属性 SVG 折线图：边距 + 坐标轴刻度 + 数据折线。</summary>
-    private static string SvgChart(string property, List<(DateTime T, double V)> pts)
-    {
-        const int W = 900, H = 260, ML = 64, MR = 16, MT = 14, MB = 30;
-        int pw = W - ML - MR, ph = H - MT - MB;
+    /// <summary>交互图脚本（占位符 __SERIES_JSON__ 由生成时替换；verbatim 字符串避免 JS 大括号转义）。</summary>
+    private const string InteractiveChartScript = @"
+<script>
+(function () {
+  var SERIES = __SERIES_JSON__;
+  var wrap = document.getElementById('chartWrap');
+  if (!SERIES || SERIES.length === 0) {
+    wrap.innerHTML = '<p class=""meta"">无数值型采样数据，未生成走势图。</p>';
+    return;
+  }
+  var colors = ['#1F77B4', '#D62728', '#2CA02C', '#FF7F0E', '#9467BD', '#8C564B', '#00899C', '#E377C2'];
+  var visible = SERIES.map(function (s) { return s.numeric; });
+  var legend = document.getElementById('chartLegend');
+  var canvas = document.getElementById('chartCanvas');
 
-        var t0 = pts[0].T.Ticks; var t1 = pts[^1].T.Ticks;
-        var vMin = pts.Min(p => p.V); var vMax = pts.Max(p => p.V);
-        if (Math.Abs(vMax - vMin) < 1e-12) { vMax += 1; vMin -= 1; } // 恒值时留出上下空间
-
-        double X(DateTime t) => t1 == t0 ? ML + pw / 2.0 : ML + (double)(t.Ticks - t0) / (t1 - t0) * pw;
-        double Y(double v) => MT + (vMax - v) / (vMax - vMin) * ph;
-
-        var poly = string.Join(" ", pts.Select(p => $"{X(p.T):F1},{Y(p.V):F1}"));
-        var area = $"{ML},{MT + ph} {poly} {ML + pw},{MT + ph}"; // 半透明填充
-
-        // Y 轴 5 段刻度
-        var yTicks = new StringBuilder();
-        for (int i = 0; i <= 4; i++)
-        {
-            var v = vMin + (vMax - vMin) * i / 4;
-            var y = Y(v);
-            yTicks.Append($"<line x1='{ML - 4}' y1='{y:F1}' x2='{ML}' y2='{y:F1}' stroke='#999'/>");
-            yTicks.Append($"<text x='{ML - 8}' y='{y + 4:F1}' text-anchor='end' font-size='11' fill='#666'>{v:G6}</text>");
-        }
-        // X 轴首/中/尾 3 个时间刻度
-        var xTicks = new StringBuilder();
-        foreach (var t in new[] { pts[0].T, pts[pts.Count / 2].T, pts[^1].T })
-        {
-            xTicks.Append($"<line x1='{X(t):F1}' y1='{MT + ph}' x2='{X(t):F1}' y2='{MT + ph + 4}' stroke='#999'/>");
-            xTicks.Append($"<text x='{X(t):F1}' y='{MT + ph + 18}' text-anchor='middle' font-size='11' fill='#666'>{t:HH:mm:ss}</text>");
-        }
-
-        return $@"
-<div style='margin-top:10px'><b style='font-size:13px'>{CsvHtml(property)}</b></div>
-<svg class='chart' width='{W}' height='{H}' viewBox='0 0 {W} {H}' xmlns='http://www.w3.org/2000/svg'>
-<rect x='{ML}' y='{MT}' width='{pw}' height='{ph}' fill='white' stroke='#ddd'/>
-<polygon points='{area}' fill='rgba(0,102,204,0.08)'/>
-<line x1='{ML}' y1='{MT + ph}' x2='{ML + pw}' y2='{MT + ph}' stroke='#999'/>
-<line x1='{ML}' y1='{MT}' x2='{ML}' y2='{MT + ph}' stroke='#999'/>
-{yTicks}{xTicks}
-<polyline points='{poly}' fill='none' stroke='#0066CC' stroke-width='1.5'/>
-</svg>";
+  SERIES.forEach(function (s, i) {
+    var item = document.createElement('span');
+    item.className = 'lg' + (s.numeric ? '' : ' off disabled');
+    item.innerHTML = '<i style=""background:' + colors[i % colors.length] + '""></i>' + s.name;
+    item.title = s.numeric ? '点击显示/隐藏该曲线' : '非数值列，不可绘制';
+    if (s.numeric) {
+      item.onclick = function () {
+        visible[i] = !visible[i];
+        item.className = 'lg' + (visible[i] ? '' : ' off');
+        render();
+      };
     }
+    legend.appendChild(item);
+  });
+
+  function fmt(v) {
+    var a = Math.abs(v);
+    if (a >= 1e6 || (a > 0 && a <= 1e-4)) return v.toExponential(2);
+    return parseFloat(v.toFixed(4)).toString();
+  }
+  function hms(ms) {
+    var d = new Date(ms);
+    function p(n) { return n < 10 ? '0' + n : '' + n; }
+    return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+  }
+
+  function render() {
+    var dpr = window.devicePixelRatio || 1;
+    var W = Math.max(320, wrap.clientWidth - 2), H = 360;
+    canvas.width = W * dpr; canvas.height = H * dpr;
+    canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+    var ctx = canvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H);
+
+    var L = 86, R = 18, T = 18, B = 44;
+    var pw = W - L - R, ph = H - T - B;
+
+    var shown = [];
+    SERIES.forEach(function (s, i) { if (visible[i] && s.points.length > 0) shown.push(s); });
+    if (shown.length === 0) {
+      ctx.fillStyle = '#666'; ctx.font = '13px Segoe UI, Microsoft YaHei';
+      ctx.textAlign = 'center';
+      ctx.fillText('未选择任何曲线（点击上方图例显示）', W / 2, H / 2);
+      return;
+    }
+
+    // Y 轴自动适配：可见系列的合并范围 + 5% 余量（恒值时上下各留 1）
+    var tMin = Infinity, tMax = -Infinity, vMin = Infinity, vMax = -Infinity;
+    shown.forEach(function (s) {
+      s.points.forEach(function (p) {
+        if (p[0] < tMin) tMin = p[0];
+        if (p[0] > tMax) tMax = p[0];
+        if (p[1] < vMin) vMin = p[1];
+        if (p[1] > vMax) vMax = p[1];
+      });
+    });
+    var pad = (vMax - vMin) * 0.05; if (pad <= 0) pad = 1;
+    vMin -= pad; vMax += pad;
+    var tSpan = Math.max(1, tMax - tMin);
+
+    function X(t) { return L + (t - tMin) / tSpan * pw; }
+    function Y(v) { return T + (vMax - v) / (vMax - vMin) * ph; }
+
+    ctx.strokeStyle = '#E1E4E8'; ctx.lineWidth = 1;
+    ctx.fillStyle = '#3C3C3C'; ctx.font = '11px Segoe UI, Microsoft YaHei';
+    ctx.textAlign = 'right';
+    for (var i = 0; i <= 5; i++) {
+      var v = vMin + (vMax - vMin) * i / 5, y = Y(v);
+      ctx.beginPath(); ctx.moveTo(L, y); ctx.lineTo(L + pw, y); ctx.stroke();
+      ctx.fillText(fmt(v), L - 8, y + 4);
+    }
+    ctx.textAlign = 'center';
+    [tMin, (tMin + tMax) / 2, tMax].forEach(function (t) {
+      var x = X(t);
+      ctx.beginPath(); ctx.moveTo(x, T); ctx.lineTo(x, T + ph); ctx.stroke();
+      ctx.fillText(hms(t), x, T + ph + 16);
+    });
+    ctx.strokeStyle = '#5A5A5A'; ctx.lineWidth = 1.5;
+    ctx.strokeRect(L, T, pw, ph);
+
+    shown.forEach(function (s) {
+      var idx = SERIES.indexOf(s);
+      var c = colors[idx % colors.length];
+      if (s.points.length === 1) {
+        ctx.fillStyle = c;
+        ctx.beginPath(); ctx.arc(X(s.points[0][0]), Y(s.points[0][1]), 3.5, 0, Math.PI * 2); ctx.fill();
+        return;
+      }
+      ctx.strokeStyle = c; ctx.lineWidth = 2; ctx.lineJoin = 'round';
+      ctx.beginPath();
+      s.points.forEach(function (p, i) {
+        var x = X(p[0]), y = Y(p[1]);
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+    });
+  }
+  render();
+  window.addEventListener('resize', render);
+})();
+</script>";
 
     private static string Sanitize(string name)
     {

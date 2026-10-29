@@ -46,7 +46,7 @@ public partial class ChartOptionsDialog : Window
             .ToList();
         if (selected.Count == 0)
         {
-            MessageBox.Show(this, "请至少勾选一条数值曲线。", "数据图选线", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show(this, "请至少勾选一条数值曲线。", "数据图选项", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
         Result = new ChartOptionsResult { SelectedSeries = selected, GenerateChart = true, Confirmed = true };
