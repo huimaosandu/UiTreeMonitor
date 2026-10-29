@@ -183,16 +183,52 @@ public class ElementNodeTests
 public class ValueExtractorTests
 {
     [Fact]
-    public void MarkerPair_ExtractsBetweenMarkers()
+    public void CompileMarkedSample_ValueWithQuotes_ExtractsNumber()
     {
-        // 用户场景：Value = "@@614.466@@" → 截取 614.466
-        Assert.Equal("614.466", UiTreeMonitor.Core.Filters.ValueExtractor.ExtractOne("@@614.466@@", "@@"));
+        // 用户场景：示例 Value = "@@614.466@@"（标记 @@）→ 锚点正则 → 对实际值提取 614.466
+        var rule = UiTreeMonitor.Core.Filters.ValueExtractor.CompileFromMarkedSample(
+            "Value = \"@@614.466@@\"", "@@");
+        Assert.NotNull(rule);
+        Assert.Equal("614.466",
+            UiTreeMonitor.Core.Filters.ValueExtractor.ExtractOne("Value = \"614.466\"", rule!));
     }
 
     [Fact]
-    public void MarkerPair_NonGreedy_StopsAtFirstClose()
+    public void CompileMarkedSample_NoSuffix_AnchorsByPrefixOnly()
     {
-        Assert.Equal("A", UiTreeMonitor.Core.Filters.ValueExtractor.ExtractOne("@@A@@ tail @@B@@", "@@"));
+        // 第二个标记在结尾（后缀为空）：仅前缀锚定，贪婪取前缀后的全部内容
+        var rule = UiTreeMonitor.Core.Filters.ValueExtractor.CompileFromMarkedSample("Temp: @@42@@", "@@");
+        Assert.NotNull(rule);
+        Assert.Equal("99.5", UiTreeMonitor.Core.Filters.ValueExtractor.ExtractOne("Temp: 99.5", rule!));
+    }
+
+    [Fact]
+    public void CompileMarkedSample_UnpairedMarker_ReturnsNull()
+    {
+        Assert.Null(UiTreeMonitor.Core.Filters.ValueExtractor.CompileFromMarkedSample("Value = \"@@614.466\"", "@@"));
+        Assert.Null(UiTreeMonitor.Core.Filters.ValueExtractor.CompileFromMarkedSample("no marker here", "@@"));
+    }
+
+    [Fact]
+    public void CompileMarkedSample_CustomMarker_Works()
+    {
+        // 设置里自定义截取字符（如 ##）：示例 Value = "##614.466##"
+        var rule = UiTreeMonitor.Core.Filters.ValueExtractor.CompileFromMarkedSample(
+            "Value = \"##614.466##\"", "##");
+        Assert.NotNull(rule);
+        Assert.Equal("614.466",
+            UiTreeMonitor.Core.Filters.ValueExtractor.ExtractOne("Value = \"614.466\"", rule!));
+    }
+
+    [Fact]
+    public void CompileMarkedSample_SpecialCharsInPrefix_Escaped()
+    {
+        // 前缀含正则元字符（括号、点、百分号）时必须按字面匹配，对实际值提取其后的数值
+        var rule = UiTreeMonitor.Core.Filters.ValueExtractor.CompileFromMarkedSample(
+            @"CPU(%) = @@91.2@@ perc", "@@");
+        Assert.NotNull(rule);
+        Assert.Equal("55.0",
+            UiTreeMonitor.Core.Filters.ValueExtractor.ExtractOne(@"CPU(%) = 55.0 perc", rule!));
     }
 
     [Fact]
@@ -219,11 +255,13 @@ public class ValueExtractorTests
     [Fact]
     public void MultipleRules_ProduceOrderedValues()
     {
-        var rules = new[] { "@@", @"re:(\d+)" };
-        var result = UiTreeMonitor.Core.Filters.ValueExtractor.ExtractAll("x @@Temp: 42@@ y 7", rules);
+        // 值1：锚点提取（编译自标记示例）；值2：正则。顺序=规则顺序
+        var rule1 = UiTreeMonitor.Core.Filters.ValueExtractor.CompileFromMarkedSample("x @@42@@ y", "@@");
+        var rules = new[] { rule1!, @"re:(\d+)" };
+        var result = UiTreeMonitor.Core.Filters.ValueExtractor.ExtractAll("x 7 y", rules);
         Assert.Equal(2, result.Count);
-        Assert.Equal("Temp: 42", result[0]); // 值1：标记对
-        Assert.Equal("42", result[1]);       // 值2：正则
+        Assert.Equal("7", result[0]);    // 值1：前缀 "x " 与后缀 " y" 之间的内容
+        Assert.Equal("7", result[1]);    // 值2：正则第一捕获组
     }
 
     [Fact]

@@ -307,8 +307,8 @@ public partial class MainWindow : Window
             return;
         }
 
-        // ★ 烧杯按钮也弹出"添加监控"对话框（与右键菜单统一体验）
-        var dlg = new AddMonitorDialog("Name", result.ProcessName ?? "", _settings.ExtractMarker);
+        // ★ 烧杯按钮也弹出"添加监控"对话框（与右键菜单统一体验）；传入当前值作提取规则示例
+        var dlg = new AddMonitorDialog("Name", result.ProcessName ?? "", _settings.ExtractMarker, result.Name);
         dlg.Owner = this;
         if (dlg.ShowDialog() != true || !dlg.Confirmed) return;
 
@@ -536,8 +536,8 @@ public partial class MainWindow : Window
             procName = _selectedNode.ProcessName ?? _currentTarget?.ProcessName ?? "";
         }
 
-        // 弹出"添加监控"对话框
-        var dlg = new AddMonitorDialog(propName, procName, _settings.ExtractMarker);
+        // 弹出"添加监控"对话框（传入当前值作提取规则示例）
+        var dlg = new AddMonitorDialog(propName, procName, _settings.ExtractMarker, propValue);
         dlg.Owner = this;
         if (dlg.ShowDialog() != true || !dlg.Confirmed) return;
 
@@ -622,8 +622,12 @@ public partial class MainWindow : Window
         // ★ 启动实时值刷新定时器
         StartValueRefreshTimer(item);
 
+        // 保存策略描述（按点 或 按时间 二选一：另一维度被禁用时不在消息里显示）
+        var saveDesc = saveBatchPoints == int.MaxValue
+            ? $"每 {saveIntervalSec} 秒落盘"
+            : $"每 {saveBatchPoints} 点落盘";
         TxtStatus.Text = $"已添加监控任务 [{taskName}]，每 {intervalMs}ms 采样一次" +
-            $"{(durationSec > 0 ? $"，共 {durationSec} 秒" : "")}；数据每 {saveBatchPoints} 点或每 {saveIntervalSec} 秒落盘 → {TodayDataDir}";
+            $"{(durationSec > 0 ? $"，共 {durationSec} 秒" : "")}；数据{saveDesc} → {TodayDataDir}";
     }
 
     private void PropertiesGrid_MouseRightButtonUp(object sender, MouseButtonEventArgs e)
@@ -737,6 +741,9 @@ public partial class MainWindow : Window
                 {
                     item.SampleCount++;
                     item.LastSampleTime = DateTime.Now.ToString("HH:mm:ss.fff");
+                    // ★ 当前值列实时显示采样值（Records 已应用提取规则 → 值1, 值2, 值3…）
+                    var vals = string.Join(", ", ev.Sample.Records.Select(r => r.Value));
+                    if (vals.Length > 0) item.CurrentValue = vals;
                 });
                 _saver.Enqueue(item.Config.Id, item.Config.Name, ev.Sample.Records);
             };
@@ -809,7 +816,11 @@ public partial class MainWindow : Window
                     {
                         // GetProperty 已支持 "ValuePattern.Value" 带点路径（ElementNode.GetProperty）
                         var foundVal = matchNode.GetProperty(item.MonitorProperty);
-                        Dispatcher.Invoke(() => item.CurrentValue = foundVal ?? "-");
+                        // ★ 多规则任务：当前值列显示 值1, 值2, 值3…（应用提取规则后的各值）
+                        var display = foundVal is not null && item.Config.Extractors is { Count: > 0 }
+                            ? string.Join(", ", ValueExtractor.ExtractAll(foundVal, item.Config.Extractors))
+                            : foundVal ?? "-";
+                        Dispatcher.Invoke(() => item.CurrentValue = display);
                     }
                 }
                 catch { /* 单次刷新失败不影响后续 */ }
