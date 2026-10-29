@@ -257,6 +257,19 @@ public class ValueExtractorTests
     }
 
     [Fact]
+    public void CompileMarkedSample_DigitDigitBoundary_TakesMarkedLength()
+    {
+        // 数字对数字交界按示例圈住的位数取：Value = "@@66@@3.631"——捕获 66（2位）以数字结尾、
+        // 后缀 3.631 以数字开头（两侧都模糊成 \d+，边界不确定）→ 以圈住字符数为下限取最短
+        // → 对实际值 663.631 提取 66（不是 6 也不是 60）
+        var rule = UiTreeMonitor.Core.Filters.ValueExtractor.CompileFromMarkedSample(
+            "Value = \"@@66@@3.631\"", "@@");
+        Assert.NotNull(rule);
+        Assert.Equal("66",
+            UiTreeMonitor.Core.Filters.ValueExtractor.ExtractOne("Value = \"663.631\"", rule!));
+    }
+
+    [Fact]
     public void CompileMarkedSample_TextCapture_StillCollected()
     {
         // 需求3：圈住文本（Value ）也要能提取采集；后缀 ="603.561" 数字模糊后照常匹配实际值
