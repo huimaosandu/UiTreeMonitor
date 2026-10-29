@@ -44,12 +44,12 @@
                           VerticalAlignment="Stretch" Background="#CCCCCC"
                           ResizeBehavior="PreviousAndCurrent"/>
 
-            <!-- ===== 左侧：结构树 + Details（上下可拖拽） ===== -->
+            <!-- ===== 左侧：结构树 + Details（上下可拖拽，默认高度比 4:6） ===== -->
             <Grid Grid.Column="0">
                 <Grid.RowDefinitions>
-                    <RowDefinition Height="*" MinHeight="150" x:Name="RowTree"/>
+                    <RowDefinition Height="4*" MinHeight="150" x:Name="RowTree"/>
                     <RowDefinition Height="Auto"/>    <!-- GridSplitter -->
-                    <RowDefinition Height="280" MinHeight="120" x:Name="RowDetails"/>
+                    <RowDefinition Height="6*" MinHeight="200" x:Name="RowDetails"/>
                 </Grid.RowDefinitions>
 
                 <!-- 上下分界线拖拽 -->
@@ -112,7 +112,7 @@
                             <Expander Header="Patterns" IsExpanded="True" Margin="0,2">
                                 <TreeView x:Name="PatternsTree" FontSize="12" Background="White"
                                           BorderThickness="1" BorderBrush="#DDDDDD"
-                                          MaxHeight="160" MouseRightButtonUp="PatternsTree_MouseRightButtonUp">
+                                          MaxHeight="260" MouseRightButtonUp="PatternsTree_MouseRightButtonUp">
                                     <TreeView.ContextMenu>
                                         <ContextMenu>
                                             <MenuItem Header="添加为监测目标" Click="MenuItem_AddAsTarget_Click"/>
