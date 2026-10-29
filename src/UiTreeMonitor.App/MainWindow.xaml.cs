@@ -449,19 +449,34 @@ public partial class MainWindow : Window
             propValue = pi.FullValue;
             procName = _selectedNode?.ProcessName ?? _currentTarget?.ProcessName ?? "";
         }
-        else if (source?.PlacementTarget is TreeView) // 来自 Patterns
+        else if (source?.PlacementTarget is TreeView) // 来自 Patterns（或其子项）
         {
-            var pat = (PatternsTree.SelectedItem ?? _rightClickedItem) as PatternItem;
-            if (pat is null)
+            // ★ 可能是 PatternItem（右键 Pattern 本身）或 PropertyItem（右键子属性如 Value）
+            var clicked = PatternsTree.SelectedItem ?? _rightClickedItem;
+            if (clicked is PatternItem pat)
             {
-                TxtStatus.Text = "请先选中一个 Pattern";
+                // 右键了 Pattern 本身（如 ValuePattern）→ 用其第一个子属性作为监控目标
+                propName = pat.SubProperties.Count > 0
+                    ? $"{pat.Name}.{pat.SubProperties[0].Name}"  // 如 "ValuePattern.Value"
+                    : pat.Name;
+                propValue = pat.Value;
+            }
+            else if (clicked is PropertyItem pi)
+            {
+                // ★ 右键了 Pattern 的子属性（如 ValuePattern 下的 Value）
+                // 需要找到父 Pattern 名称来构造完整属性路径
+                propName = pi.Name;  // 如 "Value"
+                propValue = pi.FullValue;
+                // 尝试从父 TreeViewItem 获取 Pattern 名称
+                var parentPat = FindParentPatternItem();
+                if (!string.IsNullOrEmpty(parentPat))
+                    propName = $"{parentPat}.{pi.Name}";  // 如 "ValuePattern.Value"
+            }
+            else
+            {
+                TxtStatus.Text = "请先选中一个 Pattern 或其子属性";
                 return;
             }
-            // Pattern 格式："ValuePattern Value = ""623.912"" → 提取显示名
-            propName = string.IsNullOrEmpty(pat.Value) || pat.Value == "(supported, no current value)"
-                ? pat.Name 
-                : $"{pat.Name} ({pat.SubProperties.FirstOrDefault()?.Name ?? "Value"})";
-            propValue = pat.Value;
             procName = _selectedNode?.ProcessName ?? _currentTarget?.ProcessName ?? "";
         }
         else
@@ -545,11 +560,16 @@ public partial class MainWindow : Window
     private void PatternsTree_MouseRightButtonUp(object sender, MouseButtonEventArgs e)
     {
         // 找到右键点击的 TreeViewItem（TreeView.SelectedItem 是只读的，用临时变量传给 ContextMenu）
+        // ★ Pattern 的子项是 PropertyItem（HierarchicalDataTemplate ItemsSource=SubProperties）
+        // 用户可能右键 Pattern 本身，也可能右键其子属性（如 ValuePattern 下的 Value）
         var dep = e.OriginalSource as DependencyObject;
         while (dep is not null and not TreeViewItem)
             dep = VisualTreeHelper.GetParent(dep);
-        if (dep is TreeViewItem tvi && tvi.DataContext is PatternItem)
-            _rightClickedItem = tvi.DataContext;
+        if (dep is TreeViewItem tvi)
+        {
+            if (tvi.DataContext is PatternItem || tvi.DataContext is PropertyItem)
+                _rightClickedItem = tvi.DataContext;
+        }
     }
 
     /// <summary>判断属性是否为文本类（适合用正则提取值变化）。</summary>
@@ -558,6 +578,40 @@ public partial class MainWindow : Window
         "Name" or "Value" or "HelpText" or "ItemStatus" or "AccessKey" or "ToggleState" or "RangeValue" => true,
         _ => false,
     };
+
+    /// <summary>
+    /// 在 PatternsTree 中查找右键项的父 PatternItem 名称。
+    /// 用于构造完整属性路径（如 "ValuePattern.Value"）。
+    /// </summary>
+    private string? FindParentPatternItem()
+    {
+        // 遍历 PatternsTree 的 TreeViewItem，找 DataContext 为 PropertyItem 且匹配 _rightClickedItem 的
+        // 其父级 TreeViewItem 的 DataContext 就是 PatternItem
+        foreach (var root in PatternsTree.Items.OfType<object>())
+        {
+            var result = FindParentPatternRecursive(PatternsTree.ItemContainerGenerator.ContainerFromItem(root) as TreeViewItem);
+            if (result is not null) return result;
+        }
+        return null;
+    }
+
+    private string? FindParentPatternRecursive(TreeViewItem? item)
+    {
+        if (item is null) return null;
+        // 检查子项中是否有 _rightClickedItem
+        foreach (var child in item.Items.OfType<object>())
+        {
+            var childTvi = item.ItemContainerGenerator.ContainerFromItem(child) as TreeViewItem;
+            if (childTvi?.DataContext == _rightClickedItem && item.DataContext is PatternItem pat)
+                return pat.Name;
+            if (childTvi is not null)
+            {
+                var deep = FindParentPatternRecursive(childTvi);
+                if (deep is not null) return deep;
+            }
+        }
+        return null;
+    }
 
     // ========== 任务管理 ==========
     private void BtnAddTask_Click(object sender, RoutedEventArgs e)
