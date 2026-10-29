@@ -87,11 +87,22 @@ public partial class MainWindow : Window
     private TreeNodeViewModel? _selectedNode; // 当前树选中节点（Details 面板联动）
     private object? _rightClickedItem; // 右键点击的属性/Pattern 项（ContextMenu 回调用）
     private bool _detailsLocked; // 烧杯按钮点击后锁定 Details 不再刷新
+    // Details 面板当前显示元素的定位约束（右键添加监控时作目标元素，两条路径都会更新：
+    // 树选中节点 / 鼠标捕获悬停元素；_selectedNode 为 null 时兜底用它）
+    private string? _detailsElemName;
+    private string? _detailsElemControlType;
+    private string? _detailsElemAutomationId;
 
     private static readonly string AppDataDir =
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".ui-tree-monitor");
     private static readonly string TaskConfigDir = Path.Combine(AppDataDir, "tasks");
     private static readonly string OutputDir = Path.Combine(AppDataDir, "exports");
+
+    // ========== 日志：写到 E:\ui-tree-monitor\monitor.log ==========
+    private static void Log(string msg)
+    {
+        try { System.IO.File.AppendAllText(@"E:\ui-tree-monitor\monitor.log", $"{DateTime.Now:HH:mm:ss.fff} {msg}{System.Environment.NewLine}"); } catch { }
+}
 
     public MainWindow()
     {
@@ -311,6 +322,10 @@ public partial class MainWindow : Window
                 TxtDetailsTitle.Text = $"[{result.ControlType}] {result.Name ?? ""}";
                 PropertiesGrid.ItemsSource = props;
                 PatternsTree.ItemsSource = pats;
+                // 记录当前 Details 元素约束（右键添加监控时作目标元素定位）
+                _detailsElemName = result.Name;
+                _detailsElemControlType = result.ControlType;
+                _detailsElemAutomationId = result.AutomationId;
             }
 
             // 未加载树或目标进程变化 → 自动抓新窗口树
@@ -417,6 +432,10 @@ public partial class MainWindow : Window
             TxtDetailsTitle.Text = vm.Display;
             PropertiesGrid.ItemsSource = vm.Properties;
             PatternsTree.ItemsSource = vm.Patterns;
+            // 记录当前 Details 元素约束（右键添加监控时作目标元素定位）
+            _detailsElemName = vm.Name;
+            _detailsElemControlType = vm.ControlType;
+            _detailsElemAutomationId = vm.AutomationId;
         }
         else
         {
@@ -511,8 +530,10 @@ public partial class MainWindow : Window
         }
 
         // ★ 日志：任务创建参数
-        System.Diagnostics.Debug.WriteLine($"[MONITOR] 创建任务: {taskName}, 目标={monitorProp}, 进程={processName}, 间隔={intervalMs}ms, 时长={durationSec}s");
-        System.Diagnostics.Debug.WriteLine($"[MONITOR] _currentTarget={_currentTarget?.ProcessName}/{_currentTarget?.ProcessId}, _selectedNode={_selectedNode?.ControlType}/{_selectedNode?.Name}");
+        Log($"=== 创建任务: {taskName} ===");
+        Log($"  目标={monitorProp}, 进程={processName}, 间隔={intervalMs}ms, 时长={durationSec}s");
+        Log($"  _currentTarget={_currentTarget?.ProcessName}/{_currentTarget?.ProcessId}");
+        Log($"  _selectedNode={_selectedNode?.ControlType}/{_selectedNode?.Name}");
 
         var config = new MonitorTaskConfig
         {
@@ -521,13 +542,17 @@ public partial class MainWindow : Window
             {
                 Kind = TargetKind.Process,
                 Value = processName,
-                ElementControlType = _selectedNode?.ControlType,
-                ElementName = _selectedNode?.Name,
+                // ★ 元素约束：树选中节点优先，鼠标捕获的 Details 元素兜底
+                // （此前只取 _selectedNode，烧杯/悬停路径下为 null → 任务匹配到树的第一个节点）
+                ElementControlType = _selectedNode?.ControlType ?? _detailsElemControlType,
+                ElementName = _selectedNode?.Name ?? _detailsElemName,
+                ElementAutomationId = _selectedNode?.AutomationId ?? _detailsElemAutomationId,
             },
             Properties = new[] { monitorProp },
             Timer = new TimerSpec { IntervalMs = intervalMs },
             OutputDirectory = OutputDir,
-            Trigger = new ImmediateTriggerSpec(),
+            // 定时触发：立即首采 + 每隔 intervalMs 重复（ImmediateTriggerSpec 只触发一次，任务会停在首次采样后空转）
+            Trigger = new ScheduleTriggerSpec { Repeat = true, RepeatIntervalMs = intervalMs },
         };
 
         // ★ 日志：注册前检查
@@ -713,43 +738,18 @@ public partial class MainWindow : Window
                         return; 
                     }
                     
-                    // 找到与监控目标匹配的节点（按进程名+控件类型+名称）
+                    // 找到与监控目标匹配的节点（按进程名+控件类型+名称+AutomationId，null 约束不参与匹配）
+                    var t = item.Config.Target;
                     var matchNode = snap.Nodes.Values.FirstOrDefault(n =>
                         n.ProcessId == _currentTarget.ProcessId &&
-                        (n.ControlType == item.Config.Target.ElementControlType || 
-                         string.IsNullOrEmpty(item.Config.Target.ElementControlType)) &&
-                        (n.Name == item.Config.Target.ElementName ||
-                         string.IsNullOrEmpty(item.Config.Target.ElementName)));
+                        (t.ElementControlType is null || n.ControlType == t.ElementControlType) &&
+                        (t.ElementName is null || n.Name == t.ElementName) &&
+                        (t.ElementAutomationId is null || n.AutomationId == t.ElementAutomationId));
                     
                     if (matchNode is not null)
                     {
-                        // 从 PatternDataList 中查找监控属性的值
-                        var propParts = item.MonitorProperty.Split('.');
-                        string? foundVal = null;
-                        
-                        // 先查离散字段
-                        foundVal = matchNode.GetProperty(propParts[0]);
-                        
-                        // 再查 Pattern 数据
-                        if (string.IsNullOrEmpty(foundVal) || foundVal == "")
-                        {
-                            foreach (var pd in matchNode.PatternDataList)
-                            {
-                                if (pd.Name == propParts[0])
-                                {
-                                    foundVal = pd.DisplayValue;
-                                    break;
-                                }
-                                foreach (var spp in pd.SubProps)
-                                {
-                                    if (spp.Name == propParts.ElementAtOrDefault(1))
-                                    { foundVal = spp.Value; break; }
-                                }
-                                if (!string.IsNullOrEmpty(foundVal) && foundVal != "(null)" && foundVal != "(supported, no current value)") 
-                                    break;
-                            }
-                        }
-                        
+                        // GetProperty 已支持 "ValuePattern.Value" 带点路径（ElementNode.GetProperty）
+                        var foundVal = matchNode.GetProperty(item.MonitorProperty);
                         Dispatcher.Invoke(() => item.CurrentValue = foundVal ?? "-");
                     }
                 }

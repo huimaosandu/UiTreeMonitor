@@ -72,8 +72,24 @@ public sealed record ElementNode
     public IReadOnlyList<string> SupportedPatterns { get; init; } = Array.Empty<string>();
     public IReadOnlyList<int> Children { get; init; } = Array.Empty<int>();
 
-    /// <summary>按属性名取值（供监控与过滤统一使用）。</summary>
-    public string? GetProperty(string name) => name switch
+    /// <summary>按属性名取值（供监控与过滤统一使用）。支持 "PatternName.PropName" 带点路径（如 ValuePattern.Value）。</summary>
+    public string? GetProperty(string name)
+    {
+        // 带点路径：查 PatternDataList（TreeSampler 存的 pd.Name 如 "ValuePattern"，子属性如 "Value"）
+        if (name.Contains('.'))
+        {
+            var dot = name.IndexOf('.');
+            var patName = name[..dot];
+            var propName = name[(dot + 1)..];
+            foreach (var pd in PatternDataList)
+            {
+                if (!string.Equals(pd.Name, patName, StringComparison.OrdinalIgnoreCase)) continue;
+                foreach (var sp in pd.SubProps)
+                    if (sp.Name == propName) return sp.Value;
+            }
+            return null;
+        }
+        return name switch
     {
         UiProperties.Name => Name,
         UiProperties.ControlType => ControlType,
@@ -93,7 +109,8 @@ public sealed record ElementNode
         UiProperties.IsSelected => IsSelected,
         UiProperties.IsExpandCollapsed => ExpandCollapseState,
         _ => null,
-    };
+        };
+    }
 }
 
 /// <summary>一次完整树采集的结果。</summary>

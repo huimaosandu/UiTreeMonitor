@@ -145,3 +145,67 @@ public class TargetResolverTests
         Assert.Null(result);
     }
 }
+
+public class ElementNodeTests
+{
+    private static ElementNode NodeWithPattern(params (string Pat, string Prop, string Val)[] entries)
+    {
+        var pats = new List<PatternData>();
+        foreach (var g in entries.GroupBy(e => e.Pat))
+            pats.Add(new PatternData(g.Key, g.First().Val,
+                g.Select(e => new PatternPropData(e.Prop, e.Val)).ToList()));
+        return new() { Id = 1, PatternDataList = pats };
+    }
+
+    [Fact]
+    public void GetProperty_DottedPatternPath_ReturnsValue()
+    {
+        var node = NodeWithPattern(("ValuePattern", "Value", "hello"));
+        Assert.Equal("hello", node.GetProperty("ValuePattern.Value"));
+    }
+
+    [Fact]
+    public void GetProperty_DottedPath_Unknown_ReturnsNull()
+    {
+        var node = NodeWithPattern(("ValuePattern", "Value", "hello"));
+        Assert.Null(node.GetProperty("TogglePattern.ToggleState"));
+    }
+
+    [Fact]
+    public void GetProperty_PlainName_StillWorks()
+    {
+        var node = new ElementNode { Id = 1, Name = "温度计", ControlType = "Text" };
+        Assert.Equal("温度计", node.GetProperty("Name"));
+        Assert.Equal("Text", node.GetProperty("ControlType"));
+    }
+}
+
+public class ScheduleTriggerRhythmTests
+{
+    // ScheduleTriggerRuntime 首次用 TaskStartedAt 作起点（MonitorTask 同款），测试里必须设置
+    private static TriggerContext Ctx(DateTime now) => new() { Now = now, TaskStartedAt = now };
+
+    [Fact]
+    public void Schedule_Repeat_FiresImmediatelyThenByInterval()
+    {
+        var start = new DateTime(2026, 10, 29, 11, 0, 0);
+        var trigger = TriggerRuntimeFactory.Create(new ScheduleTriggerSpec { RepeatIntervalMs = 500 });
+
+        Assert.True(trigger.ShouldFire(Ctx(start)));                   // 首采立即
+        Assert.False(trigger.ShouldFire(Ctx(start.AddMilliseconds(200)))); // 间隔内不触发
+        Assert.True(trigger.ShouldFire(Ctx(start.AddMilliseconds(500))));  // 到期再触发
+        Assert.False(trigger.ShouldFire(Ctx(start.AddMilliseconds(700))));
+        Assert.True(trigger.ShouldFire(Ctx(start.AddMilliseconds(1000))));
+    }
+
+    [Fact]
+    public void Immediate_FiresOnlyOnce()
+    {
+        // 固化行为认知：Immediate 只触发一次——监控任务要用 ScheduleTriggerSpec 才能持续采集
+        var trigger = TriggerRuntimeFactory.Create(new ImmediateTriggerSpec());
+        var ctx = Ctx(DateTime.Now);
+        Assert.True(trigger.ShouldFire(ctx));
+        Assert.False(trigger.ShouldFire(ctx));
+        Assert.False(trigger.ShouldFire(ctx));
+    }
+}

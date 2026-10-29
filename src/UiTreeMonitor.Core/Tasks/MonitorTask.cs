@@ -96,6 +96,10 @@ public sealed class MonitorTask : IDisposable
     {
         try
         {
+            var logPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "uitm_monitor.log");
+            void MLog(string m) { try { System.IO.File.AppendAllText(logPath, $"{DateTime.Now:HH:mm:ss.fff} [TASK-{Name}] {m}{System.Environment.NewLine}"); } catch { } };
+
+            MLog("=== Run() 开始 ===");
             using var session = UiaSession.Create();
             var sampler = new TreeSampler();
             var trigger = TriggerRuntimeFactory.Create(_config.Trigger);
@@ -105,12 +109,16 @@ public sealed class MonitorTask : IDisposable
             var lastValues = new Dictionary<string, string?>();
             string? prevPrimaryValue = null;
             int samplesTaken = 0;
+            int loopCount = 0;
             var lastFire = DateTime.MinValue;
 
             var stopCtx = new StopContext { TaskStartedAt = StartedAt };
+            MLog($"Target: Kind={_config.Target.Kind}, Value={_config.Target.Value}, ElemName={_config.Target.ElementName}, ElemType={_config.Target.ElementControlType}");
+            MLog($"Properties: [{string.Join(",", _config.Properties)}], Interval={_config.Timer.IntervalMs}ms");
 
             while (!_stopRequested)
             {
+                loopCount++; // 放在循环开头：continue 分支也要推进，否则节流日志（loopCount % N）恒命中刷屏
                 var now = DateTime.Now;
 
                 // 时间器推进（Loop 模式）
@@ -130,6 +138,7 @@ public sealed class MonitorTask : IDisposable
                 var target = TargetResolver.Resolve(_config.Target);
                 if (target is null)
                 {
+                    if (loopCount % 10 == 0) MLog($"TargetResolver.Resolve 返回 null (loop={loopCount})");
                     Thread.Sleep(Math.Min(500, _config.Timer.IntervalMs));
                     continue;
                 }
@@ -145,6 +154,7 @@ public sealed class MonitorTask : IDisposable
                 };
                 if (!trigger.ShouldFire(ctx))
                 {
+                    if (loopCount % 50 == 0) MLog($"ShouldFire=false 未触发采集 (loop={loopCount}, trigger={_config.Trigger.Kind})");
                     Thread.Sleep(Math.Min(100, _config.Timer.IntervalMs));
                     continue;
                 }
@@ -154,14 +164,25 @@ public sealed class MonitorTask : IDisposable
                 var tree = sampler.CaptureWindow(session, target);
                 if (tree.NodeCount == 0)
                 {
+                    if (loopCount % 10 == 0) MLog($"CaptureWindow 返回空树 (loop={loopCount})");
                     Thread.Sleep(Math.Min(200, _config.Timer.IntervalMs));
                     continue;
                 }
+                if (loopCount % 10 == 0) MLog($"CaptureWindow 成功: {tree.NodeCount}个节点");
 
                 // 过滤：定位监控节点（属性级）
                 var (nodeId, nodePath, values) = SelectMonitoredValues(tree, _config);
                 if (nodeId < 0)
                 {
+                    if (loopCount % 5 == 0)
+                    {
+                        MLog($"SelectMonitoredValues 未匹配节点! ElemName=[{_config.Target.ElementName}] ElemType=[{_config.Target.ElementControlType}]");
+                        // 打印前3个节点供诊断
+                        foreach (var id in tree.Order.Take(3))
+                        {
+                            var n = tree.Nodes[id]; MLog($"  节点[{id}]: Name=[{n.Name}] Type=[{n.ControlType}] AutoId=[{n.AutomationId}]");
+                        }
+                    }
                     Thread.Sleep(Math.Min(200, _config.Timer.IntervalMs));
                     continue;
                 }
@@ -180,6 +201,7 @@ public sealed class MonitorTask : IDisposable
                     samplesTaken = _samples.Count;
                 }
                 SampleTaken?.Invoke(this, new MonitorTaskEventArgs { Sample = sample });
+                if (samplesTaken % 10 == 0) MLog($"采样成功! 总计={samplesTaken}, 值=[{string.Join(",", values.Values)}]");
 
                 // 结束条件判断
                 stopCtx.Now = now;
