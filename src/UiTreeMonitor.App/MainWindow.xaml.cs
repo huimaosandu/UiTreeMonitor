@@ -694,7 +694,7 @@ public partial class MainWindow : Window
                 {
                     using var session = UiaSession.Create();
                     var snap = new TreeSampler().CaptureWindow(session, _currentTarget);
-                    if (snap?.NodeCount == 0) return;
+                    if (snap is null || snap.NodeCount == 0) return;
                     
                     // 找到与监控目标匹配的节点（按进程名+控件类型+名称）
                     var matchNode = snap.Nodes.Values.FirstOrDefault(n =>
