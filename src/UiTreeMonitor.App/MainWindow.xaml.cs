@@ -99,6 +99,7 @@ public partial class MainWindow : Window
     private bool _capturing;
     private MouseCaptureResult? _lastHoverResult; // 当前悬停选中的元素（烧杯按钮回调用）
     private TreeNodeViewModel? _selectedNode; // 当前树选中节点（Details 面板联动）
+    private readonly DispatcherTimer? _historyTimer; // 采样历史页激活期间自动刷新
     private object? _rightClickedItem; // 右键点击的属性/Pattern 项（ContextMenu 回调用）
     private bool _detailsLocked; // 烧杯按钮点击后锁定 Details 不再刷新
     // Details 面板当前显示元素的定位约束（右键添加监控时作目标元素，两条路径都会更新：
@@ -146,6 +147,10 @@ public partial class MainWindow : Window
         _drainTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(100) };
         _drainTimer.Tick += (_, _) => DrainCaptureQueue();
         _drainTimer.Start();
+
+        // 采样历史页：激活期间自动刷新（选中任务的记录实时追加可见）
+        _historyTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
+        _historyTimer.Tick += (_, _) => RefreshHistory();
         Closed += (_, _) =>
         {
             _mouseCapture.Stop();
@@ -1129,12 +1134,49 @@ public partial class MainWindow : Window
     }
 
     private void TaskList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        => RefreshHistory();
+
+    /// <summary>切换右侧页签：进入「采样历史」立即刷新并启动自动刷新；切走则停止。</summary>
+    private void MainTabs_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (TaskList.SelectedItem is TaskListItem item)
+        if (ReferenceEquals(MainTabs.SelectedItem, TabHistory))
         {
-            HistoryGrid.ItemsSource = GetHistory(item.Config.Id);
+            RefreshHistory();
+            _historyTimer?.Start();
+        }
+        else
+        {
+            _historyTimer?.Stop();
         }
     }
+
+    /// <summary>刷新采样历史页：显示当前选中任务的全部采样记录（无选中/无记录时给出提示）。
+    /// 仅在任务或记录数变化时重绑（避免周期重设导致滚动/选中丢失），重绑后滚动到最新一条。</summary>
+    private void RefreshHistory()
+    {
+        if (TaskList.SelectedItem is not TaskListItem item)
+        {
+            HistoryGrid.ItemsSource = null;
+            _historyTaskId = Guid.Empty;
+            _historyCount = -1;
+            TxtHistoryStatus.Text = "请先在「任务管理」页选中一个任务，此处显示其采样记录";
+            return;
+        }
+        var records = GetHistory(item.Config.Id);
+        if (item.Config.Id != _historyTaskId || records.Count != _historyCount)
+        {
+            _historyTaskId = item.Config.Id;
+            _historyCount = records.Count;
+            HistoryGrid.ItemsSource = records;
+            if (records.Count > 0) HistoryGrid.ScrollIntoView(records[^1]); // 跟随最新记录
+        }
+        TxtHistoryStatus.Text = records.Count == 0
+            ? $"任务 [{item.Name}]：暂无采样记录（启动采集后此处实时显示）"
+            : $"任务 [{item.Name}]：{records.Count} 条记录（最新：{records[^1].Timestamp:HH:mm:ss.fff}）";
+    }
+
+    private Guid _historyTaskId = Guid.Empty; // 上次刷新的任务（变化时重绑）
+    private int _historyCount = -1; // 上次刷新的记录数（变化时重绑）
 
     private List<SampleRecord> GetHistory(Guid? taskId = null)
     {

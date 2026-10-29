@@ -136,7 +136,7 @@
 
             <!-- ===== 右侧：任务管理 + 采样历史 ===== -->
             <Grid Grid.Column="2">
-                <TabControl Margin="8">
+                <TabControl x:Name="MainTabs" Margin="8" SelectionChanged="MainTabs_SelectionChanged">
                     <TabItem Header="任务管理">
                         <Grid Margin="4">
                             <Grid.RowDefinitions>
@@ -188,7 +188,7 @@
                         </Grid>
                     </TabItem>
 
-                    <TabItem Header="采样历史">
+                    <TabItem Header="采样历史" x:Name="TabHistory">
                         <Grid Margin="4">
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="*"/>
