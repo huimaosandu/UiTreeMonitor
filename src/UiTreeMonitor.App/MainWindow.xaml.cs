@@ -933,6 +933,27 @@ public partial class MainWindow : Window
     private void MenuRemoveTask_Click(object sender, RoutedEventArgs e)
     {
         if (TaskList.SelectedItem is not TaskListItem item) return;
+
+        // 有采样数据时先询问是否导出报告（移除后内存记录即销毁，只剩实时落盘的 CSV）
+        var records = GetHistory(item.Config.Id);
+        if (records.Count > 0)
+        {
+            var answer = MessageBox.Show(this,
+                $"任务 [{item.Name}] 有 {records.Count} 条采样数据。\n移除前是否导出报告（CSV/JSON/HTML）？",
+                "导出报告", MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
+            if (answer == MessageBoxResult.Cancel) { TxtStatus.Text = "已取消移除任务"; return; }
+            if (answer == MessageBoxResult.Yes)
+            {
+                _saver.FlushAll(); // 先落盘，报告与实时数据一致
+                try
+                {
+                    _exporter.ExportAll(item.Config.Name, item.Config.Id, item.Config, records,
+                        DateTime.Now.AddSeconds(-60), DateTime.Now, chartSourcePath: null);
+                }
+                catch { /* 导出失败不阻止移除 */ }
+            }
+        }
+
         _scheduler.Remove(item.Config.Id);
         _configStore.Delete(item.Config.Id);
         _saver.RemoveTask(item.Config.Id); // 写出剩余数据并注销
