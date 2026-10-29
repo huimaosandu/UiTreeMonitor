@@ -93,6 +93,8 @@ public sealed class ProcessHost : IMonitorHost
     public void Dispose()
     {
         RequestStop();
+        try { _process?.Kill(entireProcessTree: true); } catch { /* 已退出 */ }
+        try { _process?.WaitForExit(2000); } catch { /* 句柄已释放等 */ } // 确保 worker 进程真正退出
         _process?.Dispose();
         GC.SuppressFinalize(this);
     }

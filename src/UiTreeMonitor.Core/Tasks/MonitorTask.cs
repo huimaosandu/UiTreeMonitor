@@ -228,8 +228,8 @@ public sealed class MonitorTask : IDisposable
                     return;
                 }
 
-                // 等待下一个采集周期
-                Thread.Sleep(Math.Max(50, _config.Timer.IntervalMs));
+                // 等待下一个采集周期（分片睡眠：移除/停止请求时立即中断，确保采集线程及时退出）
+                InterruptibleSleep(Math.Max(50, _config.Timer.IntervalMs));
             }
             State = TaskRunState.Stopped;
             RaiseState();
@@ -293,10 +293,19 @@ public sealed class MonitorTask : IDisposable
         return string.Join("/", parts);
     }
 
+    /// <summary>分片睡眠：50ms 粒度检查停止请求，请求后立即返回（替代整段 Thread.Sleep）。</summary>
+    private void InterruptibleSleep(int totalMs)
+    {
+        var until = Environment.TickCount64 + totalMs;
+        while (!_stopRequested && Environment.TickCount64 < until)
+            Thread.Sleep(50);
+    }
+
     public void Dispose()
     {
         RequestStop();
-        if (_thread.IsAlive) _thread.Join(1000);
+        // 等待采集线程真正退出（抓树中的 UIA 调用可能阻塞数秒），确保移除任务后不再有采集活动
+        if (_thread.IsAlive) _thread.Join(3000);
         GC.SuppressFinalize(this);
     }
 }

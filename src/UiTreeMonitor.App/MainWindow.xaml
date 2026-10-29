@@ -149,6 +149,8 @@
                             <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
                                 <TextBlock Text="右键任务行可单独操作；按钮作用于全部任务：" 
                                            VerticalAlignment="Center" Foreground="#666666" Margin="0,0,16,0"/>
+                                <Button x:Name="BtnStartAllTasks" Content="启动所有任务" Padding="10,4" Margin="0,0,6,0" Click="BtnStartAllTasks_Click"
+                                        ToolTip="启动全部监控任务（未启动→启动；已停止→恢复；运行中跳过）"/>
                                 <Button x:Name="BtnStopAllTasks" Content="停止所有任务" Padding="10,4" Margin="0,0,6,0" Click="BtnStopAllTasks_Click"
                                         ToolTip="停止全部监控任务"/>
                                 <Button x:Name="BtnRemoveAllTasks" Content="移除所有任务" Padding="10,4" Click="BtnRemoveAllTasks_Click"
@@ -165,6 +167,7 @@
                                             <MenuItem Header="停止采集" Click="MenuStopTask_Click"/>
                                             <MenuItem Header="继续采集" Click="MenuResumeTask_Click"/>
                                             <MenuItem Header="移除任务" Click="MenuRemoveTask_Click"/>
+                                            <MenuItem Header="查看监控配置" Click="MenuViewTask_Click"/>
                                             <Separator/>
                                             <MenuItem Header="生成数据图" Click="MenuExportTask_Click"/>
                                         </ContextMenu>

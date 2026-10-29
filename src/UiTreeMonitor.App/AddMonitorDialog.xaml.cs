@@ -7,6 +7,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using UiTreeMonitor.Core.Filters;
+using UiTreeMonitor.Persistence;
 
 namespace UiTreeMonitor.App;
 
@@ -78,6 +79,7 @@ public partial class AddMonitorDialog : Window
     private string _marker = "@@"; // 当前截取标记（构造时按全局设置初始化）
     private readonly Func<string, bool>? _nameExists; // 重名校验（弹窗内提示，不关弹窗）
     private readonly string _monitorProperty; // 下拉初始选中项（兜底：下拉无此项时用）
+    private readonly bool _viewMode; // 只读查看模式（任务右键"查看监控配置"）：禁全部编辑与确定添加
 
     public string TaskName { get; private set; } = "";
     /// <summary>监控目标：下拉选择（Properties 属性名 / Pattern.子属性 路径）。</summary>
@@ -95,7 +97,8 @@ public partial class AddMonitorDialog : Window
 
     public AddMonitorDialog(string monitorProperty, string processName, string? defaultMarker = null,
         string? sampleValue = null, Func<string, bool>? nameExists = null,
-        IReadOnlyList<TargetOption>? targetOptions = null)
+        IReadOnlyList<TargetOption>? targetOptions = null,
+        TaskListItem? viewItem = null, SavePolicy? savePolicy = null)
     {
         InitializeComponent();
         // 打开即完整显示全部内容（超出屏幕时仍可滚动/拉伸：MaxHeight 限制 + 用户拖动后自动转手动尺寸）
@@ -130,6 +133,66 @@ public partial class AddMonitorDialog : Window
         // 保存策略候选联动：切换单选时启用/禁用对应输入
         RbSaveByPoints.Checked += (_, _) => SetSaveModeEnabled(byPoints: true);
         RbSaveByTime.Checked += (_, _) => SetSaveModeEnabled(byPoints: false);
+
+        // 只读查看模式（任务右键"查看监控配置"）：回填任务实际参数，禁全部编辑与"确定添加"
+        _viewMode = viewItem is not null;
+        if (viewItem is not null)
+            PrefillForView(viewItem, savePolicy);
+    }
+
+    /// <summary>
+    /// 查看任务配置（只读）：回填任务的实际参数（目标/间隔/时长/提取规则/保存策略），
+    /// 禁用全部输入与"确定添加"按钮——仅供查看，不创建新任务。
+    /// </summary>
+    private void PrefillForView(TaskListItem item, SavePolicy? savePolicy)
+    {
+        Title = $"监控配置（只读）- {item.Name}";
+        BtnOK.IsEnabled = false;
+        BtnOK.ToolTip = "查看模式：配置不可修改";
+        BtnCancel.Content = "关闭";
+
+        TxtTaskName.Text = item.Name;
+        // 目标下拉只保留该任务的监控属性；最近值只读参考
+        var opt = new TargetOption(item.MonitorProperty, item.CurrentValue);
+        CmbMonitorProperty.ItemsSource = new List<TargetOption> { opt };
+        CmbMonitorProperty.SelectedItem = opt;
+        TxtSampleValue.Text = item.CurrentValue;
+
+        // 间隔/时长：以基础单位（ms / s）回显
+        TxtIntervalValue.Text = item.IntervalMs.ToString();
+        CmbIntervalUnit.SelectedIndex = 0;
+        TxtDurationValue.Text = item.DurationSec.ToString();
+        CmbDurationUnit.SelectedIndex = 0;
+
+        // 值提取规则：任务保存的是编译后的正则，以 re: 形式只读展示；无规则=记录原始值
+        _rules.Clear();
+        if (item.Config.Extractors is { Count: > 0 })
+            foreach (var rx in item.Config.Extractors)
+                _rules.Add(new ExtractRuleItem(_marker, $"re:{rx}"));
+        else
+            _rules.Add(new ExtractRuleItem(_marker, item.CurrentValue));
+
+        // 保存策略回显（BatchPoints=int.MaxValue 表示按时间保存）
+        if (savePolicy is { } sp)
+        {
+            if (sp.BatchPoints != int.MaxValue)
+            {
+                RbSaveByPoints.IsChecked = true;
+                TxtSavePoints.Text = sp.BatchPoints.ToString();
+            }
+            else
+            {
+                RbSaveByTime.IsChecked = true;
+                TxtSaveSeconds.Text = Math.Max(1, sp.IntervalSec).ToString();
+                CmbSaveTimeUnit.SelectedIndex = sp.IntervalSec >= 3600 ? 2 : sp.IntervalSec >= 60 ? 1 : 0;
+            }
+        }
+
+        // 统一禁用全部编辑控件（只读展示）
+        foreach (var c in new Control[] { TxtTaskName, CmbMonitorProperty, TxtIntervalValue, CmbIntervalUnit,
+                TxtDurationValue, CmbDurationUnit, ExtractRules, BtnAddRule, RbSaveByPoints, TxtSavePoints,
+                RbSaveByTime, TxtSaveSeconds, CmbSaveTimeUnit, BtnOK })
+            c.IsEnabled = false;
     }
 
     /// <summary>
@@ -138,6 +201,7 @@ public partial class AddMonitorDialog : Window
     /// </summary>
     private void CmbMonitorProperty_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        if (_viewMode) return; // 只读查看模式：不联动改写规则行
         if (CmbMonitorProperty.SelectedItem is not TargetOption opt || opt.Value is null) return;
         string newSample = opt.Value;
         TxtSampleValue.Text = newSample;
@@ -186,8 +250,13 @@ public partial class AddMonitorDialog : Window
     /// </summary>
     private void BtnInsertMarker_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is not Button btn || VisualTreeHelper.GetParent(btn) is not Panel panel) return;
-        var box = panel.Children.OfType<TextBox>().FirstOrDefault();
+        if (sender is not FrameworkElement fe) return;
+        // 向上找到本规则行的 ContentPresenter（ItemsControl 项容器），再向下找其中唯一的示例 TextBox
+        // （多行布局后按钮与文本框不在同一 Panel，不能再用 Parent.Children 定位）
+        DependencyObject? cur = fe;
+        while (cur is not null and not ContentPresenter)
+            cur = VisualTreeHelper.GetParent(cur);
+        var box = FindDescendantTextBox(cur);
         if (box is null) return;
 
         if (box.SelectionLength > 0)
@@ -205,6 +274,21 @@ public partial class AddMonitorDialog : Window
             box.CaretIndex = caret + _marker.Length;
         }
         box.Focus();
+    }
+
+    /// <summary>在可视化子树中深度查找第一个 TextBox（规则行内唯一示例框）。</summary>
+    private static TextBox? FindDescendantTextBox(DependencyObject? root)
+    {
+        if (root is null) return null;
+        int n = VisualTreeHelper.GetChildrenCount(root);
+        for (int i = 0; i < n; i++)
+        {
+            var child = VisualTreeHelper.GetChild(root, i);
+            if (child is TextBox tb) return tb;
+            var deeper = FindDescendantTextBox(child);
+            if (deeper is not null) return deeper;
+        }
+        return null;
     }
 
     /// <summary>取"数字 + 单位下拉"组合的换算系数（ComboBoxItem.Tag）。</summary>

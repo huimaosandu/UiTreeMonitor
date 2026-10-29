@@ -135,6 +135,13 @@ public sealed class SampleBatchSaver : IDisposable
         FlushDue(Force: true);
     }
 
+    /// <summary>查询任务落盘策略（查看配置用）；未注册返回 null。</summary>
+    public SavePolicy? GetPolicy(Guid taskId)
+    {
+        lock (_lock)
+            return _buffers.TryGetValue(taskId, out var buf) ? buf.Policy : null;
+    }
+
     /// <summary>移除任务登记并写出其剩余数据。</summary>
     public void RemoveTask(Guid taskId)
     {

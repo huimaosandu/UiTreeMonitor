@@ -119,11 +119,15 @@
                                 <Border BorderBrush="#DDDDDD" BorderThickness="1" CornerRadius="3"
                                         Margin="0,0,0,6" Padding="8,6">
                                     <StackPanel>
-                                        <StackPanel Orientation="Horizontal">
-                                            <TextBox Text="{Binding Sample, UpdateSourceTrigger=PropertyChanged, Mode=TwoWay}"
-                                                     Width="320" Height="26" VerticalContentAlignment="Center" FontSize="12"
-                                                     ToolTip="复制自当前值：用「插入标记」在要提取的部分前后各插一次标记；或改为 re:正则"/>
-                                            <Button Content="插入标记" Margin="6,0,0,0" Padding="8,3" FontSize="12"
+                                        <!-- 多行示例框：长值自动换行显示（值含换行也可完整展示/编辑） -->
+                                        <TextBox Text="{Binding Sample, UpdateSourceTrigger=PropertyChanged, Mode=TwoWay}"
+                                                 Width="400" MinHeight="26" MaxHeight="110"
+                                                 VerticalContentAlignment="Top" HorizontalAlignment="Left"
+                                                 FontSize="12" AcceptsReturn="True" TextWrapping="Wrap"
+                                                 VerticalScrollBarVisibility="Auto"
+                                                 ToolTip="复制自当前值：用「插入标记」在要提取的部分前后各插一次标记；或改为 re:正则（可多行）"/>
+                                        <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                                            <Button Content="插入标记" Padding="8,3" FontSize="12"
                                                     Click="BtnInsertMarker_Click"
                                                     ToolTip="在光标处插入截取标记；选中一段文字则在其两端包裹标记"/>
                                             <Button Content="删除" Margin="6,0,0,0" Padding="8,3" FontSize="12"
@@ -150,7 +154,7 @@
                         <RadioButton x:Name="RbSaveByPoints" Content="按点保存：每" GroupName="SaveMode"
                                      IsChecked="True" VerticalAlignment="Center"/>
                         <TextBox x:Name="TxtSavePoints" Width="60" Height="26" Margin="4,0" VerticalContentAlignment="Center"
-                                 Text="1" ToolTip="积攒多少个采样点批量写盘一次"/>
+                                 Text="10" ToolTip="积攒多少个采样点批量写盘一次（默认 10 点）"/>
                         <TextBlock Text="点写盘一次" VerticalAlignment="Center"/>
                     </StackPanel>
                     <StackPanel Orientation="Horizontal">

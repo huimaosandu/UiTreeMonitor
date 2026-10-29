@@ -583,7 +583,7 @@ public partial class MainWindow : Window
 
     /// <summary>创建监控任务（统一入口）。autoStart=false（默认）：仅创建不启动，右键任务行"启动采集"开始。</summary>
     private void CreateMonitorTask(string monitorProp, string processName, int intervalMs, int durationSec,
-        string taskName, int saveBatchPoints = 1, int saveIntervalSec = 5,
+        string taskName, int saveBatchPoints = 10, int saveIntervalSec = 5,
         IReadOnlyList<string>? extractors = null, bool autoStart = false)
     {
         if (_currentTarget is null)
@@ -925,6 +925,16 @@ public partial class MainWindow : Window
         TxtStatus.Text = $"任务 [{item.Name}] 已移除，数据已落盘";
     }
 
+    /// <summary>右键任务行：只读打开"监控配置"弹窗（与添加监控弹窗同款，全部编辑与"确定添加"禁用）。</summary>
+    private void MenuViewTask_Click(object sender, RoutedEventArgs e)
+    {
+        if (TaskList.SelectedItem is not TaskListItem item) return;
+        var dlg = new AddMonitorDialog(item.MonitorProperty, item.TargetProcessName, _settings.ExtractMarker,
+            item.CurrentValue, viewItem: item, savePolicy: _saver.GetPolicy(item.Config.Id))
+        { Owner = this };
+        dlg.ShowDialog();
+    }
+
     private void MenuExportTask_Click(object sender, RoutedEventArgs e) => ExportSelectedTask();
 
     /// <summary>导出选中任务报告（CSV/JSON/HTML + 走势图 PNG：一图多线、可选系列、自定义图例）。</summary>
@@ -1042,6 +1052,30 @@ public partial class MainWindow : Window
             TxtStatus.Text = $"走势图生成失败（仅导出数据）: {ex.Message}";
             return (false, null);
         }
+    }
+
+    /// <summary>启动所有任务：Idle → 首次启动；Stopped/其他非运行态 → 恢复采样；Running 跳过。</summary>
+    private void BtnStartAllTasks_Click(object sender, RoutedEventArgs e)
+    {
+        if (_taskItems.Count == 0)
+        {
+            TxtStatus.Text = "当前没有监控任务";
+            return;
+        }
+        int started = 0;
+        foreach (var item in _taskItems)
+        {
+            if (string.Equals(item.State, "Running", StringComparison.OrdinalIgnoreCase)) continue; // 已在运行
+            if (string.Equals(item.State, "Idle", StringComparison.OrdinalIgnoreCase))
+                _scheduler.Start(item.Config.Id);
+            else
+                _scheduler.Resume(item.Config.Id);
+            item.State = "Running";
+            started++;
+        }
+        TxtStatus.Text = started == 0
+            ? "全部任务均在运行中，无需启动"
+            : $"已启动 {started} 个任务（共 {_taskItems.Count} 个）";
     }
 
     private void BtnStopAllTasks_Click(object sender, RoutedEventArgs e)
