@@ -191,8 +191,21 @@ public sealed class MonitorTask : IDisposable
                 foreach (var (k, v) in values)
                     lastValues[k] = v;
 
-                // 记录
-                var records = values.Select(kv => new SampleRecord(now, nodeId, nodePath, kv.Key, kv.Value ?? "")).ToList();
+                // 记录：应用值提取规则（@@标记对 / re:正则），有规则时展开为 值1..值N；
+                // lastValues（触发器上下文）保持原始值不受提取影响
+                var records = new List<SampleRecord>();
+                if (_config.Extractors is { Count: > 0 })
+                {
+                    var raw = values.Values.FirstOrDefault();
+                    var extracted = ValueExtractor.ExtractAll(raw, _config.Extractors);
+                    for (int i = 0; i < extracted.Count; i++)
+                        records.Add(new SampleRecord(now, nodeId, nodePath, $"值{i + 1}", extracted[i]));
+                }
+                else
+                {
+                    foreach (var (k, v) in values)
+                        records.Add(new SampleRecord(now, nodeId, nodePath, k, v ?? ""));
+                }
                 var sample = new MonitorSample(now, nodeId, nodePath, values, records);
                 lock (_lock)
                 {

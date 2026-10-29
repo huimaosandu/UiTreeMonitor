@@ -30,19 +30,32 @@ public sealed class ReportExporter
 
         var files = new List<string>
         {
-            ExportCsv(dir, records),
+            ExportCsv(dir, config, records),
             ExportJson(dir, taskName, taskId, config, records, startedAt, endedAt),
             ExportHtml(dir, taskName, taskId, config, records, startedAt, endedAt),
         };
         return files;
     }
 
-    private static string ExportCsv(string dir, IReadOnlyList<SampleRecord> records)
+    /// <summary>导出与实时落盘同格式的行式 CSV：监控对象,值1..值N,时间戳。</summary>
+    private static string ExportCsv(string dir, MonitorTaskConfig config, IReadOnlyList<SampleRecord> records)
     {
         var path = Path.Combine(dir, "data.csv");
-        var sb = new StringBuilder("时间戳,属性,值\n");
-        foreach (var r in records)
-            sb.AppendLine($"{r.Timestamp:yyyy-MM-dd HH:mm:ss.fff},{Csv(r.Property)},{Csv(r.Value)}");
+        var n = config.Extractors.Count > 0 ? config.Extractors.Count : 1;
+        var target = string.Join(";", config.Properties);
+
+        var sb = new StringBuilder();
+        var heads = new List<string> { "监控对象" };
+        for (int i = 1; i <= n; i++) heads.Add($"值{i}");
+        heads.Add("时间戳");
+        sb.AppendLine(string.Join(",", heads));
+
+        for (int i = 0; i + n <= records.Count; i += n)
+        {
+            var ts = records[i].Timestamp;
+            var vals = records.Skip(i).Take(n).Select(r => Csv(r.Value));
+            sb.AppendLine($"{Csv(target)},{string.Join(",", vals)},{ts:yyyy-MM-dd HH:mm:ss.fff}");
+        }
         File.WriteAllText(path, sb.ToString(), new UTF8Encoding(true));
         return path;
     }

@@ -180,6 +180,59 @@ public class ElementNodeTests
     }
 }
 
+public class ValueExtractorTests
+{
+    [Fact]
+    public void MarkerPair_ExtractsBetweenMarkers()
+    {
+        // 用户场景：Value = "@@614.466@@" → 截取 614.466
+        Assert.Equal("614.466", UiTreeMonitor.Core.Filters.ValueExtractor.ExtractOne("@@614.466@@", "@@"));
+    }
+
+    [Fact]
+    public void MarkerPair_NonGreedy_StopsAtFirstClose()
+    {
+        Assert.Equal("A", UiTreeMonitor.Core.Filters.ValueExtractor.ExtractOne("@@A@@ tail @@B@@", "@@"));
+    }
+
+    [Fact]
+    public void NoRules_ReturnsRawValue()
+    {
+        var result = UiTreeMonitor.Core.Filters.ValueExtractor.ExtractAll("612.872", Array.Empty<string>());
+        Assert.Single(result);
+        Assert.Equal("612.872", result[0]);
+    }
+
+    [Fact]
+    public void RegexRule_TakesFirstCaptureGroup()
+    {
+        Assert.Equal("614.466",
+            UiTreeMonitor.Core.Filters.ValueExtractor.ExtractOne("Value = \"614.466\"", @"re:(\d+\.\d+)"));
+    }
+
+    [Fact]
+    public void RegexRule_NoMatch_ReturnsEmpty()
+    {
+        Assert.Equal("", UiTreeMonitor.Core.Filters.ValueExtractor.ExtractOne("abc", @"re:(\d+)"));
+    }
+
+    [Fact]
+    public void MultipleRules_ProduceOrderedValues()
+    {
+        var rules = new[] { "@@", @"re:(\d+)" };
+        var result = UiTreeMonitor.Core.Filters.ValueExtractor.ExtractAll("x @@Temp: 42@@ y 7", rules);
+        Assert.Equal(2, result.Count);
+        Assert.Equal("Temp: 42", result[0]); // 值1：标记对
+        Assert.Equal("42", result[1]);       // 值2：正则
+    }
+
+    [Fact]
+    public void InvalidRegex_ReturnsEmpty_NotThrow()
+    {
+        Assert.Equal("", UiTreeMonitor.Core.Filters.ValueExtractor.ExtractOne("any", "re:(["));
+    }
+}
+
 public class ScheduleTriggerRhythmTests
 {
     // ScheduleTriggerRuntime 首次用 TaskStartedAt 作起点（MonitorTask 同款），测试里必须设置

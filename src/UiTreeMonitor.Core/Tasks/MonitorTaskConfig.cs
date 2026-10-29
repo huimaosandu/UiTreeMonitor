@@ -44,6 +44,10 @@ public sealed class MonitorTaskConfig
     // 要素3：过滤
     public FilterSet Filter { get; set; } = new();
 
+    /// <summary>值提取规则（每条：标记对如 "@@"，或正则 "re:(\d+\.?\d*)"）。
+    /// 空列表 = 不提取，值1=原始值；N 条规则 → 采样记录展开为 值1..值N。</summary>
+    public IReadOnlyList<string> Extractors { get; set; } = Array.Empty<string>();
+
     // 要素4：触发器
     public ITriggerSpec Trigger { get; set; } = new ImmediateTriggerSpec();
 

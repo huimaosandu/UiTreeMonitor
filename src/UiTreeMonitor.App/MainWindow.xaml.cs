@@ -109,6 +109,10 @@ public partial class MainWindow : Window
     private static readonly string AppDataDir =
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".ui-tree-monitor");
     private static readonly string TaskConfigDir = Path.Combine(AppDataDir, "tasks");
+    private static readonly string SettingsFilePath = Path.Combine(AppDataDir, "settings.json");
+
+    /// <summary>全局设置（截取字符等），构造时加载、设置弹窗保存。</summary>
+    private AppSettings _settings = new();
 
     /// <summary>数据保存根目录（需求：默认 D:\uitreemonitor，不存在则新建；实际数据写入 当日日期 子目录）。</summary>
     private static readonly string DataRootDir = @"D:\uitreemonitor";
@@ -125,6 +129,7 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        _settings = AppSettings.Load(SettingsFilePath);
         _configStore = new TaskConfigStore(TaskConfigDir);
         _saver = new SampleBatchSaver(DataRootDir);
         _saver.Start();
@@ -302,7 +307,7 @@ public partial class MainWindow : Window
         }
 
         // ★ 烧杯按钮也弹出"添加监控"对话框（与右键菜单统一体验）
-        var dlg = new AddMonitorDialog("Name", result.ProcessName ?? "");
+        var dlg = new AddMonitorDialog("Name", result.ProcessName ?? "", _settings.ExtractMarker);
         dlg.Owner = this;
         if (dlg.ShowDialog() != true || !dlg.Confirmed) return;
 
@@ -313,7 +318,8 @@ public partial class MainWindow : Window
             durationSec: dlg.DurationSec,
             taskName: dlg.TaskName,
             saveBatchPoints: dlg.SaveBatchPoints,
-            saveIntervalSec: dlg.SaveIntervalSec);
+            saveIntervalSec: dlg.SaveIntervalSec,
+            extractors: dlg.Extractors);
     }
 
     private void OnCaptureResult(MouseCaptureResult result)
@@ -530,7 +536,7 @@ public partial class MainWindow : Window
         }
 
         // 弹出"添加监控"对话框
-        var dlg = new AddMonitorDialog(propName, procName);
+        var dlg = new AddMonitorDialog(propName, procName, _settings.ExtractMarker);
         dlg.Owner = this;
         if (dlg.ShowDialog() != true || !dlg.Confirmed) return;
 
@@ -542,16 +548,26 @@ public partial class MainWindow : Window
             durationSec: dlg.DurationSec,
             taskName: dlg.TaskName,
             saveBatchPoints: dlg.SaveBatchPoints,
-            saveIntervalSec: dlg.SaveIntervalSec);
+            saveIntervalSec: dlg.SaveIntervalSec,
+            extractors: dlg.Extractors);
     }
 
     /// <summary>创建并启动监控任务（统一入口）。</summary>
     private void CreateAndStartMonitorTask(string monitorProp, string processName, int intervalMs, int durationSec,
-        string taskName, int saveBatchPoints = 1, int saveIntervalSec = 5)
+        string taskName, int saveBatchPoints = 1, int saveIntervalSec = 5, IReadOnlyList<string>? extractors = null)
     {
         if (_currentTarget is null)
         {
             TxtStatus.Text = "请先抓取目标窗口的结构树";
+            return;
+        }
+
+        // ★ 重名检查：任务栏里已存在同名任务则提示并拒绝创建
+        if (_taskItems.Any(t => string.Equals(t.Name, taskName, StringComparison.OrdinalIgnoreCase)))
+        {
+            TxtStatus.Text = $"任务名称 [{taskName}] 已存在，请修改任务名称后重试";
+            MessageBox.Show($"任务名称 \"{taskName}\" 已存在。\n请在弹窗中修改任务名称后重新添加。", "任务名称重复",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
@@ -577,12 +593,15 @@ public partial class MainWindow : Window
             Properties = new[] { monitorProp },
             Timer = new TimerSpec { IntervalMs = intervalMs },
             OutputDirectory = TodayDataDir,
+            // 值提取规则（@@标记对 / re:正则）：空=记录原始值
+            Extractors = extractors ?? Array.Empty<string>(),
             // 定时触发：立即首采 + 每隔 intervalMs 重复（ImmediateTriggerSpec 只触发一次，任务会停在首次采样后空转）
             Trigger = new ScheduleTriggerSpec { Repeat = true, RepeatIntervalMs = intervalMs },
         };
 
-        // 注册落盘策略：内存缓冲，后台按"每N点或每T秒（先到先写）"批量写 CSV 到当日目录
-        _saver.SetPolicy(config.Id, taskName, new SavePolicy(saveBatchPoints, saveIntervalSec));
+        // 注册落盘策略：内存缓冲，后台按"每N点或每T秒（先到先写）"批量写 CSV（行式：监控对象,值1..值N,时间戳）
+        _saver.SetPolicy(config.Id, taskName, new SavePolicy(saveBatchPoints, saveIntervalSec),
+            monitorTarget: monitorProp, valueCount: config.Extractors.Count > 0 ? config.Extractors.Count : 1);
 
         // ★ 日志：注册前检查
         System.Diagnostics.Debug.WriteLine($"[MONITOR] 准备Register: config.Id={config.Id}, Properties=[{string.Join(",", config.Properties)}]");
@@ -750,11 +769,14 @@ public partial class MainWindow : Window
         _configStore.Save(item.Config);
     }
 
-    /// <summary>刷新单个任务的监控值（重新抓取目标元素属性）。</summary>
+    /// <summary>刷新单个任务的监控值（重新抓取目标元素属性）。停止/完成/出错后不再刷新（当前值保持最后采样值）。</summary>
     private void RefreshMonitorValue(TaskListItem item)
     {
         try
         {
+            // ★ 停止采集后当前值不再变动（需求1）：仅 Running 状态刷新
+            if (!string.Equals(item.State, "Running", StringComparison.OrdinalIgnoreCase)) return;
+
             if (_currentTarget is null || _currentTree is null)
             {
                 System.Diagnostics.Debug.WriteLine($"[MONITOR] RefreshValue跳过: _currentTarget={_currentTarget is null}");
@@ -903,6 +925,16 @@ public partial class MainWindow : Window
         {
             TxtStatus.Text = $"打开数据目录失败: {ex.Message}";
         }
+    }
+
+    /// <summary>设置弹窗：修改截取字符（默认 @@）等全局选项，保存后立即生效。</summary>
+    private void BtnSettings_Click(object sender, RoutedEventArgs e)
+    {
+        var dlg = new SettingsDialog(_settings.ExtractMarker) { Owner = this };
+        if (dlg.ShowDialog() != true || dlg.ExtractMarker is null) return;
+        _settings.ExtractMarker = dlg.ExtractMarker;
+        _settings.Save(SettingsFilePath);
+        TxtStatus.Text = $"设置已保存：截取字符 = {_settings.ExtractMarker}（新建任务的提取规则默认使用它）";
     }
 
     private void TaskList_SelectionChanged(object sender, SelectionChangedEventArgs e)

@@ -27,6 +27,9 @@ public sealed class SampleBatchSaver : IDisposable
     {
         public required string TaskName;
         public required SavePolicy Policy;
+        public string TargetLabel = "";        // CSV 第一列：监控对象（属性路径）
+        public int ValueCount = 1;             // 每采样点的值列数（提取规则数；无规则=1）
+        public DateTime CreatedAt = DateTime.Now; // 文件名中的"创建时间"
         public readonly List<SampleRecord> Pending = new();
         public DateTime LastFlush = DateTime.Now;
     }
@@ -40,19 +43,28 @@ public sealed class SampleBatchSaver : IDisposable
         _dataRoot = dataRoot;
     }
 
-    /// <summary>注册/更新任务落盘策略（创建任务时调用）。</summary>
-    public void SetPolicy(Guid taskId, string taskName, SavePolicy policy)
+    /// <summary>注册/更新任务落盘策略（创建任务时调用）。monitorTarget=CSV 首列监控对象名；valueCount=每采样点值列数。</summary>
+    public void SetPolicy(Guid taskId, string taskName, SavePolicy policy, string monitorTarget = "", int valueCount = 1)
     {
         lock (_lock)
         {
             if (!_buffers.TryGetValue(taskId, out var buf))
             {
-                _buffers[taskId] = new TaskBuffer { TaskName = taskName, Policy = policy };
+                _buffers[taskId] = new TaskBuffer
+                {
+                    TaskName = taskName,
+                    Policy = policy,
+                    TargetLabel = monitorTarget,
+                    ValueCount = Math.Max(1, valueCount),
+                    CreatedAt = DateTime.Now,
+                };
             }
             else
             {
                 buf.TaskName = taskName;
                 buf.Policy = policy;
+                buf.TargetLabel = monitorTarget;
+                buf.ValueCount = Math.Max(1, valueCount);
             }
         }
     }
@@ -91,7 +103,7 @@ public sealed class SampleBatchSaver : IDisposable
     /// <summary>写出满足条件的任务缓冲；Force=true 时全部写出。</summary>
     private void FlushDue(bool Force)
     {
-        List<(string name, List<SampleRecord> records)>? ready = null;
+        List<(BufferMeta meta, List<SampleRecord> records)>? ready = null;
         lock (_lock)
         {
             foreach (var buf in _buffers.Values)
@@ -102,17 +114,17 @@ public sealed class SampleBatchSaver : IDisposable
                     || (buf.Policy.IntervalSec > 0 && (DateTime.Now - buf.LastFlush).TotalSeconds >= buf.Policy.IntervalSec);
                 if (!duePoints && !dueTime) continue;
 
-                ready ??= new List<(string, List<SampleRecord>)>();
-                ready.Add((buf.TaskName, buf.Pending.ToList()));
+                ready ??= new List<(BufferMeta, List<SampleRecord>)>();
+                ready.Add((new BufferMeta(buf), buf.Pending.ToList()));
                 buf.Pending.Clear();
                 buf.LastFlush = DateTime.Now;
             }
         }
 
         if (ready is null) return;
-        foreach (var (name, records) in ready)
+        foreach (var (meta, records) in ready)
         {
-            try { AppendCsv(name, records); }
+            try { AppendCsv(meta, records); }
             catch { /* 单次写盘失败丢弃该批，避免写盘线程崩溃（后续批次仍会尝试） */ }
         }
     }
@@ -126,33 +138,55 @@ public sealed class SampleBatchSaver : IDisposable
     /// <summary>移除任务登记并写出其剩余数据。</summary>
     public void RemoveTask(Guid taskId)
     {
-        (string name, List<SampleRecord> records)? pending = null;
+        (BufferMeta meta, List<SampleRecord> records)? pending = null;
         lock (_lock)
         {
             if (_buffers.Remove(taskId, out var buf))
             {
                 if (buf.Pending.Count > 0)
-                    pending = (buf.TaskName, buf.Pending.ToList());
+                    pending = (new BufferMeta(buf), buf.Pending.ToList());
             }
         }
         if (pending is { } p)
         {
-            try { AppendCsv(p.name, p.records); } catch { /* 忽略 */ }
+            try { AppendCsv(p.meta, p.records); } catch { /* 忽略 */ }
         }
     }
 
-    /// <summary>追加写 CSV 到当日目录（按当前日期滚动子目录）。</summary>
-    private void AppendCsv(string taskName, IReadOnlyList<SampleRecord> records)
+    /// <summary>任务缓冲快照（离开锁后写盘用）。</summary>
+    private readonly record struct BufferMeta(string TaskName, string TargetLabel, int ValueCount, DateTime CreatedAt)
+    {
+        public BufferMeta(TaskBuffer b) : this(b.TaskName, b.TargetLabel, b.ValueCount, b.CreatedAt) { }
+    }
+
+    /// <summary>
+    /// 追加写行式 CSV：监控对象,值1,值2,...,时间戳。
+    /// 文件名 {任务名}_{创建时间:yyyyMMdd_HHmmss}.csv；按 ValueCount 条记录切一行；目录按当天滚动。
+    /// </summary>
+    private void AppendCsv(in BufferMeta meta, IReadOnlyList<SampleRecord> records)
     {
         var dayDir = Path.Combine(_dataRoot, DateTime.Now.ToString("yyyyMMdd"));
         Directory.CreateDirectory(dayDir);
-        var file = Path.Combine(dayDir, $"{Sanitize(taskName)}_{DateTime.Now:yyyyMMdd}.csv");
+        var file = Path.Combine(dayDir, $"{Sanitize(meta.TaskName)}_{meta.CreatedAt:yyyyMMdd_HHmmss}.csv");
 
+        var n = meta.ValueCount;
         var sb = new StringBuilder();
         bool exists = File.Exists(file);
-        if (!exists) sb.AppendLine("时间戳,属性,值");
-        foreach (var r in records)
-            sb.AppendLine($"{r.Timestamp:yyyy-MM-dd HH:mm:ss.fff},{CsvEscape(r.Property)},{CsvEscape(r.Value)}");
+        if (!exists)
+        {
+            var heads = new List<string> { "监控对象" };
+            for (int i = 1; i <= n; i++) heads.Add($"值{i}");
+            heads.Add("时间戳");
+            sb.AppendLine(string.Join(",", heads));
+        }
+
+        // 每 n 条记录 = 一个采样点（值1..值N 共用同一时间戳），横排一行
+        for (int i = 0; i + n <= records.Count; i += n)
+        {
+            var ts = records[i].Timestamp;
+            var vals = records.Skip(i).Take(n).Select(r => CsvEscape(r.Value));
+            sb.AppendLine($"{CsvEscape(meta.TargetLabel)},{string.Join(",", vals)},{ts:yyyy-MM-dd HH:mm:ss.fff}");
+        }
 
         // UTF-8 with BOM：Excel/记事本可直接识别
         var bytes = System.Text.Encoding.UTF8.GetPreamble().Concat(
