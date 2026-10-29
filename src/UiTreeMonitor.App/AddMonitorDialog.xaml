@@ -1,12 +1,12 @@
 <Window x:Class="UiTreeMonitor.App.AddMonitorDialog"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="添加监控对象" Height="320" Width="520"
+        Title="添加监控对象" Height="400" Width="520"
         WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
         FontFamily="Microsoft YaHei" FontSize="13">
-    <StackPanel Margin="24,20">
+    <StackPanel Margin="20,16">
         <!-- 监控目标 -->
-        <Grid Margin="0,0,0,10">
+        <Grid Margin="0,0,0,8">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="90"/>
                 <ColumnDefinition Width="*"/>
@@ -56,7 +56,7 @@
                  Text="任务启动后将按设定间隔持续采样目标属性的当前值，并在任务列表中实时显示。"/>
 
         <!-- 按钮 -->
-        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,8">
             <Button x:Name="BtnOK" Content="确定添加并启动" Padding="28,8" Click="BtnOK_Click" 
                     IsDefault="True" MinWidth="150" FontSize="13" FontWeight="Bold"/>
             <Button x:Name="BtnCancel" Content="取消" Padding="28,8" Margin="20,0,0,0" Click="BtnCancel_Click" 
