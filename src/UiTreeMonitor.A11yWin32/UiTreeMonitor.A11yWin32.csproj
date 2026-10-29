@@ -7,6 +7,8 @@
     <AssemblyName>AccessibilityInsights.Win32</AssemblyName>
     <UseWindowsForms>true</UseWindowsForms>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- 原版 Win32 移植代码：项目仅面向 Windows，抑制平台兼容分析警告（Registry/Graphics 等） -->
+    <NoWarn>$(NoWarn);CA1416</NoWarn>
     <ImplicitUsings>disable</ImplicitUsings>
     <Nullable>disable</Nullable>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>

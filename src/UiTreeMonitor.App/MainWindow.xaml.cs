@@ -157,7 +157,36 @@ public partial class MainWindow : Window
             HollowHighlightDriver.ClearAllHighlighters(); // 原版退出时清理全部高亮器
             _scheduler.Dispose();
             _saver.Dispose(); // 退出前写出全部剩余采样数据
+            // 兜底：个别环境存在残留前台线程（COM RPC 等）会悬挂进程，
+            // 上述清理已同步完成后强制退出，确保点击叉号后进程一定结束
+            Application.Current.Shutdown();
+            Environment.Exit(0);
         };
+    }
+
+    /// <summary>点叉号关闭：仍有任务在采集时提示用户先停止（可取消关闭）。</summary>
+    protected override void OnClosing(CancelEventArgs e)
+    {
+        var running = _taskItems.Where(t => string.Equals(t.State, "Running", StringComparison.OrdinalIgnoreCase)).ToList();
+        if (running.Count > 0)
+        {
+            var answer = MessageBox.Show(this,
+                $"有 {running.Count} 个任务正在采集中。\n关闭软件前是否先停止全部采集任务？\n（已采集数据会自动落盘 CSV）",
+                "采集进行中", MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
+            if (answer == MessageBoxResult.Cancel)
+            {
+                e.Cancel = true; // 取消关闭，继续采集
+                return;
+            }
+            if (answer == MessageBoxResult.Yes)
+            {
+                _scheduler.RequestStopAll();
+                foreach (var t in running) t.State = "Stopped";
+                TxtStatus.Text = $"已停止全部采集任务（{running.Count} 个），正在退出…";
+            }
+            // 否：直接关闭（Closed 清理中 Dispose 会停线程并落盘剩余数据）
+        }
+        base.OnClosing(e);
     }
 
     // ========== 窗口 ==========
