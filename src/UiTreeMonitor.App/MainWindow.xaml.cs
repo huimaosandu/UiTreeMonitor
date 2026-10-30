@@ -422,15 +422,12 @@ public partial class MainWindow : Window
     private void ClearHighlight()
     {
         foreach (var vm in _nodeLookup.Values)
-            vm.IsHighlighted = false;
-        // TreeView 颜色更新：通过刷新 ItemContainer 实现（简化：重绑根节点显示）
-        RefreshTreeVisuals();
+            vm.IsHighlighted = false; // INPC + XAML DataTrigger 自动刷新背景
     }
 
     private void Highlight(TreeNodeViewModel vm)
     {
         vm.IsHighlighted = true;
-        RefreshTreeVisuals();
         // 展开到该节点
         ExpandPath(vm.Id);
     }
@@ -438,54 +435,38 @@ public partial class MainWindow : Window
     private void ExpandPath(int id)
     {
         if (_currentTree is null) return;
-        // 收集从根到目标的路径 id
-        var path = new Stack<int>();
+        // 收集从根到目标的路径 id（根在前）
+        var path = new List<int>();
         int cur = id;
         while (cur != -1 && _currentTree.Nodes.TryGetValue(cur, out var n))
         {
-            path.Push(cur);
+            path.Add(cur);
             cur = n.ParentId;
         }
+        path.Reverse();
 
-        // 沿路径展开（先找到根 TreeViewItem）
-        TreeViewItem? item = FindItemInItems(_treeRoots, path.Pop());
-        while (item is not null && path.Count > 0)
+        // 逐层展开：数据绑定下 Items 里是 VM 而非 TreeViewItem，
+        // 必须经 ItemContainerGenerator 取容器；父容器展开+UpdateLayout 后子容器才生成
+        ItemsControl parent = TreeView;
+        TreeViewItem? last = null;
+        foreach (var nodeId in path)
         {
+            TreeViewItem? item = null;
+            foreach (var o in parent.Items)
+            {
+                if (o is TreeNodeViewModel vm && vm.Id == nodeId)
+                {
+                    item = parent.ItemContainerGenerator.ContainerFromItem(o) as TreeViewItem;
+                    break;
+                }
+            }
+            if (item is null) break;
             item.IsExpanded = true;
-            item.UpdateLayout();
-            item = FindItemInItems(item.Items, path.Pop());
+            item.UpdateLayout(); // 生成子项容器后才能继续向下找
+            last = item;
+            parent = item;
         }
-        item?.BringIntoView();
-    }
-
-    private static TreeViewItem? FindItemInItems(System.Collections.IEnumerable items, int id)
-    {
-        foreach (var o in items)
-        {
-            if (o is TreeViewItem tvi && tvi.DataContext is TreeNodeViewModel vm && vm.Id == id)
-                return tvi;
-        }
-        return null;
-    }
-
-    private void RefreshTreeVisuals()
-    {
-        // 更新高亮背景：遍历所有 TreeViewItem
-        foreach (var root in TreeView.Items.OfType<TreeViewItem>())
-            UpdateItemRecursive(root);
-    }
-
-    private void UpdateItemRecursive(TreeViewItem item)
-    {
-        if (item.DataContext is TreeNodeViewModel vm)
-        {
-            var brush = vm.IsHighlighted
-                ? new SolidColorBrush(System.Windows.Media.Color.FromRgb(0xFF, 0xD6, 0x66)) // 黄色高亮
-                : System.Windows.Media.Brushes.Transparent;
-            item.Background = brush;
-        }
-        foreach (var child in item.Items.OfType<TreeViewItem>())
-            UpdateItemRecursive(child);
+        last?.BringIntoView(); // 滚动到目标节点可见
     }
 
     // ========== Details 面板 ==========

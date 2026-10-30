@@ -1,6 +1,8 @@
 // 树节点视图模型 + Details 面板数据项
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.ComponentModel;
+using System.Runtime.CompilerServices;
 using Axe.Windows.Core.Bases;
 using Axe.Windows.Desktop.UIAutomation;
 using UiTreeMonitor.Core.Models;
@@ -24,8 +26,9 @@ public sealed class PatternItem
     public IReadOnlyList<PropertyItem> SubProperties { get; init; } = Array.Empty<PropertyItem>();
 }
 
-/// <summary>结构树节点 VM（用于 TreeView 显示 + 高亮 + Details 面板）。</summary>
-public sealed class TreeNodeViewModel
+/// <summary>结构树节点 VM（用于 TreeView 显示 + 高亮 + Details 面板）。
+/// 实现 INPC：IsHighlighted 变化时经 XAML DataTrigger 刷新节点背景（鼠标捕获实时高亮）。</summary>
+public sealed class TreeNodeViewModel : INotifyPropertyChanged
 {
     public int Id { get; init; }
     public string Display => $"[{ControlType}] {Name ?? AutomationId ?? ClassName ?? "(无名称)"}";
@@ -35,8 +38,19 @@ public sealed class TreeNodeViewModel
     public string? ClassName { get; init; }
     public int ProcessId { get; init; }
     public string? ProcessName { get; init; } // Details 面板右键添加目标时用
-    public bool IsHighlighted { get; set; }
+
+    private bool _isHighlighted;
+    public bool IsHighlighted
+    {
+        get => _isHighlighted;
+        set { if (_isHighlighted != value) { _isHighlighted = value; OnPropertyChanged(); } }
+    }
+
     public ObservableCollection<TreeNodeViewModel> Children { get; } = new();
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+    private void OnPropertyChanged([CallerMemberName] string? name = null)
+        => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
 
     /// <summary>Details 面板：全部 UIA 属性列表。</summary>
     public IReadOnlyList<PropertyItem> Properties { get; init; } = Array.Empty<PropertyItem>();
