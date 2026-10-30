@@ -34,6 +34,8 @@
                 <TextBlock Grid.Column="3" Text="（最小 100ms，全组统一节拍）" VerticalAlignment="Center"
                            Margin="8,0,0,0" Foreground="#999999" FontSize="12"/>
             </Grid>
+            <TextBlock Foreground="#B8860B" FontSize="12" TextWrapping="Wrap" Margin="0,0,0,10"
+                       Text="提示：同步组每轮要等全部窗口抓完结构树才能记数（UIA 跨进程抓树单窗口通常需数百毫秒）。间隔小于抓树耗时会持续跳拍丢点，建议 ≥ 1000ms；两个跨进程窗口建议 ≥ 2000ms。"/>
 
             <!-- 监控时长：数字 + 单位 -->
             <Grid Margin="0,0,0,10">

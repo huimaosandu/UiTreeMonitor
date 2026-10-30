@@ -1011,6 +1011,28 @@ public partial class MainWindow : Window
         }
         var opt = dlg.Result;
 
+        // ★ 同窗口冲突检测：组内任务的窗口若与"正在运行的其他独立任务"是同一窗口，
+        // 两路会并发抓同一窗口（UIA 服务端排队）互相拖慢、双方采样都变慢——警告但不阻止
+        var groupIds = items.Select(i => i.Config.Id).ToHashSet();
+        var groupHandles = new HashSet<long>();
+        foreach (var item in items)
+        {
+            var info = TargetResolver.Resolve(item.Config.Target);
+            if (info is not null) groupHandles.Add(info.Handle.ToInt64());
+        }
+        var conflicted = new List<string>();
+        foreach (var other in _taskItems.Where(t =>
+                     string.Equals(t.State, "Running", StringComparison.OrdinalIgnoreCase) && !groupIds.Contains(t.Config.Id)))
+        {
+            var host = _scheduler.GetHost(other.Config.Id);
+            if (host is not UiTreeMonitor.Hosting.ThreadHost th) continue;
+            var info = TargetResolver.Resolve(th.Task.Target);
+            if (info is not null && groupHandles.Contains(info.Handle.ToInt64()))
+                conflicted.Add(other.Name);
+        }
+        if (conflicted.Count > 0)
+            TxtStatus.Text = $"⚠ 独立任务 [{string.Join(", ", conflicted)}] 正在抓同一窗口，会与同步组互相拖慢——建议先停止它们再同步采集";
+
         // 参数应用到全组（配置/落盘策略/列表显示一致——同步组"一定一致"）
         foreach (var item in items)
         {

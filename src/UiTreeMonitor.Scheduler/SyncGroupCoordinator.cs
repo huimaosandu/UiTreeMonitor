@@ -10,8 +10,10 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Threading;
+using System.Threading.Tasks;
 using UiTreeMonitor.Core;
 using UiTreeMonitor.Core.Models;
 using UiTreeMonitor.Core.Sampler;
@@ -27,6 +29,7 @@ public sealed class SyncGroupCoordinator : IDisposable
     private readonly int _intervalMs;
     private readonly int _durationSec; // 组统一监控时长（0=无限）：到期全组同时完成
     private readonly Action<string>? _log;
+    private readonly Dictionary<long, WindowCaptureWorker> _workers = new(); // 窗口句柄 → 常驻抓取线程（复用 STA+UiaSession）
     private Thread? _thread;
     private volatile bool _stopRequested;
 
@@ -66,6 +69,7 @@ public sealed class SyncGroupCoordinator : IDisposable
         var startAt = DateTime.Now;
         long k = 0;
         long ticks = 0, lagSkipped = 0;
+        long lastCaptureMs = 0; // 上一轮抓树耗时（落后日志诊断用）
         var lastLagLogAt = DateTime.MinValue;
 
         while (!_stopRequested)
@@ -88,7 +92,10 @@ public sealed class SyncGroupCoordinator : IDisposable
                 if ((DateTime.Now - lastLagLogAt).TotalSeconds > 30)
                 {
                     lastLagLogAt = DateTime.Now;
-                    Log($"节拍落后 {waitMs}ms（抓树耗时超过间隔？），跳过 {lagSkipped} 个 tick 保持对齐");
+                    Log($"节拍落后 {waitMs}ms，跳到未来最近 tick 保持对齐。上一轮抓树 {lastCaptureMs}ms × {_workers.Count} 个窗口" +
+                        (lastCaptureMs >= _intervalMs
+                            ? $"——抓树耗时已超过间隔 {_intervalMs}ms（UIA 跨进程逐节点取值的物理下限），继续采集会持续跳拍，建议把组间隔调大到 ≥ {Math.Max(1000, lastCaptureMs + 200)}ms"
+                            : "（抓树耗时超过间隔？）"));
                 }
                 var now = DateTime.Now;
                 k += (long)((now - tickAt).TotalMilliseconds / _intervalMs);
@@ -132,32 +139,29 @@ public sealed class SyncGroupCoordinator : IDisposable
             }
             if (groups.Count == 0) continue;
 
-            // 每窗口一个 STA 抓取线程并行抓树（同窗口任务共享结果）
+            // 每窗口一个常驻 STA 抓取线程并行抓树（同窗口任务共享结果）：
+            // 线程 + UiaSession 跨轮复用（此前每轮新建线程/COM 初始化有固定开销；
+            // 实测单窗口 23 节点抓树本身需数百 ms——间隔低于抓树耗时是跳拍的根因，见落后日志）
             var snapshots = new ConcurrentDictionary<long, TreeSnapshot>();
-            var workers = new List<Thread>();
+            var pending = new List<(long Key, Task<TreeSnapshot?> Task)>();
+            var captureSw = Stopwatch.StartNew();
             foreach (var (key, group) in groups)
             {
-                var info = group.Info;
-                var th = new Thread(() =>
+                if (!_workers.TryGetValue(key, out var worker))
                 {
-                    try
-                    {
-                        using var session = UiaSession.Create();
-                        var sampler = new TreeSampler();
-                        snapshots[key] = sampler.CaptureWindow(session, info);
-                    }
-                    catch
-                    {
-                        // 单窗口抓取失败：该窗口本轮不推送
-                    }
-                })
-                { IsBackground = true, Name = $"SyncCapture-{info.ProcessId}" };
-                th.SetApartmentState(ApartmentState.STA); // UIA COM 要求
-                workers.Add(th);
-                th.Start();
+                    worker = new WindowCaptureWorker(key);
+                    _workers[key] = worker;
+                }
+                pending.Add((key, worker.CaptureAsync(group.Info)));
             }
-            foreach (var th in workers)
-                th.Join(10000); // 抓树保护超时：超时窗口本轮放弃
+            foreach (var (key, task) in pending)
+            {
+                // 抓树保护超时：超时窗口本轮放弃（worker 继续抓，完成后自动处理下轮请求）
+                if (task.Wait(10000) && task.Result is { } snap && snap.NodeCount > 0)
+                    snapshots[key] = snap;
+            }
+            var captureMs = captureSw.ElapsedMilliseconds;
+            lastCaptureMs = captureMs;
 
             // 推送：时间戳统一为 tickAt（严格同刻）；串行推送避免事件线程风暴
             foreach (var (key, group) in groups)
@@ -174,7 +178,52 @@ public sealed class SyncGroupCoordinator : IDisposable
         {
             if (t.IsStopRequested || t.State == TaskRunState.Running) t.MarkStopped();
         }
+        foreach (var w in _workers.Values) w.Dispose();
+        _workers.Clear();
         Log($"=== 同步组结束: 共 {ticks} 轮, 跳拍 {lagSkipped} 次 ===");
+    }
+
+    /// <summary>常驻窗口抓取线程（STA）：复用 UiaSession 跨轮抓树，请求经阻塞队列串行处理。
+    /// 此前每轮新建线程 + COM 初始化有固定开销；且窗口抓取彼此隔离，多窗口互不阻塞。</summary>
+    private sealed class WindowCaptureWorker : IDisposable
+    {
+        private readonly BlockingCollection<(TargetWindowInfo Info, TaskCompletionSource<TreeSnapshot?> Tcs)> _queue = new();
+        private readonly Thread _thread;
+
+        public WindowCaptureWorker(long windowKey)
+        {
+            _thread = new Thread(() =>
+            {
+                try
+                {
+                    using var session = UiaSession.Create(); // 一个会话服务该窗口的全部轮次
+                    var sampler = new TreeSampler();
+                    foreach (var (info, tcs) in _queue.GetConsumingEnumerable())
+                    {
+                        try { tcs.SetResult(sampler.CaptureWindow(session, info)); }
+                        catch { tcs.SetResult(null); } // 单窗口失败：本轮放弃，不影响其他窗口
+                    }
+                }
+                catch { /* 会话初始化失败：后续请求全部 null */ }
+            })
+            { IsBackground = true, Name = $"SyncCapture-{windowKey}" };
+            _thread.SetApartmentState(ApartmentState.STA); // UIA COM 要求
+            _thread.Start();
+        }
+
+        /// <summary>提交一次抓树请求（异步；同 worker 串行执行，超时轮的请求完成后自动排下一个）。</summary>
+        public Task<TreeSnapshot?> CaptureAsync(TargetWindowInfo info)
+        {
+            var tcs = new TaskCompletionSource<TreeSnapshot?>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _queue.Add((info, tcs));
+            return tcs.Task;
+        }
+
+        public void Dispose()
+        {
+            _queue.CompleteAdding();
+            _thread.Join(2000);
+        }
     }
 
     private void Log(string message)
