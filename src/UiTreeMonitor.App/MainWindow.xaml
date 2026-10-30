@@ -161,6 +161,14 @@
                             <GroupBox Header="监控任务" Grid.Row="2" Padding="8">
                                 <ListView x:Name="TaskList" SelectionMode="Extended" SelectionChanged="TaskList_SelectionChanged"
                                           MouseRightButtonUp="TaskList_MouseRightButtonUp">
+                                    <ListView.ItemContainerStyle>
+                                        <!-- 同步组任务整行淡色（SyncGroupRowBrush 为 null 时透明=普通任务） -->
+                                        <Style TargetType="ListViewItem">
+                                            <Setter Property="Background"
+                                                    Value="{Binding SyncGroupRowBrush, TargetNullValue=Transparent}"/>
+                                            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                                        </Style>
+                                    </ListView.ItemContainerStyle>
                                     <ListView.ContextMenu>
                                         <ContextMenu Opened="TaskContextMenu_Opened">
                                             <MenuItem Header="启动采集" x:Name="MenuStartTask" Click="MenuStartTask_Click"/>
@@ -177,6 +185,18 @@
                                     <ListView.View>
                                         <GridView>
                                             <GridViewColumn Header="任务名" Width="120" DisplayMemberBinding="{Binding Name}"/>
+                                            <GridViewColumn Header="组" Width="76">
+                                                <GridViewColumn.CellTemplate>
+                                                    <DataTemplate>
+                                                        <!-- 同步组标识：组色点 + "同步器N"（独立任务为空白） -->
+                                                        <StackPanel Orientation="Horizontal">
+                                                            <Ellipse Width="10" Height="10" Margin="0,0,5,0" VerticalAlignment="Center"
+                                                                     Fill="{Binding SyncGroupDotBrush, TargetNullValue=Transparent}"/>
+                                                            <TextBlock Text="{Binding SyncGroupTag}" VerticalAlignment="Center" FontSize="12"/>
+                                                        </StackPanel>
+                                                    </DataTemplate>
+                                                </GridViewColumn.CellTemplate>
+                                            </GridViewColumn>
                                             <GridViewColumn Header="监控目标" Width="130" DisplayMemberBinding="{Binding MonitorProperty}"/>
                                             <GridViewColumn Header="当前值" Width="130" DisplayMemberBinding="{Binding CurrentValue}"/>
                                             <GridViewColumn Header="采样数" Width="55" DisplayMemberBinding="{Binding SampleCount}"/>

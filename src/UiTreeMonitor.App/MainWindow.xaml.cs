@@ -88,6 +88,28 @@ public sealed class TaskListItem : INotifyPropertyChanged
         set { _lastSampleTime = value; PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(LastSampleTime))); }
     }
 
+    // ==== 同步组标识（同组同色：组列色点+标签、行背景淡色；单独启动任务时清除=脱离组） ====
+    private string? _syncGroupTag; // "同步器N"（null=不属于任何组）
+    public string? SyncGroupTag
+    {
+        get => _syncGroupTag;
+        set { _syncGroupTag = value; PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SyncGroupTag))); }
+    }
+
+    private System.Windows.Media.Brush? _syncGroupDotBrush; // 组色（色点用，实色）
+    public System.Windows.Media.Brush? SyncGroupDotBrush
+    {
+        get => _syncGroupDotBrush;
+        set { _syncGroupDotBrush = value; PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SyncGroupDotBrush))); }
+    }
+
+    private System.Windows.Media.Brush? _syncGroupRowBrush; // 组色浅版（行背景用，~16% 透明）
+    public System.Windows.Media.Brush? SyncGroupRowBrush
+    {
+        get => _syncGroupRowBrush;
+        set { _syncGroupRowBrush = value; PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SyncGroupRowBrush))); }
+    }
+
     public event PropertyChangedEventHandler? PropertyChanged;
 }
 
@@ -1047,19 +1069,51 @@ public partial class MainWindow : Window
                 valueCount: item.Config.Extractors.Count > 0 ? item.Config.Extractors.Count : 1);
         }
 
-        var groupId = _scheduler.StartSync(items.Select(i => i.Config.Id).ToList(),
+        var (groupId, syncIndex) = _scheduler.StartSync(items.Select(i => i.Config.Id).ToList(),
             intervalMs: opt.IntervalMs, durationSec: opt.DurationSec);
         if (groupId is null)
         {
             TxtStatus.Text = "同步启动失败（需 ≥2 个线程模式任务且均未运行）";
             return;
         }
+        // 同组同色标识：组列色点 + "同步器N" 标签 + 行背景淡色（颜色按组序号循环取色）
+        var (dot, row) = SyncGroupBrushes(syncIndex);
+        foreach (var it in items)
+        {
+            it.SyncGroupTag = $"同步器{syncIndex}";
+            it.SyncGroupDotBrush = dot;
+            it.SyncGroupRowBrush = row;
+        }
         foreach (var it in items) it.State = "Running";
         var saveDesc = opt.SaveBatchPoints == int.MaxValue
             ? $"每 {opt.SaveIntervalSec} 秒落盘" : $"每 {opt.SaveBatchPoints} 点落盘";
         TxtStatus.Text = $"已同步启动 {items.Count} 个任务：统一 {opt.IntervalMs}ms 节拍" +
-                         $"{(opt.DurationSec > 0 ? $"、时长 {opt.DurationSec}s" : "、无限时长")}、{saveDesc}（严格同刻采样）。" +
-                         "多选后右键「合并导出数据报告」可导出到同一文件夹。";
+                         $"{(opt.DurationSec > 0 ? $"、时长 {opt.DurationSec}s" : "、无限时长")}、{saveDesc}（严格同刻采样），" +
+                         $"组标识「同步器{syncIndex}」。多选后右键「合并导出数据报告」可导出到同一文件夹。";
+    }
+
+    // ==== 同步组配色：同组同色（组1绿、组2橙、组3蓝…循环），色点用实色、行背景用 ~16% 透明浅色 ====
+    private static readonly System.Windows.Media.Color[] SyncPalette =
+    {
+        System.Windows.Media.Color.FromRgb(0x2E, 0x9E, 0x44), // 绿
+        System.Windows.Media.Color.FromRgb(0xE8, 0x84, 0x2A), // 橙
+        System.Windows.Media.Color.FromRgb(0x3D, 0x78, 0xD8), // 蓝
+        System.Windows.Media.Color.FromRgb(0x9C, 0x4D, 0xC8), // 紫
+        System.Windows.Media.Color.FromRgb(0x1F, 0xA0, 0xA8), // 青
+        System.Windows.Media.Color.FromRgb(0xD8, 0x46, 0x7E), // 玫红
+    };
+
+    /// <summary>按组序号取（色点画刷, 行背景画刷）；序号循环取色。</summary>
+    private static (System.Windows.Media.SolidColorBrush Dot, System.Windows.Media.SolidColorBrush Row)
+        SyncGroupBrushes(int syncIndex)
+    {
+        var c = SyncPalette[(syncIndex - 1) % SyncPalette.Length];
+        var dot = new System.Windows.Media.SolidColorBrush(c);
+        var row = new System.Windows.Media.SolidColorBrush(
+            System.Windows.Media.Color.FromArgb(0x2A, c.R, c.G, c.B));
+        dot.Freeze();
+        row.Freeze();
+        return (dot, row);
     }
 
     /// <summary>合并导出多个任务的数据报告：一个总目录（当日数据目录下 merged_report_时刻），
@@ -1227,11 +1281,14 @@ public partial class MainWindow : Window
         TxtStatus.Text = $"任务 [{item.Name}] 已恢复采样（独立模式）";
     }
 
-    /// <summary>把任务从同步采集组脱离：清外部驱动标记，后续独立线程模式运行。</summary>
+    /// <summary>把任务从同步采集组脱离：清外部驱动标记与组色标识，后续独立线程模式运行。</summary>
     private void DetachFromSyncGroup(TaskListItem item)
     {
         if (_scheduler.GetHost(item.Config.Id) is UiTreeMonitor.Hosting.ThreadHost th && th.Task.ExternallyDriven)
             th.Task.ExternallyDriven = false;
+        item.SyncGroupTag = null;   // 清组标识（组列色点/标签、行背景淡色一并消失）
+        item.SyncGroupDotBrush = null;
+        item.SyncGroupRowBrush = null;
     }
 
     private void MenuRemoveTask_Click(object sender, RoutedEventArgs e)

@@ -55,13 +55,13 @@ public sealed class TaskScheduler : IDisposable
 
     /// <summary>同步启动多个任务（同步采集组）：统一节拍、时间戳严格同刻、同窗口共享一次抓树。
     /// intervalMs/durationSec 为组统一参数（durationSec=0 无限）；要求 ≥2 个线程模式任务且均不在运行。
-    /// 返回组 id；不满足条件返回 null。</summary>
-    public Guid? StartSync(IReadOnlyList<Guid> taskIds, int? intervalMs = null, int durationSec = 0)
+    /// 返回 (组 id, 组序号)；序号从 1 递增，供 UI 标识"同步器N"与配色。不满足条件返回 (null, 0)。</summary>
+    public (Guid? GroupId, int Index) StartSync(IReadOnlyList<Guid> taskIds, int? intervalMs = null, int durationSec = 0)
     {
-        if (taskIds is null || taskIds.Count < 2) return null;
+        if (taskIds is null || taskIds.Count < 2) return (null, 0);
         var hosts = taskIds.Select(GetHost).OfType<ThreadHost>().ToList();
-        if (hosts.Count != taskIds.Count) return null; // 同步组仅支持线程模式
-        if (hosts.Any(h => h.State is TaskRunState.Running or TaskRunState.Paused)) return null;
+        if (hosts.Count != taskIds.Count) return (null, 0); // 同步组仅支持线程模式
+        if (hosts.Any(h => h.State is TaskRunState.Running or TaskRunState.Paused)) return (null, 0);
 
         var tasks = hosts.Select(h => h.Task).ToList();
         var interval = intervalMs ?? tasks.Max(t => t.IntervalMs);
@@ -73,8 +73,10 @@ public sealed class TaskScheduler : IDisposable
         var coord = new SyncGroupCoordinator(tasks, interval, durationSec);
         _syncGroups[coord.GroupId] = coord;
         coord.Start();
-        return coord.GroupId;
+        return (coord.GroupId, ++_syncGroupSeq);
     }
+
+    private int _syncGroupSeq; // 同步组累计序号（"同步器N"标签与配色用）
 
     /// <summary>查询任务所属的同步组（未成组返回 null）。</summary>
     public SyncGroupCoordinator? GetSyncGroupOf(Guid taskId)
