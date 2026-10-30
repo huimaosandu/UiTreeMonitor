@@ -111,6 +111,7 @@ public sealed class MonitorTask : IDisposable
             int samplesTaken = 0;
             int loopCount = 0;
             var lastFire = DateTime.MinValue;
+            bool degradedLogged = false; // 定位降级只提示一次，避免刷屏
 
             var stopCtx = new StopContext { TaskStartedAt = StartedAt };
             MLog($"Target: Kind={_config.Target.Kind}, Value={_config.Target.Value}, ElemName={_config.Target.ElementName}, ElemType={_config.Target.ElementControlType}");
@@ -170,21 +171,30 @@ public sealed class MonitorTask : IDisposable
                 }
                 if (loopCount % 10 == 0) MLog($"CaptureWindow 成功: {tree.NodeCount}个节点");
 
-                // 过滤：定位监控节点（属性级）
-                var (nodeId, nodePath, values) = SelectMonitoredValues(tree, _config);
+                // 过滤：定位监控节点（属性级；降级匹配保证被监控值变化后仍能定位）
+                var (nodeId, nodePath, values, matchLevel) = SelectMonitoredValues(tree, _config);
                 if (nodeId < 0)
                 {
                     if (loopCount % 5 == 0)
                     {
                         MLog($"SelectMonitoredValues 未匹配节点! ElemName=[{_config.Target.ElementName}] ElemType=[{_config.Target.ElementControlType}]");
-                        // 打印前3个节点供诊断
-                        foreach (var id in tree.Order.Take(3))
+                        // 打印同 ControlType 的节点供诊断（比固定前3个根节点更有用）
+                        foreach (var n in tree.Order.Select(id => tree.Nodes[id])
+                                     .Where(n => _config.Target.ElementControlType is null || n.ControlType == _config.Target.ElementControlType)
+                                     .Take(3))
                         {
-                            var n = tree.Nodes[id]; MLog($"  节点[{id}]: Name=[{n.Name}] Type=[{n.ControlType}] AutoId=[{n.AutomationId}]");
+                            MLog($"  节点[{n.Id}]: Name=[{n.Name}] Type=[{n.ControlType}] AutoId=[{n.AutomationId}]");
                         }
                     }
                     Thread.Sleep(Math.Min(200, _config.Timer.IntervalMs));
                     continue;
+                }
+                if (matchLevel > 0 && !degradedLogged)
+                {
+                    degradedLogged = true;
+                    MLog($"定位降级(级别{matchLevel}): 精确匹配未命中（被监控值变化导致 Name 快照过期），" +
+                         (matchLevel == 1 ? "已按 AutomationId+ControlType 继续定位" : "已按 ControlType 兜底定位") +
+                         "——值变化监控不受影响");
                 }
 
                 // 更新触发上下文（值变化/阈值用）
@@ -248,24 +258,16 @@ public sealed class MonitorTask : IDisposable
         RaiseState();
     }
 
-    /// <summary>在树中按目标约束定位监控节点，返回 (nodeId, path, 属性值表)。</summary>
-    private static (int nodeId, string path, Dictionary<string, string?> values) SelectMonitoredValues(
+    /// <summary>在树中按目标约束定位监控节点（通用降级匹配），返回 (nodeId, path, 属性值表, 匹配级别)。</summary>
+    private static (int nodeId, string path, Dictionary<string, string?> values, int matchLevel) SelectMonitoredValues(
         TreeSnapshot tree, MonitorTaskConfig config)
     {
         var t = config.Target;
-        ElementNode? node = null;
+        // 按树的前序顺序遍历，保持"取第一个匹配"的稳定语义
+        var nodes = tree.Order.Select(id => tree.Nodes[id]);
+        var (node, level) = ElementMatcher.FindNode(nodes, t.ElementName, t.ElementAutomationId, t.ElementControlType);
 
-        foreach (var id in tree.Order)
-        {
-            var n = tree.Nodes[id];
-            if (t.ElementName is not null && n.Name != t.ElementName) continue;
-            if (t.ElementAutomationId is not null && n.AutomationId != t.ElementAutomationId) continue;
-            if (t.ElementControlType is not null && n.ControlType != t.ElementControlType) continue;
-            node = n;
-            break; // 取第一个匹配
-        }
-
-        if (node is null) return (-1, "", new Dictionary<string, string?>());
+        if (node is null) return (-1, "", new Dictionary<string, string?>(), -1);
 
         // 属性采集 + 提取性过滤
         var values = new Dictionary<string, string?>();
@@ -277,7 +279,7 @@ public sealed class MonitorTask : IDisposable
 
         // 路径
         var path = BuildPath(tree, node.Id);
-        return (node.Id, path, values);
+        return (node.Id, path, values, level);
     }
 
     private static string BuildPath(TreeSnapshot tree, int id)

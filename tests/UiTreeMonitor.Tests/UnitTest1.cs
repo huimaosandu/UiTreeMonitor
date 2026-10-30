@@ -349,3 +349,62 @@ public class ScheduleTriggerRhythmTests
         Assert.False(trigger.ShouldFire(ctx));
     }
 }
+
+public class ElementMatcherTests
+{
+    // 复现用户场景：Text 元素的 Name 就是被监控的变化值（实时数值文本）
+    private static readonly ElementNode MenuNode = new() { Id = 1, Name = "系统", ControlType = "MenuItem" };
+    private static readonly ElementNode ValueNode = new() { Id = 2, Name = "677.941", ControlType = "Text" };
+    private static readonly ElementNode OtherTextNode = new() { Id = 3, Name = "标题", ControlType = "Text" };
+
+    private static ElementNode[] Nodes => new[] { MenuNode, ValueNode, OtherTextNode };
+
+    [Fact]
+    public void ExactMatch_WhenNameStillCurrent_Level0()
+    {
+        var (node, level) = ElementMatcher.FindNode(Nodes, "677.941", null, "Text");
+        Assert.NotNull(node);
+        Assert.Equal(2, node!.Id);
+        Assert.Equal(0, level);
+    }
+
+    [Fact]
+    public void NameChanged_IgnoredNameFallback_Level1()
+    {
+        // 创建任务时 Name="0.185013"，运行时元素 Name 已变成 "677.941" → 精确匹配失败，
+        // 降级忽略 Name 后仍按 ControlType=Text 定位到同一节点——值变化监控不中断
+        var (node, level) = ElementMatcher.FindNode(Nodes, "0.185013", null, "Text");
+        Assert.NotNull(node);
+        Assert.Equal(2, node!.Id);
+        Assert.Equal(1, level);
+    }
+
+    [Fact]
+    public void AutomationId_PinsNode_EvenWhenNameChanged()
+    {
+        var pinned = new ElementNode { Id = 9, Name = "新的值", ControlType = "Text", AutomationId = "valueText" };
+        var others = new[] { MenuNode, new() { Id = 4, Name = "x", ControlType = "Text" }, pinned };
+        var (node, level) = ElementMatcher.FindNode(others, "旧值", "valueText", "Text");
+        Assert.NotNull(node);
+        Assert.Equal(9, node!.Id);
+        Assert.Equal(1, level);
+    }
+
+    [Fact]
+    public void TypeOnlyFallback_TakesFirstSameType_Level2()
+    {
+        // Name 与 AutomationId 都不可靠时，仅按 ControlType 取第一个同类型节点
+        var (node, level) = ElementMatcher.FindNode(Nodes, "不存在的名字", "不存在的AutoId", "Text");
+        Assert.NotNull(node);
+        Assert.Equal(2, node!.Id); // 第一个 Text 节点
+        Assert.Equal(2, level);
+    }
+
+    [Fact]
+    public void NoMatchAtAll_ReturnsNull()
+    {
+        var (node, level) = ElementMatcher.FindNode(Nodes, "名字", null, "Button");
+        Assert.Null(node);
+        Assert.Equal(-1, level);
+    }
+}

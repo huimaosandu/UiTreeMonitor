@@ -872,13 +872,10 @@ public partial class MainWindow : Window
                         return; 
                     }
                     
-                    // 找到与监控目标匹配的节点（按进程名+控件类型+名称+AutomationId，null 约束不参与匹配）
+                    // 找到与监控目标匹配的节点（通用降级匹配：被监控值变化导致 Name 快照过期时自动放宽定位条件）
                     var t = item.Config.Target;
-                    var matchNode = snap.Nodes.Values.FirstOrDefault(n =>
-                        n.ProcessId == _currentTarget.ProcessId &&
-                        (t.ElementControlType is null || n.ControlType == t.ElementControlType) &&
-                        (t.ElementName is null || n.Name == t.ElementName) &&
-                        (t.ElementAutomationId is null || n.AutomationId == t.ElementAutomationId));
+                    var nodes = snap.Nodes.Values.Where(n => n.ProcessId == _currentTarget.ProcessId);
+                    var (matchNode, _) = ElementMatcher.FindNode(nodes, t.ElementName, t.ElementAutomationId, t.ElementControlType);
                     
                     if (matchNode is not null)
                     {
