@@ -896,10 +896,15 @@ public partial class MainWindow : Window
         while (dep is not null and not ListViewItem)
             dep = VisualTreeHelper.GetParent(dep);
         if (dep is ListViewItem row && row.DataContext is TaskListItem item)
-            TaskList.SelectedItem = item;
+        {
+            // 多选模式：右键点在已选中的行上保留多选（用于成组操作），点在未选中的行上收敛为单选
+            if (!TaskList.SelectedItems.Contains(item))
+                TaskList.SelectedItem = item;
+        }
     }
 
-    /// <summary>右键菜单打开时按任务状态置灰无效项：Running→"启动/继续"灰；Idle/Stopped→"停止"灰。</summary>
+    /// <summary>右键菜单打开时按任务状态置灰无效项：Running→"启动/继续"灰；Idle/Stopped→"停止"灰。
+    /// 多选项："同步启动"需选中≥2个且均未运行；"合并导出数据图"需选中≥2个。</summary>
     private void TaskContextMenu_Opened(object sender, RoutedEventArgs e)
     {
         var item = TaskList.SelectedItem as TaskListItem;
@@ -908,6 +913,122 @@ public partial class MainWindow : Window
         MenuStartTask.IsEnabled = item is not null && !running;       // 运行中不可再启动
         MenuStopTask.IsEnabled = running;                            // 未启动/已停止不可停止
         MenuResumeTask.IsEnabled = item is not null && !running && !idle; // 仅已停止过的任务可继续
+
+        var selected = TaskList.SelectedItems.OfType<TaskListItem>().ToList();
+        MenuSyncStart.IsEnabled = selected.Count >= 2
+            && selected.All(s => !string.Equals(s.State, "Running", StringComparison.OrdinalIgnoreCase));
+        MenuMergeChart.IsEnabled = selected.Count >= 2;
+    }
+
+    /// <summary>同步启动选中的多个任务（同步采集组）：统一节拍、时间戳严格同刻、同窗口共享一次抓树。
+    /// 间隔取组内最大配置间隔（不低于任一任务的配置频率）。停止后可重新框选再同步启动。</summary>
+    private void MenuSyncStart_Click(object sender, RoutedEventArgs e)
+    {
+        var items = TaskList.SelectedItems.OfType<TaskListItem>().ToList();
+        if (items.Count < 2)
+        {
+            TxtStatus.Text = "同步启动需先选中至少 2 个任务（Ctrl/Shift 多选）";
+            return;
+        }
+        if (items.Any(s => string.Equals(s.State, "Running", StringComparison.OrdinalIgnoreCase)))
+        {
+            TxtStatus.Text = "选中任务里有正在运行的，请先停止后再同步启动";
+            return;
+        }
+
+        var groupId = _scheduler.StartSync(items.Select(i => i.Config.Id).ToList());
+        if (groupId is null)
+        {
+            TxtStatus.Text = "同步启动失败（需 ≥2 个线程模式任务且均未运行）";
+            return;
+        }
+        foreach (var it in items) it.State = "Running";
+        var interval = items.Max(i => i.IntervalMs);
+        TxtStatus.Text = $"已同步启动 {items.Count} 个任务：严格同刻采样（统一 {interval}ms 节拍，同窗口只抓一次树）。" +
+                         "多选后右键「合并导出数据图」可画到同一张图。";
+    }
+
+    /// <summary>合并导出多个任务的走势图：每任务每值列一条线，画在同一张 PNG（同步组时间轴严格对齐；
+    /// 独立任务按各自时间戳绘制）。保存到当日数据目录。</summary>
+    private void MenuMergeChart_Click(object sender, RoutedEventArgs e)
+    {
+        var items = TaskList.SelectedItems.OfType<TaskListItem>().ToList();
+        if (items.Count < 2)
+        {
+            TxtStatus.Text = "合并导出需先选中至少 2 个任务（Ctrl/Shift 多选）";
+            return;
+        }
+
+        _saver.FlushAll(); // 先落盘，与实时数据一致
+
+        // 组装系列：每任务每值列一条候选线（图例默认 任务名·值N）
+        var seriesItems = new List<ChartSeriesItem>();
+        var seriesPoints = new Dictionary<int, List<(DateTime Ts, double V)>>();
+        foreach (var item in items)
+        {
+            var host = _scheduler.GetHost(item.Config.Id);
+            var records = host is not null ? host.Records.ToList() : new List<SampleRecord>();
+            if (records.Count == 0) continue;
+            int n = item.Config.Extractors.Count > 0 ? item.Config.Extractors.Count : 1;
+
+            // 与实时落盘同规则切行：(时间戳, 值1..值N)
+            var rows = new List<(DateTime Ts, string?[] Vals)>();
+            for (int i = 0; i + n <= records.Count; i += n)
+            {
+                var vals = new string?[n];
+                for (int c = 0; c < n; c++) vals[c] = records[i + c].Value;
+                rows.Add((records[i].Timestamp, vals));
+            }
+
+            for (int c = 0; c < n; c++)
+            {
+                var pts = rows
+                    .Where(r => double.TryParse(r.Vals[c], NumberStyles.Float, CultureInfo.InvariantCulture, out _))
+                    .Select(r => (r.Ts, V: double.Parse(r.Vals[c]!, NumberStyles.Float, CultureInfo.InvariantCulture)))
+                    .ToList();
+                if (pts.Count < 2) continue; // 不可绘列不进候选
+                int col = seriesItems.Count;
+                seriesPoints[col] = pts;
+                seriesItems.Add(new ChartSeriesItem
+                {
+                    ColumnIndex = col,
+                    Key = $"{item.Name} · 值{c + 1}",
+                    IsNumeric = true,
+                    Selected = true,
+                    Legend = $"{item.Name}·值{c + 1}",
+                });
+            }
+        }
+
+        if (seriesItems.Count == 0)
+        {
+            MessageBox.Show(this, "选中任务均没有可绘图的数值数据（需时间戳/值均为数值且每列≥2个点）。",
+                "合并数据图", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var dlg = new ChartOptionsDialog(seriesItems) { Owner = this };
+        if (dlg.ShowDialog() != true || !dlg.Result.Confirmed || !dlg.Result.GenerateChart) return;
+
+        var series = new List<ChartSeries>();
+        foreach (var (index, _, legend) in dlg.Result.SelectedSeries)
+            if (seriesPoints.TryGetValue(index, out var pts) && pts.Count > 0)
+                series.Add(new ChartSeries(legend, pts));
+        if (series.Count == 0) return;
+
+        try
+        {
+            Directory.CreateDirectory(TodayDataDir);
+            var outPng = Path.Combine(TodayDataDir, $"merged_chart_{DateTime.Now:HHmmss}.png");
+            ChartImageRenderer.RenderPng(outPng, series, $"合并走势图（{series.Count} 条曲线 / {items.Count} 个任务）");
+            TxtStatus.Text = $"合并数据图已生成: {outPng}";
+            MessageBox.Show(this, $"合并数据图已保存到：\n{outPng}\n\n同步组任务的时间轴严格同刻对齐。",
+                "合并数据图", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            TxtStatus.Text = $"合并数据图生成失败: {ex.Message}";
+        }
     }
 
     /// <summary>启动采集：未启动（Idle）→ 首次启动；已停止（Stopped）→ 恢复采样。</summary>

@@ -41,6 +41,7 @@ public sealed class MonitorTask : IDisposable
 
     public Guid Id => _config.Id;
     public string Name => _config.Name;
+    public MonitorTarget Target => _config.Target; // 同步组协调器按目标窗口分组用
     public TaskRunState State { get { lock (_lock) return _state; } private set { lock (_lock) _state = value; } }
     public IReadOnlyList<MonitorSample> Samples { get { lock (_lock) return _samples.ToList(); } }
     public IReadOnlyList<SampleRecord> Records { get { lock (_lock) return _records.ToList(); } }
@@ -62,6 +63,7 @@ public sealed class MonitorTask : IDisposable
 
     public void Start()
     {
+        if (ExternallyDriven) { StartExternal(); return; } // 同步组任务：不起采集线程
         if (_state != TaskRunState.Idle) return;
         StartedAt = DateTime.Now;
         State = TaskRunState.Running;
@@ -69,9 +71,10 @@ public sealed class MonitorTask : IDisposable
         RaiseState();
     }
 
-    /// <summary>从 Stopped 状态恢复采样（创建新线程）。</summary>
+    /// <summary>从 Stopped 状态恢复采样（创建新线程）。外部驱动模式不适用（同步组需重新成组启动）。</summary>
     public void Resume()
     {
+        if (ExternallyDriven) return;
         if (_state != TaskRunState.Stopped) return;
         _stopRequested = false;
         State = TaskRunState.Running;
@@ -203,19 +206,7 @@ public sealed class MonitorTask : IDisposable
 
                 // 记录：应用值提取规则（@@标记对 / re:正则），有规则时展开为 值1..值N；
                 // lastValues（触发器上下文）保持原始值不受提取影响
-                var records = new List<SampleRecord>();
-                if (_config.Extractors is { Count: > 0 })
-                {
-                    var raw = values.Values.FirstOrDefault();
-                    var extracted = ValueExtractor.ExtractAll(raw, _config.Extractors);
-                    for (int i = 0; i < extracted.Count; i++)
-                        records.Add(new SampleRecord(now, nodeId, nodePath, $"值{i + 1}", extracted[i]));
-                }
-                else
-                {
-                    foreach (var (k, v) in values)
-                        records.Add(new SampleRecord(now, nodeId, nodePath, k, v ?? ""));
-                }
+                var records = BuildRecords(now, nodeId, nodePath, values, _config);
                 var sample = new MonitorSample(now, nodeId, nodePath, values, records);
                 lock (_lock)
                 {
@@ -293,6 +284,97 @@ public sealed class MonitorTask : IDisposable
         }
         parts.Reverse();
         return string.Join("/", parts);
+    }
+
+    // ==== 同步组外部驱动模式 ====
+    // 独立模式（默认）：任务自己的线程循环采集（触发→抓树→记录→结束判断）。
+    // 同步模式：SyncGroupCoordinator 统一节拍抓树，经 RecordExternalSample 把同一时刻的
+    // 快照推给组内各任务记录——时间戳统一为理论 tick 时刻，跨任务严格同刻。
+
+    /// <summary>外部驱动标记：true 时 Start 不起采集线程，快照由同步组协调器推送。</summary>
+    public bool ExternallyDriven { get; set; }
+
+    /// <summary>是否已请求停止（同步组协调器据此跳过/剔除任务）。</summary>
+    public bool IsStopRequested => _stopRequested;
+
+    /// <summary>配置的采集间隔（毫秒）。</summary>
+    public int IntervalMs => _config.Timer.IntervalMs;
+
+    /// <summary>外部驱动模式启动：置 Running 但不起采集线程（Idle/Stopped 均可启动）。</summary>
+    public void StartExternal()
+    {
+        if (State is TaskRunState.Running or TaskRunState.Paused) return;
+        if (State is TaskRunState.Completed) return;
+        _stopRequested = false;
+        StartedAt = DateTime.Now;
+        State = TaskRunState.Running;
+        RaiseState();
+    }
+
+    /// <summary>外部模式停止落地：由协调器在检测到停止请求后调用（Run 循环不在场，需代为置状态）。</summary>
+    public void MarkStopped()
+    {
+        if (State is TaskRunState.Stopped or TaskRunState.Completed or TaskRunState.Error) return;
+        State = TaskRunState.Stopped;
+        RaiseState();
+    }
+
+    /// <summary>记录一次外部快照采样（同步组协调器在抓树线程调用）：定位→提取→记录→事件→结束判断。
+    /// 时间戳 = 统一 tick 时刻（严格同刻），与本任务实际处理完成时刻无关。</summary>
+    public void RecordExternalSample(DateTime tickAt, TreeSnapshot snapshot)
+    {
+        if (_stopRequested) { MarkStopped(); return; }
+        if (State != TaskRunState.Running) return;
+        try
+        {
+            var (nodeId, nodePath, values, _) = SelectMonitoredValues(snapshot, _config);
+            if (nodeId < 0) return; // 本轮未定位到节点：跳过不记空点
+
+            var records = BuildRecords(tickAt, nodeId, nodePath, values, _config);
+            var sample = new MonitorSample(tickAt, nodeId, nodePath, values, records);
+            lock (_lock)
+            {
+                _samples.Add(sample);
+                _records.AddRange(records);
+            }
+            SampleTaken?.Invoke(this, new MonitorTaskEventArgs { Sample = sample });
+
+            // 结束条件判断（与独立模式同款语义）
+            var stopCond = StopConditionRuntimeFactory.Create(_config.StopCondition);
+            var stopCtx = new StopContext
+            {
+                Now = tickAt,
+                TaskStartedAt = StartedAt,
+                SampleCount = SampleCount,
+                LastValues = values,
+                PreviousValue = null,
+            };
+            if (stopCond.ShouldStop(stopCtx)) Complete();
+        }
+        catch
+        {
+            // 单轮外部采样失败不终止任务
+        }
+    }
+
+    /// <summary>构造采样记录行：有提取规则时展开为 值1..值N，否则逐属性记录（独立/同步模式共用）。</summary>
+    private static List<SampleRecord> BuildRecords(
+        DateTime now, int nodeId, string nodePath, Dictionary<string, string?> values, MonitorTaskConfig config)
+    {
+        var records = new List<SampleRecord>();
+        if (config.Extractors is { Count: > 0 })
+        {
+            var raw = values.Values.FirstOrDefault();
+            var extracted = ValueExtractor.ExtractAll(raw, config.Extractors);
+            for (int i = 0; i < extracted.Count; i++)
+                records.Add(new SampleRecord(now, nodeId, nodePath, $"值{i + 1}", extracted[i]));
+        }
+        else
+        {
+            foreach (var (k, v) in values)
+                records.Add(new SampleRecord(now, nodeId, nodePath, k, v ?? ""));
+        }
+        return records;
     }
 
     /// <summary>分片睡眠：50ms 粒度检查停止请求，请求后立即返回（替代整段 Thread.Sleep）。</summary>

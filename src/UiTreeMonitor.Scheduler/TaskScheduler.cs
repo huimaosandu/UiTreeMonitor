@@ -12,6 +12,7 @@ namespace UiTreeMonitor.Scheduler;
 public sealed class TaskScheduler : IDisposable
 {
     private readonly ConcurrentDictionary<Guid, IMonitorHost> _hosts = new();
+    private readonly ConcurrentDictionary<Guid, SyncGroupCoordinator> _syncGroups = new();
     private readonly object _latestLock = new();
     private readonly Dictionary<Guid, Dictionary<string, string?>> _latestValues = new();
     private readonly string? _workerExe; // 非空则进程模式可用
@@ -52,6 +53,38 @@ public sealed class TaskScheduler : IDisposable
         if (_hosts.TryGetValue(id, out var h)) h.Start();
     }
 
+    /// <summary>同步启动多个任务（同步采集组）：统一节拍、时间戳严格同刻、同窗口共享一次抓树。
+    /// 要求 ≥2 个线程模式任务且均不在运行。intervalMs 未指定时取组内最大配置间隔（不低于任一任务频率）。
+    /// 返回组 id；不满足条件返回 null。</summary>
+    public Guid? StartSync(IReadOnlyList<Guid> taskIds, int? intervalMs = null)
+    {
+        if (taskIds is null || taskIds.Count < 2) return null;
+        var hosts = taskIds.Select(GetHost).OfType<ThreadHost>().ToList();
+        if (hosts.Count != taskIds.Count) return null; // 同步组仅支持线程模式
+        if (hosts.Any(h => h.State is TaskRunState.Running or TaskRunState.Paused)) return null;
+
+        var tasks = hosts.Select(h => h.Task).ToList();
+        var interval = intervalMs ?? tasks.Max(t => t.IntervalMs);
+        foreach (var t in tasks)
+        {
+            t.ExternallyDriven = true;
+            t.StartExternal();
+        }
+        var coord = new SyncGroupCoordinator(tasks, interval);
+        _syncGroups[coord.GroupId] = coord;
+        coord.Start();
+        return coord.GroupId;
+    }
+
+    /// <summary>查询任务所属的同步组（未成组返回 null）。</summary>
+    public SyncGroupCoordinator? GetSyncGroupOf(Guid taskId)
+    {
+        foreach (var g in _syncGroups.Values)
+            if (g.Tasks.Any(t => t.Id == taskId))
+                return g;
+        return null;
+    }
+
     /// <summary>查询其他任务最新值（跨树触发器用）。</summary>
     public string? GetLatestValue(Guid taskId, string property)
     {
@@ -89,6 +122,8 @@ public sealed class TaskScheduler : IDisposable
 
     public void Dispose()
     {
+        foreach (var g in _syncGroups.Values) g.Dispose();
+        _syncGroups.Clear();
         RequestStopAll();
         foreach (var h in _hosts.Values) h.Dispose();
         _hosts.Clear();

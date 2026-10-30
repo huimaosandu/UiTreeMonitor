@@ -159,7 +159,7 @@
 
                             <!-- 监控任务列表（显示实时值；右键行操作） -->
                             <GroupBox Header="监控任务" Grid.Row="2" Padding="8">
-                                <ListView x:Name="TaskList" SelectionChanged="TaskList_SelectionChanged"
+                                <ListView x:Name="TaskList" SelectionMode="Extended" SelectionChanged="TaskList_SelectionChanged"
                                           MouseRightButtonUp="TaskList_MouseRightButtonUp">
                                     <ListView.ContextMenu>
                                         <ContextMenu Opened="TaskContextMenu_Opened">
@@ -170,6 +170,8 @@
                                             <MenuItem Header="查看监控配置" Click="MenuViewTask_Click"/>
                                             <Separator/>
                                             <MenuItem Header="生成数据图" Click="MenuExportTask_Click"/>
+                                            <MenuItem Header="同步启动选中（严格同刻采样）" x:Name="MenuSyncStart" Click="MenuSyncStart_Click"/>
+                                            <MenuItem Header="合并导出数据图（多任务同图同时间轴）" x:Name="MenuMergeChart" Click="MenuMergeChart_Click"/>
                                         </ContextMenu>
                                     </ListView.ContextMenu>
                                     <ListView.View>

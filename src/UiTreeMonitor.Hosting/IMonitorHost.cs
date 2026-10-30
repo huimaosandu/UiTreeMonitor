@@ -44,6 +44,9 @@ public sealed class ThreadHost : IMonitorHost
         _task.StateChanged += (_, s) => StateChanged?.Invoke(this, s);
     }
 
+    /// <summary>内部任务运行时（同步采集组需要直接驱动外部模式采样）。</summary>
+    public MonitorTask Task => _task;
+
     /// <summary>注入跨树值提供器。</summary>
     public void SetCrossTreeProvider(Func<Guid, string, string?> provider)
     {

@@ -408,3 +408,103 @@ public class ElementMatcherTests
         Assert.Equal(-1, level);
     }
 }
+
+/// <summary>同步采集组：MonitorTask 外部驱动模式（严格同刻时间戳、降级定位、状态流转、停止条件）。</summary>
+public class SyncGroupExternalModeTests
+{
+    private static MonitorTaskConfig MakeConfig(string name, string elemName = "677.941",
+        IStopConditionSpec? stop = null) => new()
+    {
+        Name = name,
+        Target = new MonitorTarget
+        {
+            Kind = TargetKind.WindowHandle, Value = "0x1",
+            ElementName = elemName, ElementControlType = "Text",
+        },
+        Properties = new[] { "Name" },
+        Filter = new FilterSet(),
+        Timer = new TimerSpec { IntervalMs = 500 },
+        StopCondition = stop ?? new NeverStopSpec(),
+    };
+
+    // SelectMonitoredValues 按 tree.Order 前序遍历，快照必须带 Order
+    private static TreeSnapshot TreeWith(params ElementNode[] nodes)
+    {
+        var dict = new Dictionary<int, ElementNode>();
+        var order = new List<int>();
+        foreach (var n in nodes) { dict[n.Id] = n; order.Add(n.Id); }
+        return new TreeSnapshot { RootId = nodes.Length > 0 ? nodes[0].Id : -1, Nodes = dict, Order = order };
+    }
+
+    private static TreeSnapshot ValueTree(string name) => TreeWith(
+        new ElementNode { Id = 1, ParentId = -1, Name = "根", ControlType = "Window" },
+        new ElementNode { Id = 2, ParentId = 1, Name = name, ControlType = "Text" });
+
+    [Fact]
+    public void RecordExternalSample_TwoTasks_SameTick_ExactSameTimestamp()
+    {
+        // 核心承诺：同一轮 tick 推给多个任务，各任务记录的 Timestamp 严格等于 tickAt
+        var t1 = new MonitorTask(MakeConfig("任务A"));
+        var t2 = new MonitorTask(MakeConfig("任务B", elemName: "另一个值"));
+        t1.ExternallyDriven = true; t1.StartExternal();
+        t2.ExternallyDriven = true; t2.StartExternal();
+        var tree = ValueTree("677.941");
+
+        var tickAt = new DateTime(2026, 10, 30, 15, 0, 0, 123);
+        t1.RecordExternalSample(tickAt, tree);
+        t2.RecordExternalSample(tickAt, tree);
+
+        Assert.NotEmpty(t1.Records);
+        Assert.NotEmpty(t2.Records);
+        Assert.All(t1.Records, r => Assert.Equal(tickAt, r.Timestamp));
+        Assert.All(t2.Records, r => Assert.Equal(tickAt, r.Timestamp));
+        // 任务B 定位的是 Name=另一个值 的节点——该快照中不存在，降级后仍记录（值监控不断流）
+        Assert.NotEmpty(t2.Records);
+    }
+
+    [Fact]
+    public void RecordExternalSample_NameChangedFallback_StillRecords()
+    {
+        // 创建任务时 Name=旧值，快照中已变成 新值 → 降级定位仍记录
+        var task = new MonitorTask(MakeConfig("任务A", elemName: "0.185013"));
+        task.ExternallyDriven = true;
+        task.StartExternal();
+        task.RecordExternalSample(DateTime.Now, ValueTree("677.941"));
+        Assert.NotEmpty(task.Records);
+        Assert.Equal("677.941", task.Records[0].Value);
+    }
+
+    [Fact]
+    public void StartExternal_StateTransitions_IdleRunningStopped()
+    {
+        var task = new MonitorTask(MakeConfig("任务A"));
+        Assert.Equal(TaskRunState.Idle, task.State);
+
+        task.ExternallyDriven = true;
+        task.StartExternal();
+        Assert.Equal(TaskRunState.Running, task.State);
+
+        task.RequestStop();
+        Assert.True(task.IsStopRequested);
+        task.MarkStopped();
+        Assert.Equal(TaskRunState.Stopped, task.State);
+
+        // Stopped 可重新同步启动
+        task.StartExternal();
+        Assert.Equal(TaskRunState.Running, task.State);
+    }
+
+    [Fact]
+    public void RecordExternalSample_SampleCountStop_CompletesAfterCount()
+    {
+        var task = new MonitorTask(MakeConfig("任务A", stop: new SampleCountStopSpec { Count = 2 }));
+        task.ExternallyDriven = true;
+        task.StartExternal();
+        var tree = ValueTree("677.941");
+
+        task.RecordExternalSample(DateTime.Now, tree);
+        Assert.Equal(TaskRunState.Running, task.State);
+        task.RecordExternalSample(DateTime.Now.AddMilliseconds(500), tree);
+        Assert.Equal(TaskRunState.Completed, task.State); // 达到次数 → 自动完成
+    }
+}
