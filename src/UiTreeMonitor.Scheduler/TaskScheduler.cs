@@ -54,9 +54,9 @@ public sealed class TaskScheduler : IDisposable
     }
 
     /// <summary>同步启动多个任务（同步采集组）：统一节拍、时间戳严格同刻、同窗口共享一次抓树。
-    /// 要求 ≥2 个线程模式任务且均不在运行。intervalMs 未指定时取组内最大配置间隔（不低于任一任务频率）。
+    /// intervalMs/durationSec 为组统一参数（durationSec=0 无限）；要求 ≥2 个线程模式任务且均不在运行。
     /// 返回组 id；不满足条件返回 null。</summary>
-    public Guid? StartSync(IReadOnlyList<Guid> taskIds, int? intervalMs = null)
+    public Guid? StartSync(IReadOnlyList<Guid> taskIds, int? intervalMs = null, int durationSec = 0)
     {
         if (taskIds is null || taskIds.Count < 2) return null;
         var hosts = taskIds.Select(GetHost).OfType<ThreadHost>().ToList();
@@ -70,7 +70,7 @@ public sealed class TaskScheduler : IDisposable
             t.ExternallyDriven = true;
             t.StartExternal();
         }
-        var coord = new SyncGroupCoordinator(tasks, interval);
+        var coord = new SyncGroupCoordinator(tasks, interval, durationSec);
         _syncGroups[coord.GroupId] = coord;
         coord.Start();
         return coord.GroupId;

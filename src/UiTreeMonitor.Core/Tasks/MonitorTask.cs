@@ -319,6 +319,14 @@ public sealed class MonitorTask : IDisposable
         RaiseState();
     }
 
+    /// <summary>外部模式完成落地：由协调器在组监控时长到期时调用（全组同时完成）。</summary>
+    public void MarkCompleted()
+    {
+        if (State is TaskRunState.Stopped or TaskRunState.Completed or TaskRunState.Error) return;
+        State = TaskRunState.Completed;
+        RaiseState();
+    }
+
     /// <summary>记录一次外部快照采样（同步组协调器在抓树线程调用）：定位→提取→记录→事件→结束判断。
     /// 时间戳 = 统一 tick 时刻（严格同刻），与本任务实际处理完成时刻无关。</summary>
     public void RecordExternalSample(DateTime tickAt, TreeSnapshot snapshot)

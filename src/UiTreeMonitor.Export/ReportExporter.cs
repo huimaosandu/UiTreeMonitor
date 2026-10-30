@@ -19,15 +19,20 @@ public sealed class ReportExporter
         Directory.CreateDirectory(outputRoot);
     }
 
-    /// <summary>导出全部格式，返回已生成的文件路径列表。输出到 {dataRoot}\{当日yyyyMMdd}\{任务名}_{时刻}\。</summary>
+    /// <summary>导出全部格式，返回已生成的文件路径列表。默认输出到 {dataRoot}\{当日yyyyMMdd}\{任务名}_{时刻}\；
+    /// 指定 targetDir 时输出到该目录（合并导出：多任务共一个总目录，每任务独立子目录内容）。</summary>
     /// <param name="chartSourcePath">可选：已渲染好的走势图 PNG，将复制为导出目录下 chart.png 并在报告中引用。</param>
     public IReadOnlyList<string> ExportAll(
         string taskName, Guid taskId, MonitorTaskConfig config,
         IReadOnlyList<SampleRecord> records, DateTime startedAt, DateTime endedAt,
-        string? chartSourcePath = null)
+        string? chartSourcePath = null, string? targetDir = null)
     {
-        var dayDir = Path.Combine(_outputRoot, DateTime.Now.ToString("yyyyMMdd"));
-        var dir = Path.Combine(dayDir, $"{Sanitize(taskName)}_{DateTime.Now:HHmmss}");
+        var dir = targetDir;
+        if (dir is null)
+        {
+            var dayDir = Path.Combine(_outputRoot, DateTime.Now.ToString("yyyyMMdd"));
+            dir = Path.Combine(dayDir, $"{Sanitize(taskName)}_{DateTime.Now:HHmmss}");
+        }
         Directory.CreateDirectory(dir);
 
         var files = new List<string>

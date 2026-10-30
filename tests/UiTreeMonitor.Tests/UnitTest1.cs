@@ -507,4 +507,22 @@ public class SyncGroupExternalModeTests
         task.RecordExternalSample(DateTime.Now.AddMilliseconds(500), tree);
         Assert.Equal(TaskRunState.Completed, task.State); // 达到次数 → 自动完成
     }
+
+    [Fact]
+    public void MarkCompleted_FromRunning_SetsCompleted()
+    {
+        // 协调器在组监控时长到期时统一调用 MarkCompleted：全组同时完成
+        var task = new MonitorTask(MakeConfig("任务A"));
+        task.ExternallyDriven = true;
+        task.StartExternal();
+        Assert.Equal(TaskRunState.Running, task.State);
+
+        task.MarkCompleted();
+        Assert.Equal(TaskRunState.Completed, task.State);
+
+        // 已完成状态再调停止/完成均为 no-op（协调器兜底段不覆盖终态）
+        task.MarkStopped();
+        task.MarkCompleted();
+        Assert.Equal(TaskRunState.Completed, task.State);
+    }
 }

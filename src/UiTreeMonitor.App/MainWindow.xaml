@@ -171,7 +171,7 @@
                                             <Separator/>
                                             <MenuItem Header="生成数据图" Click="MenuExportTask_Click"/>
                                             <MenuItem Header="同步启动选中（严格同刻采样）" x:Name="MenuSyncStart" Click="MenuSyncStart_Click"/>
-                                            <MenuItem Header="合并导出数据图（多任务同图同时间轴）" x:Name="MenuMergeChart" Click="MenuMergeChart_Click"/>
+                                            <MenuItem Header="合并导出数据报告（多任务同一文件夹）" x:Name="MenuMergeReport" Click="MenuMergeReport_Click"/>
                                         </ContextMenu>
                                     </ListView.ContextMenu>
                                     <ListView.View>

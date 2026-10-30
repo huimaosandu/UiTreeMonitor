@@ -56,11 +56,21 @@ public sealed class TaskListItem : INotifyPropertyChanged
     /// <summary>目标进程名</summary>
     public string TargetProcessName { get; init; } = "";
     
-    /// <summary>采集间隔（毫秒）</summary>
-    public int IntervalMs { get; init; } = 1000;
-    
-    /// <summary>监控时长（秒），0=无限</summary>
-    public int DurationSec { get; init; } = 0;
+    /// <summary>采集间隔（毫秒）——可写：同步组启动时统一覆盖并刷新显示</summary>
+    private int _intervalMs = 1000;
+    public int IntervalMs
+    {
+        get => _intervalMs;
+        set { _intervalMs = value; PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IntervalMs))); }
+    }
+
+    /// <summary>监控时长（秒），0=无限——可写：同步组启动时统一覆盖并刷新显示</summary>
+    private int _durationSec = 0;
+    public int DurationSec
+    {
+        get => _durationSec;
+        set { _durationSec = value; PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(DurationSec))); }
+    }
     
     /// <summary>当前采样的实时值（定时刷新显示）</summary>
     private string _currentValue = "-";
@@ -917,11 +927,11 @@ public partial class MainWindow : Window
         var selected = TaskList.SelectedItems.OfType<TaskListItem>().ToList();
         MenuSyncStart.IsEnabled = selected.Count >= 2
             && selected.All(s => !string.Equals(s.State, "Running", StringComparison.OrdinalIgnoreCase));
-        MenuMergeChart.IsEnabled = selected.Count >= 2;
+        MenuMergeReport.IsEnabled = selected.Count >= 2;
     }
 
-    /// <summary>同步启动选中的多个任务（同步采集组）：统一节拍、时间戳严格同刻、同窗口共享一次抓树。
-    /// 间隔取组内最大配置间隔（不低于任一任务的配置频率）。停止后可重新框选再同步启动。</summary>
+    /// <summary>同步启动选中的多个任务：先弹窗统一设置采集间隔/监控时长/数据保存方式（组内强制一致），
+    /// 再成组启动（统一节拍、时间戳严格同刻、同窗口共享一次抓树）。停止后可重新框选再同步启动。</summary>
     private void MenuSyncStart_Click(object sender, RoutedEventArgs e)
     {
         var items = TaskList.SelectedItems.OfType<TaskListItem>().ToList();
@@ -936,21 +946,49 @@ public partial class MainWindow : Window
             return;
         }
 
-        var groupId = _scheduler.StartSync(items.Select(i => i.Config.Id).ToList());
+        // 弹窗统一设置组参数（默认回填：间隔取组内最大配置值）
+        var dlg = new SyncStartOptionsDialog { Owner = this };
+        dlg.TxtIntervalValue.Text = items.Max(i => i.IntervalMs).ToString();
+        if (dlg.ShowDialog() != true || !dlg.Result.Confirmed)
+        {
+            TxtStatus.Text = "已取消同步启动";
+            return;
+        }
+        var opt = dlg.Result;
+
+        // 参数应用到全组（配置/落盘策略/列表显示一致——同步组"一定一致"）
+        foreach (var item in items)
+        {
+            item.Config.Timer.IntervalMs = opt.IntervalMs;
+            item.Config.TimeBox = opt.DurationSec > 0
+                ? new TimeBoxSpec { Boxes = new ITimeBoxSpec[] { new DurationTimeBoxSpec { Seconds = opt.DurationSec } } }
+                : new TimeBoxSpec();
+            item.IntervalMs = opt.IntervalMs;
+            item.DurationSec = opt.DurationSec;
+            _saver.SetPolicy(item.Config.Id, item.Name, new SavePolicy(opt.SaveBatchPoints, opt.SaveIntervalSec),
+                monitorTarget: item.MonitorProperty,
+                valueCount: item.Config.Extractors.Count > 0 ? item.Config.Extractors.Count : 1);
+        }
+
+        var groupId = _scheduler.StartSync(items.Select(i => i.Config.Id).ToList(),
+            intervalMs: opt.IntervalMs, durationSec: opt.DurationSec);
         if (groupId is null)
         {
             TxtStatus.Text = "同步启动失败（需 ≥2 个线程模式任务且均未运行）";
             return;
         }
         foreach (var it in items) it.State = "Running";
-        var interval = items.Max(i => i.IntervalMs);
-        TxtStatus.Text = $"已同步启动 {items.Count} 个任务：严格同刻采样（统一 {interval}ms 节拍，同窗口只抓一次树）。" +
-                         "多选后右键「合并导出数据图」可画到同一张图。";
+        var saveDesc = opt.SaveBatchPoints == int.MaxValue
+            ? $"每 {opt.SaveIntervalSec} 秒落盘" : $"每 {opt.SaveBatchPoints} 点落盘";
+        TxtStatus.Text = $"已同步启动 {items.Count} 个任务：统一 {opt.IntervalMs}ms 节拍" +
+                         $"{(opt.DurationSec > 0 ? $"、时长 {opt.DurationSec}s" : "、无限时长")}、{saveDesc}（严格同刻采样）。" +
+                         "多选后右键「合并导出数据报告」可导出到同一文件夹。";
     }
 
-    /// <summary>合并导出多个任务的走势图：每任务每值列一条线，画在同一张 PNG（同步组时间轴严格对齐；
-    /// 独立任务按各自时间戳绘制）。保存到当日数据目录。</summary>
-    private void MenuMergeChart_Click(object sender, RoutedEventArgs e)
+    /// <summary>合并导出多个任务的数据报告：一个总目录（当日数据目录下 merged_report_时刻），
+    /// 内含每任务子目录（data.csv/metadata.json/report.html）+ 全组合并走势图 merged_chart.png + summary.txt。
+    /// 同步组任务时间戳严格同刻，合并图时间轴精确对齐。</summary>
+    private void MenuMergeReport_Click(object sender, RoutedEventArgs e)
     {
         var items = TaskList.SelectedItems.OfType<TaskListItem>().ToList();
         if (items.Count < 2)
@@ -961,13 +999,15 @@ public partial class MainWindow : Window
 
         _saver.FlushAll(); // 先落盘，与实时数据一致
 
-        // 组装系列：每任务每值列一条候选线（图例默认 任务名·值N）
+        // 收集各任务记录 + 组装合并图候选系列（每任务每值列一条线）
         var seriesItems = new List<ChartSeriesItem>();
         var seriesPoints = new Dictionary<int, List<(DateTime Ts, double V)>>();
+        var taskRecords = new List<(TaskListItem Item, List<SampleRecord> Records)>();
         foreach (var item in items)
         {
             var host = _scheduler.GetHost(item.Config.Id);
             var records = host is not null ? host.Records.ToList() : new List<SampleRecord>();
+            taskRecords.Add((item, records));
             if (records.Count == 0) continue;
             int n = item.Config.Extractors.Count > 0 ? item.Config.Extractors.Count : 1;
 
@@ -1000,42 +1040,92 @@ public partial class MainWindow : Window
             }
         }
 
-        if (seriesItems.Count == 0)
+        var withData = taskRecords.Where(t => t.Records.Count > 0).ToList();
+        if (withData.Count == 0)
         {
-            MessageBox.Show(this, "选中任务均没有可绘图的数值数据（需时间戳/值均为数值且每列≥2个点）。",
-                "合并数据图", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show(this, "选中任务均没有采样数据，无法导出。", "合并导出报告",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
-        var dlg = new ChartOptionsDialog(seriesItems) { Owner = this };
-        if (dlg.ShowDialog() != true || !dlg.Result.Confirmed || !dlg.Result.GenerateChart) return;
+        // 总目录：当日数据目录下 merged_report_时刻
+        var dir = Path.Combine(TodayDataDir, $"merged_report_{DateTime.Now:HHmmss}");
+        Directory.CreateDirectory(dir);
 
-        var series = new List<ChartSeries>();
-        foreach (var (index, _, legend) in dlg.Result.SelectedSeries)
-            if (seriesPoints.TryGetValue(index, out var pts) && pts.Count > 0)
-                series.Add(new ChartSeries(legend, pts));
-        if (series.Count == 0) return;
+        // 合并走势图（有候选系列时弹窗让用户勾选；跳过/无数据则不出图）
+        string? mergedChartPath = null;
+        if (seriesItems.Count > 0)
+        {
+            var dlg = new ChartOptionsDialog(seriesItems) { Owner = this };
+            if (dlg.ShowDialog() == true && dlg.Result.Confirmed && dlg.Result.GenerateChart)
+            {
+                var series = new List<ChartSeries>();
+                foreach (var (index, _, legend) in dlg.Result.SelectedSeries)
+                    if (seriesPoints.TryGetValue(index, out var pts) && pts.Count > 0)
+                        series.Add(new ChartSeries(legend, pts));
+                if (series.Count > 0)
+                {
+                    try
+                    {
+                        mergedChartPath = Path.Combine(dir, "merged_chart.png");
+                        ChartImageRenderer.RenderPng(mergedChartPath, series,
+                            $"合并走势图（{series.Count} 条曲线 / {withData.Count} 个任务，时间轴同刻对齐）");
+                    }
+                    catch (Exception ex)
+                    {
+                        TxtStatus.Text = $"合并走势图生成失败（报告继续导出）: {ex.Message}";
+                        mergedChartPath = null;
+                    }
+                }
+            }
+        }
 
-        try
+        // 每任务独立子目录：data.csv / metadata.json / report.html（与单任务导出同款格式）
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine($"UiTreeMonitor 合并导出报告");
+        sb.AppendLine($"导出时间: {DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}");
+        sb.AppendLine($"任务数: {withData.Count}（选中 {items.Count}，无数据任务已跳过）");
+        sb.AppendLine($"合并走势图: {(mergedChartPath is not null ? "merged_chart.png（同步组时间轴严格同刻对齐）" : "未生成（无可用数值列或用户跳过）")}");
+        sb.AppendLine();
+        sb.AppendLine("任务清单:");
+        foreach (var (item, records) in withData)
         {
-            Directory.CreateDirectory(TodayDataDir);
-            var outPng = Path.Combine(TodayDataDir, $"merged_chart_{DateTime.Now:HHmmss}.png");
-            ChartImageRenderer.RenderPng(outPng, series, $"合并走势图（{series.Count} 条曲线 / {items.Count} 个任务）");
-            TxtStatus.Text = $"合并数据图已生成: {outPng}";
-            MessageBox.Show(this, $"合并数据图已保存到：\n{outPng}\n\n同步组任务的时间轴严格同刻对齐。",
-                "合并数据图", MessageBoxButton.OK, MessageBoxImage.Information);
+            var subDir = Path.Combine(dir, SanitizeTaskName(item.Name));
+            try
+            {
+                _exporter.ExportAll(item.Name, item.Config.Id, item.Config, records,
+                    records.First().Timestamp, records.Last().Timestamp, chartSourcePath: null, targetDir: subDir);
+                var ts = records.Select(r => r.Timestamp).ToList();
+                sb.AppendLine($"  [{item.Name}] 记录 {records.Count} 条 | {ts.Min():HH:mm:ss.fff} ~ {ts.Max():HH:mm:ss.fff} | 子目录 {SanitizeTaskName(item.Name)}\\");
+            }
+            catch (Exception ex)
+            {
+                sb.AppendLine($"  [{item.Name}] 导出失败: {ex.Message}");
+            }
         }
-        catch (Exception ex)
-        {
-            TxtStatus.Text = $"合并数据图生成失败: {ex.Message}";
-        }
+        File.WriteAllText(Path.Combine(dir, "summary.txt"), sb.ToString(), new System.Text.UTF8Encoding(true));
+
+        TxtStatus.Text = $"合并报告已导出到: {dir}";
+        MessageBox.Show(this,
+            $"合并报告已导出到：\n{dir}\n\n包含：每任务子目录（CSV/JSON/HTML）+ summary.txt" +
+            $"{(mergedChartPath is not null ? " + merged_chart.png（全组合并走势图）" : "")}",
+            "合并导出报告", MessageBoxButton.OK, MessageBoxImage.Information);
     }
 
-    /// <summary>启动采集：未启动（Idle）→ 首次启动；已停止（Stopped）→ 恢复采样。</summary>
+    /// <summary>任务名转安全目录名（非法字符替换为下划线）。</summary>
+    private static string SanitizeTaskName(string name)
+    {
+        var invalid = Path.GetInvalidFileNameChars();
+        return new string(name.Select(c => invalid.Contains(c) ? '_' : c).ToArray());
+    }
+
+    /// <summary>启动采集：未启动（Idle）→ 首次启动；已停止（Stopped）→ 恢复采样。
+    /// 原同步组任务单独启动 = 脱离同步组，回到独立线程模式。</summary>
     private void MenuStartTask_Click(object sender, RoutedEventArgs e)
     {
         if (TaskList.SelectedItem is not TaskListItem item) return;
         if (string.Equals(item.State, "Running", StringComparison.OrdinalIgnoreCase)) return; // 已在运行
+        DetachFromSyncGroup(item);
         if (string.Equals(item.State, "Idle", StringComparison.OrdinalIgnoreCase))
             _scheduler.Start(item.Config.Id);
         else
@@ -1054,9 +1144,17 @@ public partial class MainWindow : Window
     private void MenuResumeTask_Click(object sender, RoutedEventArgs e)
     {
         if (TaskList.SelectedItem is not TaskListItem item) return;
+        DetachFromSyncGroup(item); // 原同步组任务单独继续 = 回独立模式（外部模式无协调器驱动，直接恢复会空转）
         _scheduler.Resume(item.Config.Id);
         item.State = "Running";
-        TxtStatus.Text = $"任务 [{item.Name}] 已恢复采样";
+        TxtStatus.Text = $"任务 [{item.Name}] 已恢复采样（独立模式）";
+    }
+
+    /// <summary>把任务从同步采集组脱离：清外部驱动标记，后续独立线程模式运行。</summary>
+    private void DetachFromSyncGroup(TaskListItem item)
+    {
+        if (_scheduler.GetHost(item.Config.Id) is UiTreeMonitor.Hosting.ThreadHost th && th.Task.ExternallyDriven)
+            th.Task.ExternallyDriven = false;
     }
 
     private void MenuRemoveTask_Click(object sender, RoutedEventArgs e)

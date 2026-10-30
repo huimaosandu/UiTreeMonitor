@@ -24,6 +24,7 @@ public sealed class SyncGroupCoordinator : IDisposable
 {
     private readonly List<MonitorTask> _tasks;
     private readonly int _intervalMs;
+    private readonly int _durationSec; // 组统一监控时长（0=无限）：到期全组同时完成
     private readonly Action<string>? _log;
     private Thread? _thread;
     private volatile bool _stopRequested;
@@ -32,10 +33,12 @@ public sealed class SyncGroupCoordinator : IDisposable
     public bool IsAlive => _thread?.IsAlive == true;
     public IReadOnlyList<MonitorTask> Tasks => _tasks;
 
-    public SyncGroupCoordinator(IEnumerable<MonitorTask> tasks, int intervalMs, Action<string>? log = null)
+    public SyncGroupCoordinator(IEnumerable<MonitorTask> tasks, int intervalMs, int durationSec = 0,
+        Action<string>? log = null)
     {
         _tasks = tasks.ToList();
         _intervalMs = Math.Max(50, intervalMs);
+        _durationSec = Math.Max(0, durationSec);
         _log = log;
         GroupId = Guid.NewGuid();
     }
@@ -93,12 +96,22 @@ public sealed class SyncGroupCoordinator : IDisposable
 
             if (_stopRequested) break;
 
-            // 剔除已停止任务（单独停止的任务退出组，其余继续）
+            // 组统一监控时长：到期全组同时完成（各任务状态一致，时间轴严格同刻到最后一轮）
+            if (_durationSec > 0 && (DateTime.Now - startAt).TotalSeconds >= _durationSec)
+            {
+                Log($"监控时长 {_durationSec}s 到期，全组完成");
+                foreach (var t in _tasks)
+                    t.MarkCompleted();
+                break;
+            }
+
+            // 剔除已停止任务（单独停止的任务退出组，其余继续）；
+            // ExternallyDriven=false 的任务已被单独"启动/继续"为独立模式，不再由本组驱动
             var active = new List<MonitorTask>();
             foreach (var t in _tasks)
             {
                 if (t.IsStopRequested) { t.MarkStopped(); continue; }
-                if (t.State == TaskRunState.Running) active.Add(t);
+                if (t.State == TaskRunState.Running && t.ExternallyDriven) active.Add(t);
             }
             if (active.Count == 0) break;
 
