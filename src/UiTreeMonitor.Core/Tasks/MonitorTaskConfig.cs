@@ -26,6 +26,11 @@ public sealed class MonitorTarget
     public string? ElementAutomationId { get; set; }
     public string? ElementControlType { get; set; }
 
+    /// <summary>结构索引路径（如 "0/3/1/5"）：从根到目标节点每级的子索引，用"/"分隔。
+    /// 创建任务时记录，定位时纯结构下钻——不看 Name/AutoId（值变化、ID 重复均不影响），唯一锁定；
+    /// 结构变化（增删兄弟节点）导致路径失效时自动降级为属性匹配。</summary>
+    public string? ElementPath { get; set; }
+
     public override string ToString() => $"{Kind}:{Value}";
 }
 

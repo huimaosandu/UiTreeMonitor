@@ -357,69 +357,147 @@ public class ElementMatcherTests
     private static readonly ElementNode ValueNode = new() { Id = 2, Name = "677.941", ControlType = "Text" };
     private static readonly ElementNode OtherTextNode = new() { Id = 3, Name = "标题", ControlType = "Text" };
 
-    private static ElementNode[] Nodes => new[] { MenuNode, ValueNode, OtherTextNode };
-
-    [Fact]
-    public void ExactMatch_WhenNameStillCurrent_Level0()
+    private static TreeSnapshot TreeOf(params ElementNode[] nodes)
     {
-        var (node, level) = ElementMatcher.FindNode(Nodes, "677.941", null, "Text");
-        Assert.NotNull(node);
-        Assert.Equal(2, node!.Id);
-        Assert.Equal(0, level);
+        var dict = new Dictionary<int, ElementNode>();
+        var order = new List<int>();
+        foreach (var n in nodes) { dict[n.Id] = n; order.Add(n.Id); }
+        return new TreeSnapshot { RootId = nodes.Length > 0 ? nodes[0].Id : -1, Nodes = dict, Order = order };
     }
 
+    private static TreeSnapshot Nodes => TreeOf(MenuNode, ValueNode, OtherTextNode);
+
     [Fact]
-    public void NameChanged_IgnoredNameFallback_Level1()
+    public void ExactMatch_WhenNameStillCurrent_Level1()
     {
-        // 创建任务时 Name="0.185013"，运行时元素 Name 已变成 "677.941" → 精确匹配失败，
-        // 降级忽略 Name 后仍按 ControlType=Text 定位到同一节点——值变化监控不中断
-        var (node, level) = ElementMatcher.FindNode(Nodes, "0.185013", null, "Text");
+        // 无结构路径：Name 快照仍有效时精确属性命中（级别1）
+        var (node, level) = ElementMatcher.FindNode(Nodes, null, "677.941", null, "Text");
         Assert.NotNull(node);
         Assert.Equal(2, node!.Id);
         Assert.Equal(1, level);
     }
 
     [Fact]
-    public void AutomationId_PinsNode_EvenWhenNameChanged()
+    public void NameChanged_NoPathNoFallback_ReturnsNull()
     {
-        var pinned = new ElementNode { Id = 9, Name = "新的值", ControlType = "Text", AutomationId = "valueText" };
-        var others = new[] { MenuNode, new() { Id = 4, Name = "x", ControlType = "Text" }, pinned };
-        var (node, level) = ElementMatcher.FindNode(others, "旧值", "valueText", "Text");
-        Assert.NotNull(node);
-        Assert.Equal(9, node!.Id);
-        Assert.Equal(1, level);
+        // 创建任务时 Name="0.185013"，运行时元素 Name 已变成 "677.941"：
+        // 无结构路径时精确匹配失败 → 不放宽兜底（取错节点比漏采更糟）→ 返回 null 跳过本轮
+        // Name 变化场景由结构路径覆盖（见 ElementPathTests）
+        var (node, level) = ElementMatcher.FindNode(Nodes, null, "0.185013", null, "Text");
+        Assert.Null(node);
+        Assert.Equal(-1, level);
     }
 
     [Fact]
-    public void TypeOnlyFallback_TakesFirstSameType_Level2()
+    public void TypeOnlyMatch_NoFallback_ReturnsNull()
     {
-        // Name 与 AutomationId 都不可靠时，仅按 ControlType 取第一个同类型节点
-        var (node, level) = ElementMatcher.FindNode(Nodes, "不存在的名字", "不存在的AutoId", "Text");
-        Assert.NotNull(node);
-        Assert.Equal(2, node!.Id); // 第一个 Text 节点
-        Assert.Equal(2, level);
+        // Type 对但 Name/AutoId 不匹配：不做"仅 ControlType"兜底（曾导致定位到非目标 Text）
+        var (node, _) = ElementMatcher.FindNode(Nodes, null, "不存在的名字", "不存在的AutoId", "Text");
+        Assert.Null(node);
     }
 
     [Fact]
     public void NoMatchAtAll_ReturnsNull()
     {
-        var (node, level) = ElementMatcher.FindNode(Nodes, "名字", null, "Button");
+        var (node, level) = ElementMatcher.FindNode(Nodes, null, "名字", null, "Button");
         Assert.Null(node);
         Assert.Equal(-1, level);
     }
 }
 
-/// <summary>同步采集组：MonitorTask 外部驱动模式（严格同刻时间戳、降级定位、状态流转、停止条件）。</summary>
+/// <summary>结构索引路径定位：唯一锁定（值变化 / AutomationId 缺失或重复 / 同级同类型多元素场景）。</summary>
+public class ElementPathTests
+{
+    // 复现用户不稳定场景：同窗口多个 Text、无 AutomationId——属性降级无法区分，结构路径唯一锁定
+    // 树形：Window(1) ├─ Text(2) "状态文本"
+    //                  └─ Text(3) "0.185013" └─ Text(4) "677.941"（被监控的实时数值）
+    private static TreeSnapshot BuildSampleTree() => new()
+    {
+        RootId = 1,
+        Nodes = new Dictionary<int, ElementNode>
+        {
+            [1] = new() { Id = 1, ParentId = -1, ControlType = "Window", Children = new[] { 2, 3 } },
+            [2] = new() { Id = 2, ParentId = 1, ControlType = "Text", Name = "状态文本" },
+            [3] = new() { Id = 3, ParentId = 1, ControlType = "Text", Name = "0.185013", Children = new[] { 4 } },
+            [4] = new() { Id = 4, ParentId = 3, ControlType = "Text", Name = "677.941" },
+        },
+        Order = new[] { 1, 2, 3, 4 },
+    };
+
+    [Fact]
+    public void BuildPath_ComputesChildIndexes()
+    {
+        var tree = BuildSampleTree();
+        Assert.Equal("", ElementMatcher.BuildPath(tree, 1));    // 根 → 空路径
+        Assert.Equal("0", ElementMatcher.BuildPath(tree, 2));   // 根的第 0 个子
+        Assert.Equal("1/0", ElementMatcher.BuildPath(tree, 4)); // 根第 1 子的第 0 子
+        Assert.Null(ElementMatcher.BuildPath(tree, 99));        // 不在树内
+    }
+
+    [Fact]
+    public void FindByPath_ResolvesSameNode()
+    {
+        var node = ElementMatcher.FindByPath(BuildSampleTree(), "1/0");
+        Assert.NotNull(node);
+        Assert.Equal(4, node!.Id);
+    }
+
+    [Fact]
+    public void FindByPath_OutOfRangeOrInvalid_ReturnsNull()
+    {
+        var tree = BuildSampleTree();
+        Assert.Null(ElementMatcher.FindByPath(tree, "9"));   // 子索引越界
+        Assert.Null(ElementMatcher.FindByPath(tree, "1/9")); // 深层越界
+        Assert.Null(ElementMatcher.FindByPath(tree, "x/y")); // 非数字段
+        Assert.Null(ElementMatcher.FindByPath(tree, null));  // 未配置
+    }
+
+    [Fact]
+    public void FindNode_Tree_PathTakesPriorityOverAttr_Level0()
+    {
+        // 多个 Text 且无 AutomationId：属性匹配只能取第一个；路径直接锁定 4 号节点
+        var (node, level) = ElementMatcher.FindNode(BuildSampleTree(), "1/0", "0.185013", null, "Text");
+        Assert.NotNull(node);
+        Assert.Equal(4, node!.Id);
+        Assert.Equal(0, level);
+    }
+
+    [Fact]
+    public void FindNode_Tree_ValueChanged_PathStillLocksSameNode()
+    {
+        // 被监控的 Name 持续变化（677.941 → 888.888 → …）：路径定位不受任何影响，无需属性降级
+        var tree = BuildSampleTree();
+        var nodes = new Dictionary<int, ElementNode>(tree.Nodes) { [4] = tree.Nodes[4] with { Name = "888.888" } };
+        var changed = new TreeSnapshot { RootId = 1, Nodes = nodes, Order = tree.Order };
+        var (node, level) = ElementMatcher.FindNode(changed, "1/0", "677.941", null, "Text");
+        Assert.NotNull(node);
+        Assert.Equal(4, node!.Id); // 仍是创建任务时锁定的同一节点
+        Assert.Equal(0, level);
+    }
+
+    [Fact]
+    public void FindNode_Tree_PathInvalid_FallsBackToAttr()
+    {
+        // 结构变化（子索引越界）→ 降级为精确属性匹配（Name+AutoId+Type 全条件命中 → 级别1）
+        var (node, level) = ElementMatcher.FindNode(BuildSampleTree(), "5", "状态文本", null, "Text");
+        Assert.NotNull(node);
+        Assert.Equal(2, node!.Id);
+        Assert.Equal(1, level);
+    }
+}
+
+/// <summary>同步采集组：MonitorTask 外部驱动模式（严格同刻时间戳、结构路径定位、状态流转、停止条件）。</summary>
 public class SyncGroupExternalModeTests
 {
     private static MonitorTaskConfig MakeConfig(string name, string elemName = "677.941",
-        IStopConditionSpec? stop = null) => new()
+        IStopConditionSpec? stop = null, string? elemPath = null) => new()
     {
         Name = name,
         Target = new MonitorTarget
         {
             Kind = TargetKind.WindowHandle, Value = "0x1",
             ElementName = elemName, ElementControlType = "Text",
+            ElementPath = elemPath,
         },
         Properties = new[] { "Name" },
         Filter = new FilterSet(),
@@ -427,7 +505,7 @@ public class SyncGroupExternalModeTests
         StopCondition = stop ?? new NeverStopSpec(),
     };
 
-    // SelectMonitoredValues 按 tree.Order 前序遍历，快照必须带 Order
+    // SelectMonitoredValues 按 tree.Order 前序遍历，快照必须带 Order；节点 2 的结构路径 = "0"
     private static TreeSnapshot TreeWith(params ElementNode[] nodes)
     {
         var dict = new Dictionary<int, ElementNode>();
@@ -437,15 +515,16 @@ public class SyncGroupExternalModeTests
     }
 
     private static TreeSnapshot ValueTree(string name) => TreeWith(
-        new ElementNode { Id = 1, ParentId = -1, Name = "根", ControlType = "Window" },
+        new ElementNode { Id = 1, ParentId = -1, Name = "根", ControlType = "Window", Children = new[] { 2 } },
         new ElementNode { Id = 2, ParentId = 1, Name = name, ControlType = "Text" });
 
     [Fact]
     public void RecordExternalSample_TwoTasks_SameTick_ExactSameTimestamp()
     {
-        // 核心承诺：同一轮 tick 推给多个任务，各任务记录的 Timestamp 严格等于 tickAt
+        // 核心承诺：同一轮 tick 推给多个任务，各任务记录的 Timestamp 严格等于 tickAt。
+        // 任务A 靠精确属性命中；任务B 的 Name 快照（888.888）已过期——靠结构路径 "0" 锁定同一节点
         var t1 = new MonitorTask(MakeConfig("任务A"));
-        var t2 = new MonitorTask(MakeConfig("任务B", elemName: "另一个值"));
+        var t2 = new MonitorTask(MakeConfig("任务B", elemName: "888.888", elemPath: "0"));
         t1.ExternallyDriven = true; t1.StartExternal();
         t2.ExternallyDriven = true; t2.StartExternal();
         var tree = ValueTree("677.941");
@@ -458,20 +537,31 @@ public class SyncGroupExternalModeTests
         Assert.NotEmpty(t2.Records);
         Assert.All(t1.Records, r => Assert.Equal(tickAt, r.Timestamp));
         Assert.All(t2.Records, r => Assert.Equal(tickAt, r.Timestamp));
-        // 任务B 定位的是 Name=另一个值 的节点——该快照中不存在，降级后仍记录（值监控不断流）
-        Assert.NotEmpty(t2.Records);
+        // 任务B 靠路径锁定的节点实际值是 677.941（Name 快照过期不影响）
+        Assert.Equal("677.941", t2.Records[0].Value);
     }
 
     [Fact]
-    public void RecordExternalSample_NameChangedFallback_StillRecords()
+    public void RecordExternalSample_NameChanged_WithElemPath_StillRecords()
     {
-        // 创建任务时 Name=旧值，快照中已变成 新值 → 降级定位仍记录
-        var task = new MonitorTask(MakeConfig("任务A", elemName: "0.185013"));
+        // 创建任务时 Name=0.185013（已过期）+ 结构路径 "0"：路径不看 Name → 锁定节点持续记录实际值
+        var task = new MonitorTask(MakeConfig("任务A", elemName: "0.185013", elemPath: "0"));
         task.ExternallyDriven = true;
         task.StartExternal();
         task.RecordExternalSample(DateTime.Now, ValueTree("677.941"));
         Assert.NotEmpty(task.Records);
         Assert.Equal("677.941", task.Records[0].Value);
+    }
+
+    [Fact]
+    public void RecordExternalSample_NameChanged_NoPath_SkipsRecord()
+    {
+        // 无结构路径 + Name 已变化 → 精确匹配失败，不做放宽兜底（取错节点比漏采更糟）：跳过本轮不记空点/错点
+        var task = new MonitorTask(MakeConfig("任务A", elemName: "0.185013"));
+        task.ExternallyDriven = true;
+        task.StartExternal();
+        task.RecordExternalSample(DateTime.Now, ValueTree("677.941"));
+        Assert.Empty(task.Records);
     }
 
     [Fact]

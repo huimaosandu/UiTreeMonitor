@@ -633,6 +633,24 @@ public partial class MainWindow : Window
         Log($"  _currentTarget={_currentTarget?.ProcessName}/{_currentTarget?.ProcessId}");
         Log($"  _selectedNode={_selectedNode?.ControlType}/{_selectedNode?.Name}");
 
+        // ★ 结构索引路径：从根到目标节点每级子索引（如 "0/3/1/5"），运行时纯结构下钻唯一锁定——
+        // 不看 Name/AutoId（值变化、AutomationId 缺失/重复均不影响）；结构变化失效时自动降级属性匹配。
+        // 树选中节点直接算；鼠标捕获元素（无选中节点）先用属性约束在当前树中定位再算。
+        string? elemPath = null;
+        if (_currentTree is not null)
+        {
+            int elemId = _selectedNode?.Id ?? -1;
+            if (elemId < 0)
+            {
+                var dn = ElementMatcher.FindExact(
+                    _currentTree.Order.Select(id => _currentTree.Nodes[id]),
+                    _detailsElemName, _detailsElemAutomationId, _detailsElemControlType);
+                elemId = dn?.Id ?? -1;
+            }
+            elemPath = elemId >= 0 ? ElementMatcher.BuildPath(_currentTree, elemId) : null;
+        }
+        Log($"  ElementPath={elemPath ?? "(无法计算: 目标不在当前树内)"}");
+
         var config = new MonitorTaskConfig
         {
             Name = taskName,
@@ -645,6 +663,7 @@ public partial class MainWindow : Window
                 ElementControlType = _selectedNode?.ControlType ?? _detailsElemControlType,
                 ElementName = _selectedNode?.Name ?? _detailsElemName,
                 ElementAutomationId = _selectedNode?.AutomationId ?? _detailsElemAutomationId,
+                ElementPath = elemPath,
             },
             Properties = new[] { monitorProp },
             Timer = new TimerSpec { IntervalMs = intervalMs },
@@ -863,10 +882,16 @@ public partial class MainWindow : Window
                         return; 
                     }
                     
-                    // 找到与监控目标匹配的节点（通用降级匹配：被监控值变化导致 Name 快照过期时自动放宽定位条件）
+                    // 定位目标节点：结构路径优先（唯一锁定，不受值变化/ID 重复影响）；未配置/失效时精确属性匹配
                     var t = item.Config.Target;
-                    var nodes = snap.Nodes.Values.Where(n => n.ProcessId == _currentTarget.ProcessId);
-                    var (matchNode, _) = ElementMatcher.FindNode(nodes, t.ElementName, t.ElementAutomationId, t.ElementControlType);
+                    ElementNode? matchNode = null;
+                    if (!string.IsNullOrEmpty(t.ElementPath))
+                        matchNode = ElementMatcher.FindByPath(snap, t.ElementPath);
+                    if (matchNode is null)
+                    {
+                        var nodes = snap.Nodes.Values.Where(n => n.ProcessId == _currentTarget.ProcessId);
+                        matchNode = ElementMatcher.FindExact(nodes, t.ElementName, t.ElementAutomationId, t.ElementControlType);
+                    }
                     
                     if (matchNode is not null)
                     {
