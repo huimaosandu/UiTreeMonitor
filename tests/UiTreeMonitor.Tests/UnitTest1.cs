@@ -484,6 +484,28 @@ public class ElementPathTests
         Assert.Equal(2, node!.Id);
         Assert.Equal(1, level);
     }
+
+    [Fact]
+    public void FindByRect_MatchesNodeWithSameRectAndType()
+    {
+        // 悬停/烧杯捕获场景：屏幕矩形 "L,T,R,B"（UIA 同源物理像素）+ ControlType 相等 → 唯一命中
+        // Name 是实时变化值（树快照时 Name 可能已不同）不影响矩形定位
+        var tree = BuildSampleTree();
+        var changed = new Dictionary<int, ElementNode>(tree.Nodes)
+        {
+            [4] = tree.Nodes[4] with { Name = "888.888", BoundingRectangle = "10,20,110,60" },
+        };
+        var t2 = new TreeSnapshot { RootId = 1, Nodes = changed, Order = tree.Order };
+
+        var node = ElementMatcher.FindByRect(t2, "10,20,110,60", "Text");
+        Assert.NotNull(node);
+        Assert.Equal(4, node!.Id);
+
+        // 矩形对但 Type 不对 → 不命中（防巧合）；矩形为空 → 不命中
+        Assert.Null(ElementMatcher.FindByRect(t2, "10,20,110,60", "Button"));
+        Assert.Null(ElementMatcher.FindByRect(t2, null, "Text"));
+        Assert.Null(ElementMatcher.FindByRect(t2, "99,99,199,99", "Text"));
+    }
 }
 
 /// <summary>同步采集组：MonitorTask 外部驱动模式（严格同刻时间戳、结构路径定位、状态流转、停止条件）。</summary>

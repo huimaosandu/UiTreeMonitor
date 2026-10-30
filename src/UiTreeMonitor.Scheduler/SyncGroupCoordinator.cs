@@ -12,6 +12,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
+using UiTreeMonitor.Core;
 using UiTreeMonitor.Core.Models;
 using UiTreeMonitor.Core.Sampler;
 using UiTreeMonitor.Core.Tasks;
@@ -179,14 +180,7 @@ public sealed class SyncGroupCoordinator : IDisposable
     private void Log(string message)
     {
         _log?.Invoke(message);
-        try
-        {
-            var path = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "logs", DateTime.Now.ToString("yyyyMMdd") + ".log");
-            var dir = System.IO.Path.GetDirectoryName(path);
-            if (dir is not null) System.IO.Directory.CreateDirectory(dir);
-            System.IO.File.AppendAllText(path, $"{DateTime.Now:HH:mm:ss.fff} [SYNC-{GroupId.ToString("N")[..6]}] {message}{System.Environment.NewLine}");
-        }
-        catch { /* 日志失败不影响采集 */ }
+        AppLog.Write($"SYNC-{GroupId.ToString("N")[..6]}", message);
     }
 
     public void Dispose() => Stop();

@@ -67,6 +67,22 @@ public static class ElementMatcher
         return string.Join("/", parts);
     }
 
+    /// <summary>按屏幕矩形定位节点（悬停/烧杯捕获场景）：矩形字符串 "L,T,R,B" 与 ControlType 同时相等
+    /// 才命中（UIA 物理像素同源，矩形稳定唯一——Name 是实时变化值、AutomationId 常缺失/重复，均不可靠）；
+    /// 多命中取深度最深。矩形为空或未命中返回 null。</summary>
+    public static ElementNode? FindByRect(TreeSnapshot tree, string? boundingRect, string? controlType)
+    {
+        if (string.IsNullOrEmpty(boundingRect)) return null;
+        ElementNode? best = null;
+        foreach (var node in tree.Nodes.Values)
+        {
+            if (!string.Equals(node.BoundingRectangle, boundingRect, StringComparison.Ordinal)) continue;
+            if (!string.IsNullOrEmpty(controlType) && node.ControlType != controlType) continue;
+            if (best is null || node.Depth > best.Depth) best = node;
+        }
+        return best;
+    }
+
     /// <summary>精确属性匹配：全部非空条件同时满足才命中（条件为 null 表示不约束），取前序第一个。</summary>
     public static ElementNode? FindExact(
         IEnumerable<ElementNode> nodes, string? elementName, string? elementAutomationId, string? elementControlType)

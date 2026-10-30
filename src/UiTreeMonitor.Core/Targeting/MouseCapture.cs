@@ -16,6 +16,7 @@ using Axe.Windows.Core.Bases;
 using Axe.Windows.Core.Misc;
 using UiTreeMonitor.Core.Models;
 using UiTreeMonitor.Core.Sampler;
+using UiTreeMonitor.Core.Tasks;
 
 namespace UiTreeMonitor.Core.Targeting;
 
@@ -147,12 +148,22 @@ public sealed class MouseCapture : IDisposable
     private static string Fingerprint(A11yElement el)
         => $"{el.ProcessId}|{el.Name}|{el.AutomationId}|{el.ControlTypeId}|{el.ClassName}|{el.BoundingRectangle}";
 
-    /// <summary>把一次捕获结果定位到已加载树：返回匹配节点 id。</summary>
+    /// <summary>把一次捕获结果定位到已加载树：返回匹配节点 id。
+    /// 矩形优先（悬停元素与树节点同源 UIA，"L,T,R,B" 物理像素矩形稳定唯一——Name 是实时变化值、
+    /// AutomationId 常缺失/重复，属性匹配不可靠）；矩形未命中再属性匹配兜底。</summary>
     public static int? LocateInTree(TreeSnapshot tree, MouseCaptureResult capture)
     {
         if (!capture.IsValid || tree is null || tree.Nodes.Count == 0) return null;
 
-        // 优先精确匹配：Name + ControlType + AutomationId 全同（且进程一致）
+        // 第1优先：屏幕矩形 + ControlType 完全相等（元素不动则矩形不变，与值变化无关）
+        var rectStr = RectString(capture.BoundingRectangle);
+        if (rectStr is not null)
+        {
+            var byRect = ElementMatcher.FindByRect(tree, rectStr, capture.ControlType);
+            if (byRect is not null) return byRect.Id;
+        }
+
+        // 第2优先：属性匹配（Name+Type+AutoId 全条件，空条件跳过；取深度最深）
         ElementNode? best = null;
         foreach (var (id, node) in tree.Nodes)
         {
@@ -169,6 +180,10 @@ public sealed class MouseCapture : IDisposable
         }
         return best?.Id;
     }
+
+    /// <summary>Rectangle → 树节点同款 "L,T,R,B" 字符串（空/无效矩形返回 null）。</summary>
+    private static string? RectString(Rectangle? rect)
+        => rect is { } r && r.Width > 0 && r.Height > 0 ? $"{r.Left},{r.Top},{r.Right},{r.Bottom}" : null;
 
     private static string? Safe(string? s) => string.IsNullOrEmpty(s) ? null : s;
 

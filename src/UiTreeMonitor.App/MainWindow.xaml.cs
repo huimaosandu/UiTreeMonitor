@@ -117,6 +117,9 @@ public partial class MainWindow : Window
     private string? _detailsElemName;
     private string? _detailsElemControlType;
     private string? _detailsElemAutomationId;
+    // 悬停元素的屏幕矩形（"L,T,R,B"，UIA 物理像素）：创建任务时优先按矩形在树中定位算 ElementPath
+    // （矩形稳定唯一——Name 是实时变化值、AutomationId 常缺失/重复，属性匹配算不出路径导致任务失捕）
+    private string? _detailsElemBoundingRect;
 
     private static readonly string AppDataDir =
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".ui-tree-monitor");
@@ -132,12 +135,8 @@ public partial class MainWindow : Window
     /// <summary>当日数据子目录（启动时创建；跨天后由 saver/导出器按当天日期滚动）。</summary>
     private static string TodayDataDir => Path.Combine(DataRootDir, DateTime.Now.ToString("yyyyMMdd"));
 
-    // ========== 日志：exe所在目录/logs/yyyyMMdd.log（UI层 + 采集层统一写入同一文件） ==========
-    private static string LogFilePath => System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "logs", DateTime.Now.ToString("yyyyMMdd") + ".log");
-    private static void Log(string msg)
-    {
-        try { var dir = System.IO.Path.GetDirectoryName(LogFilePath); if (dir is not null) System.IO.Directory.CreateDirectory(dir); System.IO.File.AppendAllText(LogFilePath, $"{DateTime.Now:HH:mm:ss.fff} [UI] {msg}{System.Environment.NewLine}"); } catch { }
-    }
+    // ========== 日志（AppLog：源码运行写工程根\logs，发布版写 exe\logs；UI层 + 采集层统一写入同一文件） ==========
+    private static void Log(string msg) => UiTreeMonitor.Core.AppLog.Write("UI", msg);
 
     public MainWindow()
     {
@@ -285,6 +284,13 @@ public partial class MainWindow : Window
         {
             ExpandRoots(2);
             TxtStatus.Text = $"结构树已加载：{snap.NodeCount} 个节点（{snap.Target?.ProcessName}）";
+            // ★ 补定位：悬停触发的异步抓树完成时，悬停结果只产过一次（已被上一轮消费）——
+            //   树加载+容器生成后对新树重新定位并展开高亮（悬停高亮功能的关键闭环）
+            if (_capturing && _lastHoverResult is { IsValid: true } hover
+                && snap.Target is not null && snap.Target.ProcessId == hover.ProcessId)
+            {
+                TryHighlightCaptureResult(hover);
+            }
         }));
     }
 
@@ -352,6 +358,9 @@ public partial class MainWindow : Window
             return;
         }
 
+        // ★ 点烧杯即定位：结构树展开到当前捕获元素并高亮（悬停期间可能未高亮，如首悬停触发了重抓树）
+        TryHighlightCaptureResult(result);
+
         // ★ 烧杯按钮也弹出"添加监控"对话框（与右键菜单统一体验）；传入当前值作提取规则示例
         var dlg = new AddMonitorDialog("Name", result.ProcessName ?? "", _settings.ExtractMarker, result.Name,
             nameExists: TaskNameExists, targetOptions: GetTargetOptionsFromDetails());
@@ -402,6 +411,8 @@ public partial class MainWindow : Window
                 _detailsElemName = result.Name;
                 _detailsElemControlType = result.ControlType;
                 _detailsElemAutomationId = result.AutomationId;
+                _detailsElemBoundingRect = result.BoundingRectangle is { } r
+                    ? $"{r.Left},{r.Top},{r.Right},{r.Bottom}" : null;
             }
 
             // 未加载树或目标进程变化 → 自动抓新窗口树
@@ -411,21 +422,31 @@ public partial class MainWindow : Window
                     .FirstOrDefault(x => x.ProcessId == result.ProcessId);
                 if (win is not null)
                     CaptureTree(new TargetWindowInfo(win.ProcessId, win.Handle, win.ProcessName, win.Title));
+                // ★ 树是异步抓的，同一元素悬停只产一次结果——若只 continue，抓树完成后将再无结果
+                //   进来定位。先用现有树尝试（多数未命中），抓树完成后由 ApplyTree 对 _lastHoverResult 补定位
+                TryHighlightCaptureResult(result);
                 continue;
             }
 
             // 在已加载树中定位
-            int? nodeId = MouseCapture.LocateInTree(_currentTree, result);
-            ClearHighlight();
-            if (nodeId is int id && _nodeLookup.TryGetValue(id, out var vm))
-            {
-                Highlight(vm);
-                TxtCaptureStatus.Text = $"{result.ProcessName} — {vm.Display}";
-            }
-            else
-            {
-                TxtCaptureStatus.Text = $"{result.ProcessName} — 未在树中定位 ({result.ControlType})";
-            }
+            TryHighlightCaptureResult(result);
+        }
+    }
+
+    /// <summary>悬停/烧杯路径共用：在当前树中定位捕获元素并展开+高亮（矩形优先，属性兜底）。</summary>
+    private void TryHighlightCaptureResult(MouseCaptureResult result)
+    {
+        if (_currentTree is null) return;
+        int? nodeId = MouseCapture.LocateInTree(_currentTree, result);
+        ClearHighlight();
+        if (nodeId is int id && _nodeLookup.TryGetValue(id, out var vm))
+        {
+            Highlight(vm);
+            TxtCaptureStatus.Text = $"{result.ProcessName} — {vm.Display}";
+        }
+        else
+        {
+            TxtCaptureStatus.Text = $"{result.ProcessName} — 未在树中定位 ({result.ControlType})";
         }
     }
 
@@ -493,6 +514,7 @@ public partial class MainWindow : Window
             _detailsElemName = vm.Name;
             _detailsElemControlType = vm.ControlType;
             _detailsElemAutomationId = vm.AutomationId;
+            _detailsElemBoundingRect = null; // 树选中路径直接用节点 Id 算路径，清掉旧悬停矩形避免串味
         }
         else
         {
@@ -635,21 +657,29 @@ public partial class MainWindow : Window
 
         // ★ 结构索引路径：从根到目标节点每级子索引（如 "0/3/1/5"），运行时纯结构下钻唯一锁定——
         // 不看 Name/AutoId（值变化、AutomationId 缺失/重复均不影响）；结构变化失效时自动降级属性匹配。
-        // 树选中节点直接算；鼠标捕获元素（无选中节点）先用属性约束在当前树中定位再算。
+        // 树选中节点直接算；悬停/烧杯元素（无选中节点）按 矩形 → 属性精确 在当前树中定位再算
+        // （矩形是 UIA 同源物理像素，稳定唯一；属性匹配在 Name 为变化值时经常失败 → 路径算不出 → 任务失捕）
         string? elemPath = null;
+        string? elemPathSource = null;
         if (_currentTree is not null)
         {
             int elemId = _selectedNode?.Id ?? -1;
+            if (elemId >= 0) elemPathSource = "树选中节点";
+            if (elemId < 0)
+            {
+                var rn = ElementMatcher.FindByRect(_currentTree, _detailsElemBoundingRect, _detailsElemControlType);
+                if (rn is not null) { elemId = rn.Id; elemPathSource = "悬停矩形"; }
+            }
             if (elemId < 0)
             {
                 var dn = ElementMatcher.FindExact(
                     _currentTree.Order.Select(id => _currentTree.Nodes[id]),
                     _detailsElemName, _detailsElemAutomationId, _detailsElemControlType);
-                elemId = dn?.Id ?? -1;
+                if (dn is not null) { elemId = dn.Id; elemPathSource = "属性精确"; }
             }
             elemPath = elemId >= 0 ? ElementMatcher.BuildPath(_currentTree, elemId) : null;
         }
-        Log($"  ElementPath={elemPath ?? "(无法计算: 目标不在当前树内)"}");
+        Log($"  ElementPath={elemPath ?? "(无法计算: 目标不在当前树内)"}" + (elemPath is not null ? $" (定位方式: {elemPathSource})" : ""));
 
         var config = new MonitorTaskConfig
         {

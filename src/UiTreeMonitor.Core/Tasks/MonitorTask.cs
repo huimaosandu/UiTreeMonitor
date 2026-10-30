@@ -249,18 +249,8 @@ public sealed class MonitorTask : IDisposable
     private bool _firstMatchLogged;  // 首次定位成功诊断（每任务一次）
     private bool _degradedLogged;    // 首次定位降级诊断（每任务一次）
 
-    /// <summary>任务日志：exe/logs/yyyyMMdd.log（失败不影响采集）。</summary>
-    private void MLog(string m)
-    {
-        try
-        {
-            var logPath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "logs", DateTime.Now.ToString("yyyyMMdd") + ".log");
-            var dir = System.IO.Path.GetDirectoryName(logPath);
-            if (dir is not null) System.IO.Directory.CreateDirectory(dir);
-            System.IO.File.AppendAllText(logPath, $"{DateTime.Now:HH:mm:ss.fff} [TASK-{Name}] {m}{System.Environment.NewLine}");
-        }
-        catch { }
-    }
+    /// <summary>任务日志（AppLog：源码运行写工程根\logs，发布版写 exe\logs；失败不影响采集）。</summary>
+    private void MLog(string m) => AppLog.Write($"TASK-{Name}", m);
 
     /// <summary>定位诊断（首次定位 / 首次路径失效各记一次，不刷屏）：打印期望约束与实际匹配节点完整对照（含 AutomationId）。
     /// 级别语义：0=结构路径（唯一锁定，Name 变化不影响）/ 1=精确属性（Name+AutoId+Type 全条件）。
