@@ -122,11 +122,12 @@ public partial class MainWindow : Window
     /// <summary>当日数据子目录（启动时创建；跨天后由 saver/导出器按当天日期滚动）。</summary>
     private static string TodayDataDir => Path.Combine(DataRootDir, DateTime.Now.ToString("yyyyMMdd"));
 
-    // ========== 日志：写到 E:\ui-tree-monitor\monitor.log ==========
+    // ========== 日志：exe所在目录/logs/yyyyMMdd.log（UI层 + 采集层统一写入同一文件） ==========
+    private static string LogFilePath => System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "logs", DateTime.Now.ToString("yyyyMMdd") + ".log");
     private static void Log(string msg)
     {
-        try { System.IO.File.AppendAllText(@"E:\ui-tree-monitor\monitor.log", $"{DateTime.Now:HH:mm:ss.fff} {msg}{System.Environment.NewLine}"); } catch { }
-}
+        try { var dir = System.IO.Path.GetDirectoryName(LogFilePath); if (dir is not null) System.IO.Directory.CreateDirectory(dir); System.IO.File.AppendAllText(LogFilePath, $"{DateTime.Now:HH:mm:ss.fff} [UI] {msg}{System.Environment.NewLine}"); } catch { }
+    }
 
     public MainWindow()
     {

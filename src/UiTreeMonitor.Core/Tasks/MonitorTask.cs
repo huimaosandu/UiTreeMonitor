@@ -96,8 +96,8 @@ public sealed class MonitorTask : IDisposable
     {
         try
         {
-            var logPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "uitm_monitor.log");
-            void MLog(string m) { try { System.IO.File.AppendAllText(logPath, $"{DateTime.Now:HH:mm:ss.fff} [TASK-{Name}] {m}{System.Environment.NewLine}"); } catch { } };
+            var logPath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "logs", DateTime.Now.ToString("yyyyMMdd") + ".log");
+            void MLog(string m) { try { var dir = System.IO.Path.GetDirectoryName(logPath); if (dir is not null) System.IO.Directory.CreateDirectory(dir); System.IO.File.AppendAllText(logPath, $"{DateTime.Now:HH:mm:ss.fff} [TASK-{Name}] {m}{System.Environment.NewLine}"); } catch { } };
 
             MLog("=== Run() 开始 ===");
             using var session = UiaSession.Create();

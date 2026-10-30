@@ -21,4 +21,5 @@ dist/
 .venv/
 
 
-monitor.log
+# 运行日志（exe所在目录/logs/，按日期保存）
+logs/
