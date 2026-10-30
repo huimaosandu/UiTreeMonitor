@@ -119,6 +119,31 @@ ui-tree-monitor\
 - **批量落盘**：采样进内存缓冲，后台线程批量写 CSV；任务结束 / 移除 / 导出前自动 Flush
 - **正则安全**：编译带 1 秒超时防灾难性回溯；用户正则非法时仅该列置空，不影响其他列
 
+## 被测测试面板 test_ui（Python）
+
+`test_ui\` 提供两个**用于被监测的测试界面**（检测数据展示面板），专供本工具与 Accessibility Insights 抓取验证：
+
+| 脚本 | 数值承载 | UIA 暴露 | 适用验证场景 |
+|---|---|---|---|
+| `test_ui.py` | 只读 `QLineEdit` | **Edit 控件，Value 属性 = 实时数值** | 捕获 Value 属性（`IsReadOnly=True`，SetValue 会被拒绝属预期） |
+| `test_ui_name.py` | `QLabel` | **Text 控件，Name 属性 = 实时数字** | 捕获 Name 属性持续变化（模拟真实检测软件 QLabel 读数） |
+
+两者结构一致：**组1 → 组2 → 组3 → 组4** 层层嵌套（UIA 嵌套 Group），右侧 **深度/μm、峰值坐标、最大峰值** 每 **500ms** 随机波动；`test_ui_name.py` 另含顶部大号读数。基于 PySide6（Qt6）——Tkinter 的 UIA/MSAA 桥有缺陷（Label 文本不暴露、Entry 不暴露为 Edit），故被测面板使用 Qt。
+
+```powershell
+cd test_ui
+uv sync                       # 首次运行安装 PySide6
+uv run test_ui.py             # 或 test_ui_name.py（Name 动态版）
+
+# 从仓库根目录运行：
+uv run --project .\test_ui .\test_ui\test_ui_name.py
+```
+
+> 注意：PySide6 声明在 `test_ui\pyproject.toml`，**不要**在根目录直接
+> `uv run .\test_ui\test_ui.py`（uv 会在根目录找依赖声明而找不到 PySide6）。
+
+打开面板后，用「随鼠标捕获」指向数字控件即可看到结构树与蓝色高亮框；Details 面板中 Edit 的 **Value**（或 Text 的 **Name**）即为实时数值，右键「添加为监控对象」即可建任务采集。
+
 ## 致谢
 
 - [accessibility-insights-windows](https://github.com/microsoft/accessibility-insights-windows)（MIT License）——鼠标捕获与高亮技术来源
