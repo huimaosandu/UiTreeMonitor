@@ -40,8 +40,8 @@ public partial class RecordingPanel : UserControl
     /// <summary>获取当前目标 A11yElement 引用（自动模式+手动录制都需要，MainWindow 注入）。</summary>
     public Func<Axe.Windows.Core.Bases.A11yElement?>? GetCurrentA11yElement { get; set; }
 
-    /// <summary>获取当前目标窗口信息（回放时抓树定位元素用）。</summary>
-    public Func<object>? GetCurrentTarget { get; set; }
+    /// <summary>获取当前目标窗口信息（MainWindow 注入：自动模式监听挂到目标窗口子树 + 按进程过滤）。</summary>
+    public Func<TargetWindowInfo?>? GetTargetWindowInfo { get; set; }
 
     public RecordingPanel()
     {
@@ -131,16 +131,19 @@ public partial class RecordingPanel : UserControl
         try
         {
             // _isRecording 已在 BtnToggleRecord_Click 中设置，此处不再重复
-            // 传 0 作为占位（仅日志用途），实际监听范围由 ListenAction 的 scope 参数决定
+            // ★ 监听挂目标窗口子树（hwnd）+ 回调按进程过滤（pid）：只录目标应用的操作，绝不录自己
+            //   （此前挂桌面根全桌面监听：录到的全是自己 UI 刷新/其他应用的事件噪声）
+            var target = GetTargetWindowInfo?.Invoke();
             _autoListener = new EventListenerCore(uniqueId ?? 0,
-                EventListenScope.Descendants, OnAutoEvent);
+                EventListenScope.Descendants, OnAutoEvent,
+                target?.Handle ?? IntPtr.Zero, target?.ProcessId ?? 0);
 
             // 使用默认事件列表（覆盖常见操作）
             _autoListener.Start();
 
             TxtAutoHint.Visibility = Visibility.Visible;
             TxtStatus.Text = "● 自动录制中…正在监听目标窗口的 UIA 事件";
-            AppLog.Write("RECORD", $"StartAutoRecording → SUCCESS: listening on element {uniqueId}");
+            AppLog.Write("RECORD", $"StartAutoRecording → SUCCESS: hwnd={target?.Handle}, pid={target?.ProcessId} ({target?.ProcessName}), element {uniqueId}");
         }
         catch (Exception ex)
         {

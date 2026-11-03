@@ -132,6 +132,10 @@ public sealed class ActionReplayer : IDisposable
         if (element is null) throw new ArgumentNullException(nameof(element));
         if (_disposed) throw new ObjectDisposedException(nameof(ActionReplayer));
 
+        // ★ UIA 事件记录不可回放（与 Playback 一致；此前单步回放报 "Pattern [UIA_Event_xxx] 不存在"）
+        if (record.PatternName.StartsWith("UIA_Event_", StringComparison.OrdinalIgnoreCase))
+            return (false, $"[事件监听] {record.MethodName}（不可回放，仅用于记录/导出）");
+
         // 找 Pattern
         A11yPattern? targetPattern = null;
         if (element.Patterns is not null)

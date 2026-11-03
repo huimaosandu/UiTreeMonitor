@@ -199,6 +199,8 @@ public partial class MainWindow : Window
             _detailsA11yElement is not null ? (int?)_detailsA11yElement.UniqueId : null;
         // ★ 注入当前元素引用回调（RecordingPanel 用它判断是否有目标元素，不再直接访问 MainWindow 私有字段）
         RecordingPanel.GetCurrentA11yElement = () => _detailsA11yElement;
+        // ★ 注入目标窗口信息（自动录制：监听挂到目标窗口子树 + 按进程过滤，不再全桌面监听）
+        RecordingPanel.GetTargetWindowInfo = () => _currentTarget;
         RecordingPanel.RecordingStateChanged += (recording) =>
         {
             var isAuto = ((System.Windows.Controls.RadioButton)RecordingPanel.RbModeAuto).IsChecked == true;

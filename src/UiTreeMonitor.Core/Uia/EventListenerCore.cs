@@ -63,54 +63,69 @@ public sealed class EventListenerCore : IDisposable
     private readonly int _targetElementId;
     private readonly EventListenScope _scope;
     private readonly Action<UiaEventRecord>? _onEvent;
+    private readonly IntPtr _targetWindowHandle;  // 目标窗口句柄：≠0 时监听挂到该窗口子树（不再全桌面）
+    private readonly int _targetProcessId;        // 目标进程：≠0 时回调按进程过滤，只录目标应用的操作
+    private readonly int _ownProcessId = Environment.ProcessId;
+    private AutomationElement? _hookElement;      // 实际挂载的元素（Stop 注销必须与注册同一元素，否则泄漏）
+    private bool _focusRegistered;                // 焦点事件是否已注册（独立 API，独立注销）
 
     /// <summary>是否正在监听中。</summary>
     public bool IsListening => _isListening;
 
     // ★ 核心 UIA 事件定义（仅使用 WPF Automation 类中实际存在的静态字段）
-    //   格式：(事件ID, 名称, AutomationEvent 实例)
-    private static readonly (int Id, string Name, AutomationEvent? Event)[] CoreEvents =
+    //   ID 一律运行时取 AutomationEvent.Id（曾硬编码数字与 WPF 实际 ID 错位，
+    //   导致 EventNames 映射失败、日志/脚本里出现 Event_20009 等未知名）
+    //   注意：AutomationFocusChangedEvent 不能经 AddAutomationEventHandler 注册（抛 ArgumentException
+    //   "eventId 无效"，曾让整个监听启动失败→无法捕获动作），由 Start 用独立 API 单独处理，不放本表
+    private static readonly (AutomationEvent Event, string Name)[] CoreEvents =
     {
         // 用户交互类（最常用）
-        (20000, "Invoke Invoked", InvokePattern.InvokedEvent),
-        (20004, "Element Selected", SelectionItemPattern.ElementSelectedEvent),
-        (20005, "Added To Selection", SelectionItemPattern.ElementAddedToSelectionEvent),
-        (20006, "Removed From Selection", SelectionItemPattern.ElementRemovedFromSelectionEvent),
-        (20008, "Focus Changed", AutomationElement.AutomationFocusChangedEvent),
+        (InvokePattern.InvokedEvent, "Invoke Invoked"),
+        (SelectionItemPattern.ElementSelectedEvent, "Element Selected"),
+        (SelectionItemPattern.ElementAddedToSelectionEvent, "Added To Selection"),
+        (SelectionItemPattern.ElementRemovedFromSelectionEvent, "Removed From Selection"),
 
         // 文本类
-        (20011, "Text Changed", TextPattern.TextChangedEvent),
+        (TextPattern.TextChangedEvent, "Text Changed"),
 
         // 结构类
-        (20013, "Structure Changed", AutomationElement.StructureChangedEvent),
+        (AutomationElement.StructureChangedEvent, "Structure Changed"),
 
         // 菜单/提示类
-        (20017, "Menu Opened", AutomationElement.MenuOpenedEvent),
-        (20018, "Menu Closed", AutomationElement.MenuClosedEvent),
-        (20019, "ToolTip Opened", AutomationElement.ToolTipOpenedEvent),
-        (20020, "ToolTip Closed", AutomationElement.ToolTipClosedEvent),
+        (AutomationElement.MenuOpenedEvent, "Menu Opened"),
+        (AutomationElement.MenuClosedEvent, "Menu Closed"),
+        (AutomationElement.ToolTipOpenedEvent, "ToolTip Opened"),
+        (AutomationElement.ToolTipClosedEvent, "ToolTip Closed"),
 
         // 窗口类
-        (20024, "Window Opened", WindowPattern.WindowOpenedEvent),
-        (20025, "Window Closed", WindowPattern.WindowClosedEvent),
+        (WindowPattern.WindowOpenedEvent, "Window Opened"),
+        (WindowPattern.WindowClosedEvent, "Window Closed"),
     };
+
+    /// <summary>焦点事件（独立 API 注册，ID 同样运行时取）。</summary>
+    private static readonly AutomationEvent FocusEvent = AutomationElement.AutomationFocusChangedEvent;
 
     /// <summary>默认监听的事件 ID 列表。</summary>
     public static readonly IReadOnlyList<int> DefaultEventIds = CoreEvents
-        .Where(e => e.Event is not null)
-        .Select(e => e.Id)
+        .Select(e => e.Event.Id)
+        .Append(FocusEvent.Id)
         .ToList();
 
     /// <summary>事件 ID → 可读名称映射表。</summary>
     public static readonly IReadOnlyDictionary<int, string> EventNames = CoreEvents
-        .ToDictionary(e => e.Id, e => e.Name);
+        .Select(e => new KeyValuePair<int, string>(e.Event.Id, e.Name))
+        .Append(new KeyValuePair<int, string>(FocusEvent.Id, "Focus Changed"))
+        .ToDictionary(kv => kv.Key, kv => kv.Value);
 
-    /// <summary>创建事件监听器。</summary>
-    public EventListenerCore(int targetElementId, EventListenScope scope = EventListenScope.Descendants, Action<UiaEventRecord>? onEvent = null)
+    /// <summary>创建事件监听器。targetWindowHandle/targetProcessId 来自当前目标窗口（MainWindow 注入），用于限定监听范围。</summary>
+    public EventListenerCore(int targetElementId, EventListenScope scope = EventListenScope.Descendants, Action<UiaEventRecord>? onEvent = null,
+        IntPtr targetWindowHandle = default, int targetProcessId = 0)
     {
         _targetElementId = targetElementId;
         _scope = scope;
         _onEvent = onEvent;
+        _targetWindowHandle = targetWindowHandle;
+        _targetProcessId = targetProcessId;
     }
 
     /// <summary>开始监听 UIA 事件。必须在 STA 线程调用。</summary>
@@ -119,33 +134,69 @@ public sealed class EventListenerCore : IDisposable
         if (_isDisposed) throw new ObjectDisposedException(nameof(EventListenerCore));
         if (_isListening) throw new InvalidOperationException("Already listening, call Stop first");
 
-        var ids = (eventIds ?? DefaultEventIds).ToList();
-        AppLog.Write("RECORD", $"EventListenerCore.Start: scope={_scope}, targetElementId={_targetElementId}, eventCount={ids.Count}");
+        var ids = new HashSet<int>(eventIds ?? DefaultEventIds);
+        AppLog.Write("RECORD", $"EventListenerCore.Start: scope={_scope}, targetElementId={_targetElementId}, eventCount={ids.Count}, hwnd={_targetWindowHandle}, pid={_targetProcessId}");
 
-        try
+        // 挂载点：优先目标窗口子树（精准，系统层只推该窗口事件，也不会录到自己）；
+        // 无句柄/句柄失效时退回桌面根 Descendants + 回调按进程过滤
+        var hook = AutomationElement.RootElement;
+        var treeScope = TreeScope.Descendants;
+        if (_targetWindowHandle != IntPtr.Zero)
         {
-            var root = AutomationElement.RootElement;
-            var treeScope = TreeScope.Descendants;
-
-            int registered = 0;
-            foreach (var (evtId, evtName, evt) in CoreEvents)
+            try
             {
-                if (evt is null) continue;
-                if (!ids.Contains(evtId)) continue;
-
-                Automation.AddAutomationEventHandler(evt, root, treeScope, OnAutomationEvent);
-                registered++;
-                AppLog.Write("RECORD", $"  Registered: {evtName} (ID={evtId})");
+                hook = AutomationElement.FromHandle(_targetWindowHandle);
+                treeScope = TreeScope.Subtree;
             }
+            catch (Exception ex)
+            {
+                AppLog.Write("RECORD", $"  FromHandle({_targetWindowHandle}) failed → fallback to desktop root: {ex.Message}");
+                hook = AutomationElement.RootElement;
+                treeScope = TreeScope.Descendants;
+            }
+        }
+        _hookElement = hook;
 
-            _isListening = true;
-            AppLog.Write("RECORD", $"EventListenerCore.Start → OK (WPF native, {registered} events registered)");
-        }
-        catch (Exception ex)
+        int registered = 0, failed = 0;
+        foreach (var (evt, name) in CoreEvents)
         {
-            AppLog.Write("RECORD", $"EventListenerCore.Start → EXCEPTION: {ex.GetType().Name}: {ex.Message}");
-            throw;
+            if (!ids.Contains(evt.Id)) continue;
+            try
+            {
+                Automation.AddAutomationEventHandler(evt, hook, treeScope, OnAutomationEvent);
+                registered++;
+                AppLog.Write("RECORD", $"  Registered: {name} (ID={evt.Id})");
+            }
+            catch (Exception ex)
+            {
+                // ★ 单个事件注册失败只跳过该事件，不中断整个监听
+                //   （此前一个事件失败曾让 Start 整体抛异常 → 全部事件未注册 → 无法捕获动作）
+                failed++;
+                AppLog.Write("RECORD", $"  Register FAILED (skipped): {name} (ID={evt.Id}): {ex.Message}");
+            }
         }
+
+        // 焦点事件：必须走独立 API（AddAutomationEventHandler 对 AutomationFocusChangedEvent 抛 ArgumentException）
+        if (ids.Contains(FocusEvent.Id))
+        {
+            try
+            {
+                Automation.AddAutomationFocusChangedEventHandler(OnFocusChanged);
+                _focusRegistered = true;
+                registered++;
+                AppLog.Write("RECORD", $"  Registered: Focus Changed (ID={FocusEvent.Id}, global + pid filter)");
+            }
+            catch (Exception ex)
+            {
+                failed++;
+                AppLog.Write("RECORD", $"  Register FAILED (skipped): Focus Changed: {ex.Message}");
+            }
+        }
+
+        _isListening = registered > 0;
+        if (registered == 0)
+            throw new InvalidOperationException($"EventListenerCore.Start → all {failed} event registrations failed");
+        AppLog.Write("RECORD", $"EventListenerCore.Start → OK (scope={treeScope}, {registered} registered, {failed} skipped)");
     }
 
     /// <summary>停止监听并释放资源。</summary>
@@ -155,15 +206,19 @@ public sealed class EventListenerCore : IDisposable
 
         try
         {
-            var root = AutomationElement.RootElement;
-
-            foreach (var (_, _, evt) in CoreEvents)
+            // ★ 注销必须用与注册相同的挂载元素（此前固定用 RootElement，
+            //   挂在目标窗口上时注销无效 → 处理器泄漏、旧监听器继续触发事件）
+            var hook = _hookElement ?? AutomationElement.RootElement;
+            foreach (var (evt, _) in CoreEvents)
             {
-                if (evt is not null)
-                {
-                    try { Automation.RemoveAutomationEventHandler(evt, root, OnAutomationEvent); }
-                    catch { /* 忽略移除失败 */ }
-                }
+                try { Automation.RemoveAutomationEventHandler(evt, hook, OnAutomationEvent); }
+                catch { /* 忽略移除失败 */ }
+            }
+            if (_focusRegistered)
+            {
+                try { Automation.RemoveAutomationFocusChangedEventHandler(OnFocusChanged); }
+                catch { /* 忽略移除失败 */ }
+                _focusRegistered = false;
             }
 
             AppLog.Write("RECORD", "EventListenerCore.Stop → OK");
@@ -174,17 +229,32 @@ public sealed class EventListenerCore : IDisposable
         }
 
         _isListening = false;
+        _hookElement = null;
     }
 
     /// <summary>WPF 原生 UIA 事件回调。</summary>
     private void OnAutomationEvent(object sender, AutomationEventArgs e)
+        => HandleEvent(sender, e.EventId.Id,
+            EventNames.TryGetValue(e.EventId.Id, out var name) ? name : $"Event_{e.EventId.Id}");
+
+    /// <summary>焦点变化回调（独立 API，sender 为获得焦点的元素）。</summary>
+    private void OnFocusChanged(object sender, AutomationFocusChangedEventArgs e)
+        => HandleEvent(sender, FocusEvent.Id, "Focus Changed");
+
+    /// <summary>公共处理：进程过滤 → 读取元素信息 → 转发 UiaEventRecord。</summary>
+    private void HandleEvent(object sender, int eventId, string eventName)
     {
         try
         {
             if (sender is not AutomationElement elem) return;
 
-            // 通过 EventId 查找名称
-            var eventName = EventNames.TryGetValue(e.EventId.Id, out var name) ? name : $"Event_{e.EventId.Id}";
+            // ★ 进程过滤：绝不录自己（录制列表每刷一次就触发 UIA 事件，又被录下 → 自我反馈死循环，
+            //   录出来的全是自己 UI 的垃圾记录）；指定了目标进程时只录目标进程
+            int pid;
+            try { pid = elem.Current.ProcessId; }
+            catch { return; /* 元素已销毁 */ }
+            if (pid == _ownProcessId) return;
+            if (_targetProcessId != 0 && pid != _targetProcessId) return;
 
             // 轻量级读取元素信息
             string elemName = "";
@@ -199,7 +269,7 @@ public sealed class EventListenerCore : IDisposable
             var record = new UiaEventRecord
             {
                 Timestamp = DateTime.Now,
-                EventId = e.EventId.Id,
+                EventId = eventId,
                 EventName = eventName,
                 ElementUniqueId = 0,
                 ElementName = elemName,
