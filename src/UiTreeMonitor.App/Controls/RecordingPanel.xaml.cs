@@ -1,15 +1,21 @@
 // RecordingPanel：操作录制与回放控制面板
-// 
-// 双录制模式：
-//   1. 手动模式（默认）：用户通过 Actions 对话框执行的操作自动记录到当前脚本
-//   2. 自动模式：基于 Axe.Windows.ListenAction 监听目标窗口 UIA 事件（点击/输入/焦点变化等）自动捕获
 //
-// 回放：按脚本顺序重放操作（通过 ElementPath 在当前 UIA 树中重定位元素后调用 PatternActionRunner）
+// 双录制模式：
+//   1. 手动模式：用户通过 Actions 对话框执行的操作自动记录到当前脚本
+//   2. 自动模式（默认）：
+//      a. 输入动作捕获（InputHookCore 低级钩子）：鼠标左键/右键点击 + 键盘按键（可 SendInput 回放）
+//      b. UIA 事件监听（EventListenerCore，可选）：目标窗口 Invoke/菜单/窗口等事件（仅记录）
+//      两类均由设置（BtnSettings）控制开关，默认 a 开 b 关
+//
+// 回放：Pattern 记录经 ElementPath 重定位后调用 PatternActionRunner；
+//       Input 记录（Input_Mouse/Input_Keyboard）直接 SendInput 模拟。
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.Linq;
 using System.Windows;
+using System.Windows.Automation;
 using System.Windows.Controls;
 using Microsoft.Win32;
 using Axe.Windows.Core.Bases;
@@ -24,9 +30,10 @@ public partial class RecordingPanel : UserControl
 {
     private ActionScript _script = new();
     private bool _isRecording;
-    private bool _isAutoMode;           // true=自动(UIA事件监听), false=手动(Actions执行)
+    private bool _isAutoMode;           // true=自动(输入钩子+可选UIA事件), false=手动(Actions执行)
     private int _stepIndex = -1;
-    private EventListenerCore? _autoListener; // 自动模式的事件监听器
+    private EventListenerCore? _autoListener; // UIA 事件监听器（设置开启时）
+    private InputHookCore? _inputHook;        // 低级输入钩子（默认：鼠标左右键+键盘）
     private int _listenerPid;           // 当前监听器锁定/瞄准的进程（0=自由模式：全桌面+排除自己）
     private int _hoverProcessId;        // 最近一次悬停捕获的进程（补挂/切换监听用）
     private DateTime _lastAttach = DateTime.MinValue; // 上次挂载时刻（重挂防抖）
@@ -45,6 +52,9 @@ public partial class RecordingPanel : UserControl
 
     /// <summary>获取当前目标窗口信息（MainWindow 注入：自动模式监听挂到目标窗口子树 + 按进程过滤）。</summary>
     public Func<TargetWindowInfo?>? GetTargetWindowInfo { get; set; }
+
+    /// <summary>获取录制捕获选项（MainWindow 注入：设置持久化的鼠标/键盘/UIA 开关）。</summary>
+    public Func<CaptureOptions>? GetCaptureOptions { get; set; }
 
     public RecordingPanel()
     {
@@ -93,6 +103,7 @@ public partial class RecordingPanel : UserControl
         else
         {
             // 停止录制
+            StopInputHook();
             if (_isAutoMode && _autoListener is not null)
             {
                 _autoListener.Stop();
@@ -113,16 +124,65 @@ public partial class RecordingPanel : UserControl
     }
 
     /// <summary>
-    /// 启动自动模式 UIA 事件监听。目标解析降级链（保证"直接点录制也能录到"）：
-    /// ① 抓过树（目标窗口 hwnd+pid）→ 监听挂目标窗口子树（全事件）
-    /// ② 无 hwnd 但知道目标 pid（悬停捕获）→ 全桌面 + 按进程过滤（全事件）
-    /// ③ 什么都没有 → 全桌面 + 仅排除自己（交互类事件，防噪声）
-    /// ④ 悬停到目标后由 MainWindow 调 TryAttachAutoListener 自动升级/切换到 ①②
+    /// 启动自动模式录制：
+    /// ① 输入动作捕获（默认开启）：InputHookCore 低级钩子捕获鼠标左键/右键点击与键盘按键
+    /// ② UIA 事件监听（设置开启才挂）：目标解析降级链——
+    ///    抓过树（目标窗口 hwnd+pid）→ 挂目标窗口子树（全事件）；
+    ///    无 hwnd 但知道目标 pid（悬停捕获）→ 全桌面+按进程过滤；
+    ///    什么都没有 → 全桌面+仅排除自己（交互类事件）；悬停后由 TryAttachAutoListener 升级
     /// </summary>
     private void StartAutoRecording()
     {
+        var opt = GetCaptureOptions?.Invoke() ?? new CaptureOptions();
+        var caps = new List<string>();
+        if (opt.MouseLeft) caps.Add("左键");
+        if (opt.MouseRight) caps.Add("右键");
+        if (opt.Keyboard) caps.Add("键盘");
+
+        // ① 输入动作捕获（钩子级，开销极小）
+        if (caps.Count > 0)
+            StartInputHook(opt);
+        else
+            AppLog.Write("RECORD", "InputHook disabled by settings");
+
+        // ② UIA 事件监听（全桌面注册是重操作，默认关闭）
+        if (opt.UiaEvents)
+            StartUiaListener();
+        else
+            AppLog.Write("RECORD", "UIA event listener disabled by settings (input hook only)");
+
+        var capsText = caps.Count > 0 ? string.Join("/", caps) : "无";
+        TxtAutoHint.Text = $"自动模式：正在捕获 {capsText} 输入动作{(opt.UiaEvents ? " + UIA 事件" : "")}。" +
+                           "在任意应用中的操作将被自动记录（本软件自己的窗口除外）。";
+        TxtStatus.Text = $"● 自动录制中…捕获 {capsText}{(opt.UiaEvents ? " + UIA 事件" : "")}";
+    }
+
+    /// <summary>启动低级输入钩子（按设置开关过滤左右键/键盘）。</summary>
+    private void StartInputHook(CaptureOptions opt)
+    {
+        StopInputHook();
+        _inputHook = new InputHookCore
+        {
+            CaptureMouseLeft = opt.MouseLeft,
+            CaptureMouseRight = opt.MouseRight,
+            CaptureKeyboard = opt.Keyboard,
+        };
+        _inputHook.ActionCaptured += OnInputAction;
+        _inputHook.Start();
+    }
+
+    private void StopInputHook()
+    {
+        if (_inputHook is null) return;
+        _inputHook.ActionCaptured -= OnInputAction;
+        _inputHook.Dispose();
+        _inputHook = null;
+    }
+
+    /// <summary>启动 UIA 事件监听（设置开启时；挂载目标解析降级链见类注释）。</summary>
+    private void StartUiaListener()
+    {
         var uniqueId = GetTargetElementUniqueId?.Invoke();
-        var hasElement = GetCurrentA11yElement?.Invoke() is not null;
         var target = GetTargetWindowInfo?.Invoke();
 
         var hwnd = target?.Handle ?? IntPtr.Zero;
@@ -133,7 +193,7 @@ public partial class RecordingPanel : UserControl
             : pid != 0
                 ? $"desktop + pid-filter (pid={pid})"
                 : "desktop + exclude-self (free mode, interactive events only)";
-        AppLog.Write("RECORD", $"StartAutoRecording: uniqueId={uniqueId}, hasDetails={hasElement}, listen={listenMode}");
+        AppLog.Write("RECORD", $"StartUiaListener: uniqueId={uniqueId}, listen={listenMode}");
 
         try
         {
@@ -146,22 +206,100 @@ public partial class RecordingPanel : UserControl
                 hwnd, pid);
             _autoListener.Start(eventIds);
             _listenerPid = pid;
-
-            TxtAutoHint.Visibility = pid == 0 ? Visibility.Visible : Visibility.Collapsed;
-            TxtStatus.Text = pid == 0
-                ? "● 自动录制中…（自由模式）悬停目标窗口后将自动聚焦监听"
-                : "● 自动录制中…正在监听目标窗口的 UIA 事件";
-            AppLog.Write("RECORD", $"StartAutoRecording → SUCCESS: {listenMode}, element {uniqueId}");
+            // 注册在 UIA 管道线程异步执行（全桌面注册 ~2s，不卡 UI）；完成结果看日志 "Start → OK"
+            AppLog.Write("RECORD", $"StartUiaListener → listener starting (async): {listenMode}, element {uniqueId}");
         }
         catch (Exception ex)
         {
-            // UIA 监听失败不影响录制状态（静默捕获仍工作），只记录日志
+            // UIA 监听失败不影响录制（输入钩子仍工作），只记录日志
             _autoListener?.Dispose();
             _autoListener = null;
             _listenerPid = 0;
-            TxtStatus.Text = "● 自动录制中…UIA 事件监听启动失败（鼠标捕获仍正常）";
-            AppLog.Write("RECORD", $"StartAutoRecording → FAILED (recording continues): {ex.GetType().Name}: {ex.Message}");
+            TxtStatus.Text = "● 自动录制中…UIA 事件监听启动失败（输入捕获仍正常）";
+            AppLog.Write("RECORD", $"StartUiaListener → FAILED (input capture continues): {ex.GetType().Name}: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// 输入动作回调（钩子线程 → UI 线程）：UIA 定位动作目标元素（鼠标=坐标命中、键盘=当前焦点），
+    /// 过滤本软件自己的 UI，转换为 ActionRecord（Input_Mouse/Input_Keyboard，可 SendInput 回放）。
+    /// </summary>
+    private void OnInputAction(InputActionRecord input)
+    {
+        Dispatcher.BeginInvoke(() =>
+        {
+            if (!_isRecording) return;
+            try
+            {
+                var elem = input.Kind == InputActionKind.KeyDown
+                    ? AutomationElement.FocusedElement
+                    : AutomationElement.FromPoint(new Point(input.X, input.Y));
+
+                int pid = 0;
+                string elemName = "", ctrlType = "", procName = "";
+                try
+                {
+                    if (elem is not null)
+                    {
+                        pid = elem.Current.ProcessId;
+                        elemName = elem.Current.Name ?? "";
+                        ctrlType = elem.Current.ControlType?.ProgrammaticName ?? "";
+                        procName = Process.GetProcessById(pid).ProcessName;
+                    }
+                }
+                catch { /* 元素可能已销毁/进程已退出 */ }
+
+                // 自己窗口上的动作不录（点"停止录制"按钮本身也是一次左键点击）
+                if (pid == Environment.ProcessId)
+                {
+                    AppLog.Write("RECORD", $"Input {input.Kind} on own UI → filtered");
+                    return;
+                }
+
+                ActionRecord record = input.Kind switch
+                {
+                    InputActionKind.MouseLeftClick => new ActionRecord
+                    {
+                        Timestamp = input.Timestamp,
+                        ElementName = elemName,
+                        PatternName = InputSimulator.MousePattern,
+                        MethodName = InputSimulator.LeftClickMethod,
+                        Parameters = new object?[] { $"{input.X},{input.Y}" },
+                        Success = true,
+                        Result = $"{procName} {ctrlType} ({input.X},{input.Y})",
+                    },
+                    InputActionKind.MouseRightClick => new ActionRecord
+                    {
+                        Timestamp = input.Timestamp,
+                        ElementName = elemName,
+                        PatternName = InputSimulator.MousePattern,
+                        MethodName = InputSimulator.RightClickMethod,
+                        Parameters = new object?[] { $"{input.X},{input.Y}" },
+                        Success = true,
+                        Result = $"{procName} {ctrlType} ({input.X},{input.Y})",
+                    },
+                    _ => new ActionRecord
+                    {
+                        Timestamp = input.Timestamp,
+                        ElementName = elemName,
+                        PatternName = InputSimulator.KeyboardPattern,
+                        MethodName = InputSimulator.ComboText(input.Ctrl, input.Shift, input.Alt, input.VkCode),
+                        Success = true,
+                        Result = $"{procName} {ctrlType}",
+                    },
+                };
+
+                _script.Records.Add(record);
+                RefreshList();
+                TxtStatus.Text = $"● 已捕获 {_script.Records.Count} 个动作: {record.MethodName}" +
+                                 (elemName != "" ? $" ({elemName})" : "");
+                AppLog.Write("RECORD", $"OnInputAction #{_script.Records.Count}: {record.MethodName} elem={elemName} type={ctrlType} pid={pid} proc={procName} at=({input.X},{input.Y})");
+            }
+            catch (Exception ex)
+            {
+                AppLog.Write("RECORD", $"OnInputAction → exception (ignored): {ex.Message}");
+            }
+        });
     }
 
     /// <summary>
@@ -171,6 +309,8 @@ public partial class RecordingPanel : UserControl
     public void TryAttachAutoListener(int hoverProcessId)
     {
         if (!_isRecording || !_isAutoMode) return;
+        // UIA 事件未开启时无需挂监听（输入钩子不依赖目标窗口）
+        if ((GetCaptureOptions?.Invoke() ?? new CaptureOptions()).UiaEvents != true) return;
         _hoverProcessId = hoverProcessId;
 
         bool needAttach = _autoListener is null
@@ -191,7 +331,7 @@ public partial class RecordingPanel : UserControl
             AppLog.Write("RECORD", $"AutoListener attach by hover: pid={hoverProcessId} (listener was not running)");
         }
         _lastAttach = DateTime.Now;
-        StartAutoRecording();
+        StartUiaListener(); // 只重挂 UIA 监听（输入钩子不依赖目标，无需重启）
     }
 
     /// <summary>自动模式事件回调：UIA 事件 → UiaEventRecord → ActionRecord → 追加到脚本。</summary>
@@ -211,7 +351,8 @@ public partial class RecordingPanel : UserControl
 
     private void BtnClearRecord_Click(object sender, RoutedEventArgs e)
     {
-        // 先停止自动监听
+        // 先停止输入钩子与自动监听
+        StopInputHook();
         if (_autoListener is not null)
         {
             _autoListener.Stop();
@@ -319,8 +460,11 @@ public partial class RecordingPanel : UserControl
         try
         {
             using var replayer = new ActionReplayer();
-            var targetElem = ResolveElement(record.ElementPath)
-                ?? throw new Exception($"元素路径 [{record.ElementPath}] 未找到");
+            // 输入动作记录（Input_Mouse/Input_Keyboard）不需要元素重定位，直接 SendInput 回放
+            var isInput = record.PatternName is InputSimulator.MousePattern or InputSimulator.KeyboardPattern;
+            var targetElem = isInput ? null
+                : ResolveElement(record.ElementPath)
+                  ?? throw new Exception($"元素路径 [{record.ElementPath}] 未找到");
             var (ok, result) = replayer.ExecuteOne(record, targetElem);
 
             _script.Records[_stepIndex] = record with { Success = ok, Result = result };

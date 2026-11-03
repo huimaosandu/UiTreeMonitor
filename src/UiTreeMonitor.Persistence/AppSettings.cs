@@ -11,6 +11,12 @@ public sealed class AppSettings
     /// <summary>值提取默认截取标记（起止同串，如 @@）。非法/为空时回落 @@。</summary>
     public string ExtractMarker { get; set; } = "@@";
 
+    // ==== 自动录制捕获选项（默认：捕获鼠标左右键+键盘；UIA 事件关闭）====
+    public bool RecordMouseLeft { get; set; } = true;
+    public bool RecordMouseRight { get; set; } = true;
+    public bool RecordKeyboard { get; set; } = true;
+    public bool RecordUiaEvents { get; set; } = false;
+
     private static readonly JsonSerializerOptions Options = new()
     {
         WriteIndented = true,

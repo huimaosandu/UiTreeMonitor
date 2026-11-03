@@ -201,6 +201,10 @@ public partial class MainWindow : Window
         RecordingPanel.GetCurrentA11yElement = () => _detailsA11yElement;
         // ★ 注入目标窗口信息（自动录制：监听挂到目标窗口子树 + 按进程过滤，不再全桌面监听）
         RecordingPanel.GetTargetWindowInfo = () => _currentTarget;
+        // ★ 注入录制捕获选项（设置持久化：默认捕获鼠标左右键+键盘，UIA 事件按设置附加）
+        RecordingPanel.GetCaptureOptions = () => new Core.Uia.CaptureOptions(
+            _settings.RecordMouseLeft, _settings.RecordMouseRight,
+            _settings.RecordKeyboard, _settings.RecordUiaEvents);
         RecordingPanel.RecordingStateChanged += (recording) =>
         {
             var isAuto = ((System.Windows.Controls.RadioButton)RecordingPanel.RbModeAuto).IsChecked == true;
@@ -1867,14 +1871,21 @@ public partial class MainWindow : Window
         }
     }
 
-    /// <summary>设置弹窗：修改截取字符（默认 @@）等全局选项，保存后立即生效。</summary>
+    /// <summary>设置弹窗：截取字符 + 自动录制捕获选项，保存后立即生效。</summary>
     private void BtnSettings_Click(object sender, RoutedEventArgs e)
     {
-        var dlg = new SettingsDialog(_settings.ExtractMarker) { Owner = this };
-        if (dlg.ShowDialog() != true || dlg.ExtractMarker is null) return;
+        var dlg = new SettingsDialog(_settings.ExtractMarker,
+            _settings.RecordMouseLeft, _settings.RecordMouseRight,
+            _settings.RecordKeyboard, _settings.RecordUiaEvents)
+        { Owner = this };
+        if (dlg.ShowDialog() != true || dlg.ExtractMarker is null || dlg.CaptureOptions is null) return;
         _settings.ExtractMarker = dlg.ExtractMarker;
+        (_settings.RecordMouseLeft, _settings.RecordMouseRight,
+         _settings.RecordKeyboard, _settings.RecordUiaEvents) = dlg.CaptureOptions.Value;
         _settings.Save(SettingsFilePath);
-        TxtStatus.Text = $"设置已保存：截取字符 = {_settings.ExtractMarker}（新建任务的提取规则默认使用它）";
+        var caps = $"{(_settings.RecordMouseLeft ? "左键 " : "")}{(_settings.RecordMouseRight ? "右键 " : "")}" +
+                   $"{(_settings.RecordKeyboard ? "键盘 " : "")}{(_settings.RecordUiaEvents ? "UIA事件" : "")}".TrimEnd();
+        TxtStatus.Text = $"设置已保存：截取字符 = {_settings.ExtractMarker}；录制捕获 = {(caps.Length > 0 ? caps : "无")}（下次开始录制生效）";
     }
 
     private void TaskList_SelectionChanged(object sender, SelectionChangedEventArgs e)
