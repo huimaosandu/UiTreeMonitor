@@ -114,6 +114,7 @@ public sealed class EventListenerCore : IDisposable
     private long _recorded;      // 通过过滤并转发
     private long _filteredOwn;   // 被过滤：自己进程
     private long _filteredOther; // 被过滤：非目标进程
+    private long _skippedNull;   // 被跳过：属性变化 newValue=null（provider 不填值，无回放意义）
     private int _lastFilteredPid;
 
     /// <summary>是否正在监听中。</summary>
@@ -418,7 +419,7 @@ public sealed class EventListenerCore : IDisposable
                 }
             }
 
-            AppLog.Write("RECORD", $"EventListenerCore.Stop → OK (seen={_seen}, recorded={_recorded}, filteredOwn={_filteredOwn}, filteredOther={_filteredOther}, lastFilteredPid={_lastFilteredPid}, {sw.ElapsedMilliseconds}ms)");
+            AppLog.Write("RECORD", $"EventListenerCore.Stop → OK (seen={_seen}, recorded={_recorded}, filteredOwn={_filteredOwn}, filteredOther={_filteredOther}, skippedNull={_skippedNull}, lastFilteredPid={_lastFilteredPid}, {sw.ElapsedMilliseconds}ms)");
         }
         catch (Exception ex)
         {
@@ -450,9 +451,12 @@ public sealed class EventListenerCore : IDisposable
         switch (propertyId)
         {
             case 30045: // UIA_ValueValuePropertyId
+                // ★ 部分应用 provider 不填新值（VT_NULL）：SetValue(null) 无回放意义，跳过防脏记录
+                if (newValue is null) { _skippedNull++; return; }
                 HandleEvent(sender, propertyId, "Value Changed", "ValuePattern", "SetValue", new object?[] { newValue }, replacePrevious: true);
                 break;
             case 30036: // UIA_RangeValueValuePropertyId
+                if (newValue is null) { _skippedNull++; return; }
                 HandleEvent(sender, propertyId, "RangeValue Changed", "RangeValuePattern", "SetValue", new object?[] { newValue }, replacePrevious: true);
                 break;
             case 30016: // UIA_ToggleToggleStatePropertyId

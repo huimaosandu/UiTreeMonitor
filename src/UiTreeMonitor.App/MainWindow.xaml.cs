@@ -964,7 +964,10 @@ public partial class MainWindow : Window
         {
             var bySpec = ResolveBySpec(elementPath);
             if (bySpec is not null) return bySpec;
-            Log("ResolveElement: spec 未命中 → 走兜底逻辑");
+            // ★ spec 未命中（元素已消失/结构变化）→ 跳过该步：绝不盲目兜底到窗口根元素执行
+            //   （曾把 SetValue(null) 打到窗口根上；ActionReplayer 对 null 记失败并继续）
+            Log("ResolveElement: spec 未命中 → 跳过该步（不对窗口根元素盲目执行）");
+            return null;
         }
 
         // ★ 关键修复：_detailsA11yElement 的 Patterns[] 包含过期的 COM 引用

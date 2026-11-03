@@ -7,6 +7,12 @@
 //      b. UIA 事件监听（EventListenerCore，可选）：目标窗口 Invoke/菜单/窗口等事件（仅记录）
 //      两类均由设置（BtnSettings）控制开关，默认 a 开 b 关
 //
+// ★ UIA 语义模式双通道（tkinter/Qt 等自绘框架不推送 UIA 事件，纯监听收不到）：
+//   通道1 被动：EventListenerCore COM 事件监听（UIA-aware 应用：原生 Win32/WPF/WinForms）
+//   通道2 主动：输入钩子 + 元素 Pattern 语义化（点击→InvokePattern.Invoke；文本键→焦点元素
+//              ValuePattern 实时值 SetValue；拖动→RangeValuePattern 终值 SetValue；不支持则坐标回退）
+//   两通道同元素同方法记录经 merge 合并（spec 定位忽略 rect 抖动），不会重复
+//
 // 回放：Pattern 记录经 ElementPath 重定位后调用 PatternActionRunner；
 //       Input 记录（Input_Mouse/Input_Keyboard）直接 SendInput 模拟。
 using System;
@@ -38,6 +44,8 @@ public partial class RecordingPanel : UserControl
     private int _hoverProcessId;        // 最近一次悬停捕获的进程（补挂/切换监听用）
     private Guid? _hoverEcId;           // 最近一次悬停元素的 ElementContext id（窗口级挂载：爬到顶层窗口）
     private DateTime _lastAttach = DateTime.MinValue; // 上次挂载时刻（重挂防抖）
+    private bool _uiaSemanticMode;      // UIA 语义模式录制中（双通道：事件监听+输入语义化）
+    private readonly Dictionary<string, byte> _patternProbeLogged = new(); // 语义化失败探针日志节流（同元素只打一次 pattern 列表）
 
     /// <summary>录制状态变化通知。</summary>
     public event Action<bool>? RecordingStateChanged;
@@ -106,6 +114,7 @@ public partial class RecordingPanel : UserControl
             // 停止录制
             StopInputHook();
             StopUiaListenerQuiet();
+            _uiaSemanticMode = false;
 
             _isRecording = false;
             BtnToggleRecord.Content = "● 开始录制";
@@ -120,10 +129,13 @@ public partial class RecordingPanel : UserControl
 
     /// <summary>
     /// 启动自动模式录制（按设置的模式）：
-    /// ① UIA 语义模式（默认）：EventListenerCore 监听语义事件/属性变化 → 可回放记录
-    ///    （按钮 Invoke、输入文字 SetValue、选择 Select、滑块拖动 SetValue、开关/展开折叠）；
-    ///    目标解析降级链：抓过树（hwnd+pid）→ 挂目标窗口子树；仅悬停 pid → 全桌面+进程过滤；
-    ///    无目标 → 全桌面+排除自己（交互类事件）；悬停后 TryAttachAutoListener 升级
+    /// ① UIA 语义模式（默认，双通道）：
+    ///    通道1 被动监听：EventListenerCore COM 事件（Invoke/Value/RangeValue/Toggle/ExpandCollapse）；
+    ///    通道2 主动语义化：输入钩子命中元素 Pattern（点击→Invoke、文本键→SetValue、拖动→RangeValue 终值）。
+    ///    ★ tkinter/Qt 等自绘框架不推送 UIA 事件，通道2 是它们唯一的语义录制来源；
+    ///    不支持任何 Pattern 的控件自动回退坐标记录（回放 SendInput）。
+    ///    挂载目标：抓过树（hwnd）→ 目标窗口子树；悬停（ecId）→ 爬顶层窗口子树；
+    ///    无目标 → 不挂监听（避免桌面根洪水），悬停后 TryAttachAutoListener 秒级锁定
     /// ② 输入动作模式：InputHookCore 低级钩子捕获鼠标左/右键、长按拖动与键盘按键（坐标回放）
     /// </summary>
     private void StartAutoRecording()
@@ -131,16 +143,20 @@ public partial class RecordingPanel : UserControl
         var opt = GetCaptureOptions?.Invoke() ?? new CaptureOptions();
         if (opt.IsUiaMode)
         {
-            StopInputHook();
-            AppLog.Write("RECORD", $"StartAutoRecording: mode=uia (semantic events)");
+            _uiaSemanticMode = true;
+            AppLog.Write("RECORD", "StartAutoRecording: mode=uia (dual-channel: COM events + input semanticization)");
+            // ★ 语义模式钩子全开（左键/右键/键盘）：Pattern 语义化优先，无 Pattern 控件自动坐标回退
+            StartInputHook(opt with { MouseLeft = true, MouseRight = true, Keyboard = true });
             StartUiaListener();
-            TxtAutoHint.Text = "自动模式（UIA 事件）：在目标窗口中点击按钮、输入文字、选择、拖动滑块、切换开关等，" +
-                               "操作将被录制为可回放的语义步骤（不依赖窗口位置）。";
-            // 监听注册异步完成（全桌面 ~5s / 目标窗口 <1s），就绪回调 OnListenerStarted 会再次更新文案
-            TxtStatus.Text = "● UIA 监听启动中…（提示就绪后再操作；先在目标窗口悬停片刻可加速锁定）";
+            TxtAutoHint.Text = "自动模式（UIA 语义）：在目标窗口中点击按钮、输入文字、拖动滑块、选择、切换开关等，" +
+                               "录制为可回放语义步骤（不依赖窗口位置）；不支持语义化的控件自动回退坐标记录。";
+            // 监听注册异步完成（目标窗口 <1s），就绪回调 OnListenerStarted 会再次更新文案；
+            // 即使监听未就绪，输入钩子通道已可录制（语义化/坐标）
+            TxtStatus.Text = "● 录制中…（UIA 监听启动中；若未抓取过目标树，将鼠标移到目标窗口上即自动锁定）";
         }
         else
         {
+            _uiaSemanticMode = false;
             StopUiaListenerQuiet();
             var caps = new List<string>();
             if (opt.MouseLeft) caps.Add("左键");
@@ -199,22 +215,35 @@ public partial class RecordingPanel : UserControl
         var hwnd = target?.Handle ?? IntPtr.Zero;
         var pid = target?.ProcessId ?? 0;
         if (pid == 0 && _hoverProcessId != 0) pid = _hoverProcessId; // 无抓树目标时用悬停进程
+        // ★ 悬停 ec 仅在悬停进程有效且非自己时使用：
+        //   点"开始录制"按钮时鼠标在自己 UI 上，最近悬停 POI 已是自己面板元素，爬窗会挂到自己窗口
+        var hoverEc = _hoverProcessId != 0 && _hoverProcessId != Environment.ProcessId ? _hoverEcId : null;
+
+        if (hwnd == IntPtr.Zero && pid == 0 && hoverEc is null)
+        {
+            // ★ 无任何目标不挂监听（桌面根=自己进程事件洪水 150条/s + 注册 1.6s）：
+            //   输入钩子通道已可录制；鼠标悬停到目标窗口后 TryAttachAutoListener 会秒级锁定挂载
+            AppLog.Write("RECORD", "StartUiaListener: no target (no hwnd/hover) → skip mount, waiting for hover attach (desktop flood avoided)");
+            TxtStatus.Text = "● 录制中…请将鼠标移到目标窗口上，悬停后自动锁定并开始 UIA 监听";
+            return;
+        }
+
         var listenMode = hwnd != IntPtr.Zero
             ? $"window-subtree (hwnd={hwnd}, pid={pid}, proc={target?.ProcessName})"
-            : pid != 0
-                ? $"pid-target (pid={pid} → attach process window subtree, desktop fallback)"
-                : "desktop + exclude-self (free mode; hover target window to upgrade fast path)";
+            : hoverEc is not null
+                ? $"hover-poi → climb top-level window (pid={pid})"
+                : $"pid-target (pid={pid} → attach process window subtree)";
         AppLog.Write("RECORD", $"StartUiaListener: uniqueId={uniqueId}, listen={listenMode}");
 
         try
         {
             // ★ 语义模式统一只注册可回放事件（4 事件+属性变化；Menu/ToolTip/Window/Text/Structure 无回放价值已砍）
             var eventIds = EventListenerCore.SemanticEventIds;
-            // 挂载解析（EventListenerCore 内部）：hwnd（抓树目标）→ 悬停元素爬顶层窗口 → 桌面根兜底
+            // 挂载解析（EventListenerCore 内部）：hwnd（抓树目标）→ 悬停元素爬顶层窗口 → 进程顶层窗口
             _autoListener = new EventListenerCore(uniqueId ?? 0,
                 EventListenScope.Descendants, OnAutoEvent,
                 hwnd, pid, OnListenerStarted,
-                hoverElementContextId: hwnd == IntPtr.Zero ? _hoverEcId : null);
+                hoverElementContextId: hwnd == IntPtr.Zero ? hoverEc : null);
             _autoListener.Start(eventIds);
             _listenerPid = pid;
             // 注册在 UIA 管道线程异步执行（窗口级 <1s / 全桌面数秒）；
@@ -247,7 +276,8 @@ public partial class RecordingPanel : UserControl
 
     /// <summary>
     /// 输入动作回调（钩子线程 → UI 线程）：UIA 定位动作目标元素（鼠标=坐标命中、键盘=当前焦点），
-    /// 过滤本软件自己的 UI，转换为 ActionRecord（Input_Mouse/Input_Keyboard，可 SendInput 回放）。
+    /// 过滤本软件自己的 UI。UIA 语义模式下先尝试 Pattern 语义化（点击→Invoke、文本键→SetValue、
+    /// 拖动→RangeValue 终值），不支持 Pattern 的控件回退 Input_Mouse/Input_Keyboard 坐标记录。
     /// </summary>
     private void OnInputAction(InputActionRecord input)
     {
@@ -281,6 +311,18 @@ public partial class RecordingPanel : UserControl
                     return;
                 }
 
+                // ★ 通道2 主动语义化（UIA 语义模式）：命中可回放 Pattern → 语义记录（回放走 Pattern，不依赖坐标）。
+                //   tkinter/Qt 等自绘框架不推送 UIA 事件，这是它们唯一的语义录制来源；
+                //   与通道1（COM 事件）同元素同方法的记录经 merge 合并，不会重复
+                if (_uiaSemanticMode && TryBuildSemanticRecord(input, elem, elemName, procName, ctrlType, out var semantic, out var replacePrev))
+                {
+                    AppendRecord(semantic, replacePrev, source: $"input-semantic {input.Kind}");
+                    AppLog.Write("RECORD", $"OnInputAction→semantic: {semantic.PatternName}.{semantic.MethodName}" +
+                        $"({string.Join(", ", semantic.Parameters ?? Array.Empty<object?>())}) elem={elemName} type={ctrlType} pid={pid} proc={procName}");
+                    return;
+                }
+
+                // 坐标回退（Input 模式主路径 / 语义模式无 Pattern 控件兜底）
                 ActionRecord record = input.Kind switch
                 {
                     InputActionKind.MouseLeftClick => new ActionRecord
@@ -326,10 +368,7 @@ public partial class RecordingPanel : UserControl
                     },
                 };
 
-                _script.Records.Add(record);
-                RefreshList();
-                TxtStatus.Text = $"● 已捕获 {_script.Records.Count} 个动作: {record.MethodName}" +
-                                 (elemName != "" ? $" ({elemName})" : "");
+                AppendRecord(record, replacePrevious: false, source: "input-coord");
                 AppLog.Write("RECORD", $"OnInputAction #{_script.Records.Count}: {record.MethodName} elem={elemName} type={ctrlType} pid={pid} proc={procName} at=({input.X},{input.Y})" +
                     (record.MethodName is InputSimulator.DragMethod or InputSimulator.RightDragMethod ? $"→({input.EndX},{input.EndY})" : ""));
             }
@@ -394,38 +433,178 @@ public partial class RecordingPanel : UserControl
             if (!_isRecording) return;
 
             var record = uiaEvent.ToActionRecord();
-
-            // 连续值变化合并：上一条同元素同 Pattern 同方法 → 替换（输入 "abc" 只留最终 "abc"，回放幂等）
-            if (uiaEvent.ReplacePrevious && _script.Records.Count > 0)
-            {
-                var last = _script.Records[^1];
-                if (last.PatternName == record.PatternName
-                    && last.MethodName == record.MethodName
-                    && last.ElementPath == record.ElementPath)
-                {
-                    _script.Records[^1] = record;
-                    RefreshList();
-                    TxtStatus.Text = $"● 已捕获 {_script.Records.Count} 个动作: {record.MethodName}({string.Join(", ", record.Parameters ?? Array.Empty<object?>())})";
-                    AppLog.Write("RECORD", $"OnAutoEvent merge: {uiaEvent.EventName} → {record.MethodName}({string.Join(", ", record.Parameters ?? Array.Empty<object?>())}) elem={uiaEvent.ElementName}");
-                    return;
-                }
-            }
-
-            _script.Records.Add(record);
-            RefreshList();
             var detail = record.Parameters is { Length: > 0 }
                 ? $"{record.MethodName}({string.Join(", ", record.Parameters)})"
                 : record.MethodName;
-            TxtStatus.Text = $"● 已捕获 {_script.Records.Count} 个动作: {detail} ({uiaEvent.ElementName})";
-            AppLog.Write("RECORD", $"OnAutoEvent #{_script.Records.Count}: {uiaEvent.EventName} elem={uiaEvent.ElementName} id={uiaEvent.ElementUniqueId} → {record.PatternName}.{record.MethodName}");
+
+            // ★ 双通道合流：与输入语义化记录共用 merge（同元素同 Pattern 同方法只留一条）
+            AppendRecord(record, uiaEvent.ReplacePrevious, source: $"uia {uiaEvent.EventName}",
+                statusText: $"● 已捕获 {_script.Records.Count} 个动作: {detail} ({uiaEvent.ElementName})");
         });
     }
+
+    /// <summary>统一追加记录（UIA 事件/输入语义化/坐标回退共用）：
+    /// replacePrevious=true 时若上一条同元素（spec 忽略 rect 抖动）同 Pattern 同方法 → 原位替换（值类合并去抖）。</summary>
+    private void AppendRecord(ActionRecord record, bool replacePrevious, string source, string? statusText = null)
+    {
+        if (replacePrevious && _script.Records.Count > 0)
+        {
+            var last = _script.Records[^1];
+            if (MergeKey(last) == MergeKey(record))
+            {
+                _script.Records[^1] = record;
+                RefreshList();
+                TxtStatus.Text = statusText ?? $"● 已捕获 {_script.Records.Count} 个动作: {record.MethodName}({string.Join(", ", record.Parameters ?? Array.Empty<object?>())})";
+                AppLog.Write("RECORD", $"AppendRecord merge[{source}]: {record.PatternName}.{record.MethodName}" +
+                    $"({string.Join(", ", record.Parameters ?? Array.Empty<object?>())}) elem={record.ElementName}");
+                return;
+            }
+        }
+
+        _script.Records.Add(record);
+        RefreshList();
+        var detail = record.Parameters is { Length: > 0 }
+            ? $"{record.MethodName}({string.Join(", ", record.Parameters)})"
+            : record.MethodName;
+        TxtStatus.Text = statusText ?? $"● 已捕获 {_script.Records.Count} 个动作: {detail}" +
+                         (record.ElementName != "" ? $" ({record.ElementName})" : "");
+    }
+
+    /// <summary>merge 判定键：spec 去掉 rect 段（双通道对同一元素读 rect 时机不同会差 1~2px）+ Pattern.方法。</summary>
+    private static string MergeKey(ActionRecord r)
+    {
+        var path = r.ElementPath ?? "";
+        var cut = path.IndexOf("|rect=", StringComparison.Ordinal);
+        if (cut > 0) path = path[..cut];
+        return $"{path}|{r.PatternName}.{r.MethodName}";
+    }
+
+    /// <summary>
+    /// 输入动作 → 元素 Pattern 语义化（UIA 语义模式通道2）：
+    /// 左键点击 → InvokePattern.Invoke；文本类按键 → 焦点元素 ValuePattern 实时完整值 SetValue（merge）；
+    /// 左键拖动 → 起点元素 RangeValuePattern 抬起时刻终值 SetValue（merge）。
+    /// 元素不支持对应 Pattern 或读取失败 → 返回 false（调用方回退坐标记录）。
+    /// </summary>
+    private bool TryBuildSemanticRecord(InputActionRecord input, AutomationElement? elem,
+        string elemName, string procName, string ctrlType, out ActionRecord record, out bool replacePrevious)
+    {
+        record = null!;
+        replacePrevious = false;
+        if (elem is null) return false;
+        try
+        {
+            switch (input.Kind)
+            {
+                case InputActionKind.MouseLeftClick:
+                    if (elem.TryGetCurrentPattern(InvokePattern.Pattern, out _))
+                    {
+                        replacePrevious = false;
+                        record = BuildSemantic(elem, "InvokePattern", "Invoke", null,
+                            result: $"{procName} {ShortType(ctrlType)} Invoke", elemName, input.Timestamp);
+                        return true;
+                    }
+                    LogPatternProbe(elem, elemName, ctrlType, procName, "click-no-invoke");
+                    break;
+
+                case InputActionKind.KeyDown when IsTextVk(input.VkCode):
+                    // 文本键：读焦点元素当前完整值（回放 SetValue 幂等；连续按键 merge 只留最终值）
+                    if (elem.TryGetCurrentPattern(ValuePattern.Pattern, out var vpo) && vpo is ValuePattern vp && !vp.Current.IsReadOnly)
+                    {
+                        var value = vp.Current.Value;
+                        if (value is not null)
+                        {
+                            replacePrevious = true;
+                            record = BuildSemantic(elem, "ValuePattern", "SetValue", new object?[] { value },
+                                result: $"{procName} {ShortType(ctrlType)} → \"{value}\"", elemName, input.Timestamp);
+                            return true;
+                        }
+                    }
+                    break;
+
+                case InputActionKind.MouseLeftDrag:
+                    // 拖动：抬起时刻起点元素（滑块）的 RangeValue 已是终值（merge 合并拖动过程）
+                    if (elem.TryGetCurrentPattern(RangeValuePattern.Pattern, out var rpo) && rpo is RangeValuePattern rp && !rp.Current.IsReadOnly)
+                    {
+                        var value = rp.Current.Value;
+                        replacePrevious = true;
+                        record = BuildSemantic(elem, "RangeValuePattern", "SetValue", new object?[] { value },
+                            result: $"{procName} {ShortType(ctrlType)} → {value}", elemName, input.Timestamp);
+                        return true;
+                    }
+                    LogPatternProbe(elem, elemName, ctrlType, procName, "drag-no-rangevalue");
+                    break;
+            }
+        }
+        catch { /* pattern 查询/读值失败 → 坐标回退 */ }
+        return false;
+    }
+
+    private static ActionRecord BuildSemantic(AutomationElement elem, string pattern, string method,
+        object?[]? parameters, string result, string elemName, DateTime timestamp) => new()
+    {
+        Timestamp = timestamp,
+        ElementName = elemName,
+        ElementPath = BuildSpec(elem),          // spec 定位（回放经 ResolveBySpec 重定位，不依赖坐标）
+        PatternName = pattern,
+        MethodName = method,
+        Parameters = parameters,
+        Success = true,
+        Result = result,
+    };
+
+    /// <summary>文本类虚拟键（会产生字符输入/删除的键）：0-9、A-Z、空格、Back、OEM 标点。
+    /// 回车/Tab/方向/F 键等不语义化（行为语义由 SendInput 回放更合适）。</summary>
+    private static bool IsTextVk(uint vk) =>
+        vk is >= 0x30 and <= 0x5A    // 0-9、A-Z
+        or 0x20 or 0x08              // Space、Back（删除也改变值，读实时值即最终值）
+        or >= 0xBA and <= 0xC0       // OEM 标点 ;=,-./`
+        or >= 0xDB and <= 0xDE;      // OEM 标点 [\]'
+
+    private static string ShortType(string programmaticName) =>
+        programmaticName.StartsWith("ControlType.", StringComparison.Ordinal)
+            ? programmaticName["ControlType.".Length..]
+            : programmaticName;
+
+    /// <summary>与 EventListenerCore.BuildSpec（COM 版）同格式的 WPF 元素 spec（回放 ResolveBySpec 通用）。</summary>
+    private static string BuildSpec(AutomationElement elem)
+    {
+        try
+        {
+            var c = elem.Current;
+            var r = c.BoundingRectangle;
+            var rect = r.IsEmpty || r.Width <= 0 || r.Height <= 0
+                ? "" : $"{(int)r.Left},{(int)r.Top},{(int)r.Right},{(int)r.Bottom}";
+            return $"spec:v1|autoId={Esc(c.AutomationId)}|name={Esc(c.Name)}|type={ShortType(c.ControlType?.ProgrammaticName ?? "")}" +
+                   $"|class={Esc(c.ClassName)}|rect={rect}";
+        }
+        catch { return "spec:v1|"; }
+    }
+
+    private static string? Esc(string? s) => string.IsNullOrEmpty(s) ? "" : Uri.EscapeDataString(s);
+
+    /// <summary>语义化失败探针：同元素（pid+name）只打一次其支持的 Pattern 列表（诊断 tk/Qt 控件能力用）。</summary>
+    private void LogPatternProbe(AutomationElement elem, string elemName, string ctrlType, string procName, string tag)
+    {
+        try
+        {
+            var key = $"{procName}|{elemName}";
+            if (_patternProbeLogged.ContainsKey(key)) return;
+            _patternProbeLogged[key] = 1;
+            var patterns = string.Join(",", elem.GetSupportedPatterns().Select(p => p.ProgrammaticName));
+            AppLog.Write("RECORD", $"[semantic-probe] {tag}: elem='{TruncLog(elemName, 40)}' type={ctrlType} proc={procName} supported=[{patterns}] → 坐标回退");
+        }
+        catch { /* 探针失败无碍 */ }
+    }
+
+    private static string TruncLog(string s, int max) => s.Length <= max ? s : s[..max] + "…";
 
     private void BtnClearRecord_Click(object sender, RoutedEventArgs e)
     {
         // 先停止输入钩子与自动监听
         StopInputHook();
         StopUiaListenerQuiet();
+        _uiaSemanticMode = false;
+        _patternProbeLogged.Clear();
 
         _script.Records.Clear();
         _stepIndex = -1;
