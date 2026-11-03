@@ -27,6 +27,9 @@ public partial class RecordingPanel : UserControl
     private bool _isAutoMode;           // true=自动(UIA事件监听), false=手动(Actions执行)
     private int _stepIndex = -1;
     private EventListenerCore? _autoListener; // 自动模式的事件监听器
+    private int _listenerPid;           // 当前监听器锁定/瞄准的进程（0=自由模式：全桌面+排除自己）
+    private int _hoverProcessId;        // 最近一次悬停捕获的进程（补挂/切换监听用）
+    private DateTime _lastAttach = DateTime.MinValue; // 上次挂载时刻（重挂防抖）
 
     /// <summary>录制状态变化通知。</summary>
     public event Action<bool>? RecordingStateChanged;
@@ -95,6 +98,7 @@ public partial class RecordingPanel : UserControl
                 _autoListener.Stop();
                 _autoListener.Dispose();
                 _autoListener = null;
+                _listenerPid = 0;
             }
 
             _isRecording = false;
@@ -108,51 +112,86 @@ public partial class RecordingPanel : UserControl
         RecordingStateChanged?.Invoke(_isRecording);
     }
 
-    /// <summary>启动自动模式 UIA 事件监听。</summary>
+    /// <summary>
+    /// 启动自动模式 UIA 事件监听。目标解析降级链（保证"直接点录制也能录到"）：
+    /// ① 抓过树（目标窗口 hwnd+pid）→ 监听挂目标窗口子树（全事件）
+    /// ② 无 hwnd 但知道目标 pid（悬停捕获）→ 全桌面 + 按进程过滤（全事件）
+    /// ③ 什么都没有 → 全桌面 + 仅排除自己（交互类事件，防噪声）
+    /// ④ 悬停到目标后由 MainWindow 调 TryAttachAutoListener 自动升级/切换到 ①②
+    /// </summary>
     private void StartAutoRecording()
     {
         var uniqueId = GetTargetElementUniqueId?.Invoke();
-        // ★ 使用回调获取元素引用（MainWindow 注入），不再直接访问 MainWindow 私有字段
         var hasElement = GetCurrentA11yElement?.Invoke() is not null;
-        AppLog.Write("RECORD", $"StartAutoRecording: uniqueId={uniqueId}, hasDetails={hasElement}");
+        var target = GetTargetWindowInfo?.Invoke();
 
-        // ★ 允许 UniqueId=0（某些 UIA 元素的 UniqueId 为 0，但元素引用有效）
-        // targetElementId 仅用于日志，EventListenerCore 内部用 Guid 标识监听器实例
-        // 注意：即使 !hasElement 也不 return——静默捕获（鼠标跟踪+树高亮）仍然有效，
-        //       只是 UIA 事件监听无法启动（用户可通过悬停获取元素后再切换到自动模式）
-        if (!hasElement)
-        {
-            AppLog.Write("RECORD", "StartAutoRecording → SKIP: no target element (silent capture still active)");
-            TxtAutoHint.Visibility = Visibility.Visible;
-            TxtStatus.Text = "● 自动录制中…悬停目标窗口获取元素后 UIA 事件监听将自动生效";
-            return;  // ← 不再影响 _isRecording（已由调用方设置）
-        }
+        var hwnd = target?.Handle ?? IntPtr.Zero;
+        var pid = target?.ProcessId ?? 0;
+        if (pid == 0 && _hoverProcessId != 0) pid = _hoverProcessId; // 无抓树目标时用悬停进程
+        var listenMode = hwnd != IntPtr.Zero
+            ? $"window-subtree (hwnd={hwnd}, pid={pid}, proc={target?.ProcessName})"
+            : pid != 0
+                ? $"desktop + pid-filter (pid={pid})"
+                : "desktop + exclude-self (free mode, interactive events only)";
+        AppLog.Write("RECORD", $"StartAutoRecording: uniqueId={uniqueId}, hasDetails={hasElement}, listen={listenMode}");
 
         try
         {
-            // _isRecording 已在 BtnToggleRecord_Click 中设置，此处不再重复
-            // ★ 监听挂目标窗口子树（hwnd）+ 回调按进程过滤（pid）：只录目标应用的操作，绝不录自己
-            //   （此前挂桌面根全桌面监听：录到的全是自己 UI 刷新/其他应用的事件噪声）
-            var target = GetTargetWindowInfo?.Invoke();
+            // 自由模式只监听交互类事件（无 Text/Structure 高频噪声）；有目标时监听全事件
+            var eventIds = hwnd != IntPtr.Zero || pid != 0
+                ? EventListenerCore.DefaultEventIds
+                : EventListenerCore.InteractiveEventIds;
             _autoListener = new EventListenerCore(uniqueId ?? 0,
                 EventListenScope.Descendants, OnAutoEvent,
-                target?.Handle ?? IntPtr.Zero, target?.ProcessId ?? 0);
+                hwnd, pid);
+            _autoListener.Start(eventIds);
+            _listenerPid = pid;
 
-            // 使用默认事件列表（覆盖常见操作）
-            _autoListener.Start();
-
-            TxtAutoHint.Visibility = Visibility.Visible;
-            TxtStatus.Text = "● 自动录制中…正在监听目标窗口的 UIA 事件";
-            AppLog.Write("RECORD", $"StartAutoRecording → SUCCESS: hwnd={target?.Handle}, pid={target?.ProcessId} ({target?.ProcessName}), element {uniqueId}");
+            TxtAutoHint.Visibility = pid == 0 ? Visibility.Visible : Visibility.Collapsed;
+            TxtStatus.Text = pid == 0
+                ? "● 自动录制中…（自由模式）悬停目标窗口后将自动聚焦监听"
+                : "● 自动录制中…正在监听目标窗口的 UIA 事件";
+            AppLog.Write("RECORD", $"StartAutoRecording → SUCCESS: {listenMode}, element {uniqueId}");
         }
         catch (Exception ex)
         {
             // UIA 监听失败不影响录制状态（静默捕获仍工作），只记录日志
             _autoListener?.Dispose();
             _autoListener = null;
+            _listenerPid = 0;
             TxtStatus.Text = "● 自动录制中…UIA 事件监听启动失败（鼠标捕获仍正常）";
-            AppLog.Write("RECORD", $"StartAutoRecording → UIA listener failed (recording continues): {ex.GetType().Name}: {ex.Message}");
+            AppLog.Write("RECORD", $"StartAutoRecording → FAILED (recording continues): {ex.GetType().Name}: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// 自动录制补挂/切换监听（MainWindow 静默捕获链路在悬停元素有效时调用）。
+    /// 自由模式 → 悬停后升级为按进程过滤；已锁定进程 → 悬停到别的进程 2 秒以上切换目标。
+    /// </summary>
+    public void TryAttachAutoListener(int hoverProcessId)
+    {
+        if (!_isRecording || !_isAutoMode) return;
+        _hoverProcessId = hoverProcessId;
+
+        bool needAttach = _autoListener is null
+            || (_listenerPid == 0 && hoverProcessId != 0)                                  // 自由模式 → 升级
+            || (_listenerPid != 0 && hoverProcessId != 0 && hoverProcessId != _listenerPid); // 切换目标进程
+        if (!needAttach) return;
+        if ((DateTime.Now - _lastAttach).TotalSeconds < 2) return; // 防抖：鼠标扫过窗口不疯狂重挂
+
+        if (_autoListener is not null)
+        {
+            AppLog.Write("RECORD", $"AutoListener re-attach: pid {_listenerPid} → {hoverProcessId} (hover target changed)");
+            _autoListener.Stop();
+            _autoListener.Dispose();
+            _autoListener = null;
+        }
+        else
+        {
+            AppLog.Write("RECORD", $"AutoListener attach by hover: pid={hoverProcessId} (listener was not running)");
+        }
+        _lastAttach = DateTime.Now;
+        StartAutoRecording();
     }
 
     /// <summary>自动模式事件回调：UIA 事件 → UiaEventRecord → ActionRecord → 追加到脚本。</summary>
@@ -178,6 +217,7 @@ public partial class RecordingPanel : UserControl
             _autoListener.Stop();
             _autoListener.Dispose();
             _autoListener = null;
+            _listenerPid = 0;
         }
 
         _script.Records.Clear();

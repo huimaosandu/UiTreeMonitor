@@ -69,6 +69,13 @@ public sealed class EventListenerCore : IDisposable
     private AutomationElement? _hookElement;      // 实际挂载的元素（Stop 注销必须与注册同一元素，否则泄漏）
     private bool _focusRegistered;                // 焦点事件是否已注册（独立 API，独立注销）
 
+    // 诊断统计（Stop 时输出汇总；排查"录不到动作"时看事件是否被过滤卡住）
+    private long _seen;          // 回调收到总数
+    private long _recorded;      // 通过过滤并转发
+    private long _filteredOwn;   // 被过滤：自己进程
+    private long _filteredOther; // 被过滤：非目标进程
+    private int _lastFilteredPid;
+
     /// <summary>是否正在监听中。</summary>
     public bool IsListening => _isListening;
 
@@ -105,8 +112,22 @@ public sealed class EventListenerCore : IDisposable
     /// <summary>焦点事件（独立 API 注册，ID 同样运行时取）。</summary>
     private static readonly AutomationEvent FocusEvent = AutomationElement.AutomationFocusChangedEvent;
 
+    /// <summary>高频低价值事件（自由模式=无目标全桌面时排除，防噪声刷屏）。</summary>
+    private static readonly HashSet<AutomationEvent> NoisyEvents = new()
+    {
+        TextPattern.TextChangedEvent,
+        AutomationElement.StructureChangedEvent,
+    };
+
     /// <summary>默认监听的事件 ID 列表。</summary>
     public static readonly IReadOnlyList<int> DefaultEventIds = CoreEvents
+        .Select(e => e.Event.Id)
+        .Append(FocusEvent.Id)
+        .ToList();
+
+    /// <summary>交互类事件（自由模式兜底用：Invoke/选择/菜单/窗口/焦点，无 Text/Structure 噪声）。</summary>
+    public static readonly IReadOnlyList<int> InteractiveEventIds = CoreEvents
+        .Where(e => !NoisyEvents.Contains(e.Event))
         .Select(e => e.Event.Id)
         .Append(FocusEvent.Id)
         .ToList();
@@ -221,7 +242,7 @@ public sealed class EventListenerCore : IDisposable
                 _focusRegistered = false;
             }
 
-            AppLog.Write("RECORD", "EventListenerCore.Stop → OK");
+            AppLog.Write("RECORD", $"EventListenerCore.Stop → OK (seen={_seen}, recorded={_recorded}, filteredOwn={_filteredOwn}, filteredOther={_filteredOther}, lastFilteredPid={_lastFilteredPid})");
         }
         catch (Exception ex)
         {
@@ -250,11 +271,12 @@ public sealed class EventListenerCore : IDisposable
 
             // ★ 进程过滤：绝不录自己（录制列表每刷一次就触发 UIA 事件，又被录下 → 自我反馈死循环，
             //   录出来的全是自己 UI 的垃圾记录）；指定了目标进程时只录目标进程
+            _seen++;
             int pid;
             try { pid = elem.Current.ProcessId; }
             catch { return; /* 元素已销毁 */ }
-            if (pid == _ownProcessId) return;
-            if (_targetProcessId != 0 && pid != _targetProcessId) return;
+            if (pid == _ownProcessId) { _filteredOwn++; LogFilterStats(); return; }
+            if (_targetProcessId != 0 && pid != _targetProcessId) { _filteredOther++; _lastFilteredPid = pid; LogFilterStats(); return; }
 
             // 轻量级读取元素信息
             string elemName = "";
@@ -279,12 +301,21 @@ public sealed class EventListenerCore : IDisposable
             };
 
             AppLog.Write("RECORD", $"OnAutomationEvent: {eventName} elem={elemName} type={ctrlType}");
+            _recorded++;
             _onEvent?.Invoke(record);
         }
         catch (Exception ex)
         {
             AppLog.Write("RECORD", $"OnAutomationEvent → exception (ignored): {ex.Message}");
         }
+    }
+
+    /// <summary>过滤统计节流日志：每累计 50 条被过滤事件输出 1 次（避免高频事件刷爆日志）。</summary>
+    private void LogFilterStats()
+    {
+        var filtered = _filteredOwn + _filteredOther;
+        if (filtered % 50 != 0) return;
+        AppLog.Write("RECORD", $"  [filter-stats] seen={_seen}, recorded={_recorded}, filteredOwn={_filteredOwn}, filteredOther={_filteredOther}, lastFilteredPid={_lastFilteredPid}");
     }
 
     public void Dispose()
