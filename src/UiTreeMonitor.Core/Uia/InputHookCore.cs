@@ -27,12 +27,18 @@ public sealed record InputActionRecord(
     uint VkCode,           // 键盘虚拟键码（VK_*）
     bool Ctrl, bool Shift, bool Alt);
 
-/// <summary>录制捕获选项（设置持久化，MainWindow 注入到 RecordingPanel）。</summary>
+/// <summary>录制捕获选项（设置持久化，MainWindow 注入到 RecordingPanel）。
+/// Mode: "uia"=UIA 语义事件模式（默认，可回放 Invoke/SetValue/Select 等）；"input"=鼠标键盘动作模式（坐标+左右键/拖动/按键）。</summary>
 public sealed record CaptureOptions(
+    string Mode = "uia",
     bool MouseLeft = true,
     bool MouseRight = true,
-    bool Keyboard = true,
-    bool UiaEvents = false);
+    bool Keyboard = true)
+{
+    public bool IsUiaMode => !string.Equals(Mode, "input", StringComparison.OrdinalIgnoreCase);
+    public const string ModeUia = "uia";
+    public const string ModeInput = "input";
+}
 
 /// <summary>
 /// 全局低级输入钩子：捕获鼠标左键/右键点击与键盘按键。

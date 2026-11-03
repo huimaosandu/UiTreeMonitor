@@ -35,18 +35,28 @@ public sealed record UiaEventRecord
     public int ElementUniqueId { get; init; }
     public string ElementName { get; init; } = "";
     public string ControlType { get; init; } = "";
-    public string? ElementPath { get; init; }
+    public string? ElementPath { get; init; }        // 语义记录=元素定位 spec（回放时在目标窗口树中重定位）
     public IList<object>? ChangedProperties { get; init; }
 
-    /// <summary>转换为 ActionRecord（统一录制格式）。</summary>
+    // ==== 语义化（可回放）字段：UIA 事件/属性变化 → 对应 Pattern 操作 ====
+    /// <summary>回放 Pattern 名（如 ValuePattern/InvokePattern，与 Axe.Windows A11yPattern.Name 对齐）；null=不可回放仅记录。</summary>
+    public string? PlaybackPattern { get; init; }
+    /// <summary>回放方法名（如 SetValue/Invoke/Select）。</summary>
+    public string? PlaybackMethod { get; init; }
+    /// <summary>回放参数（如 SetValue 的新值）。</summary>
+    public object?[]? PlaybackParameters { get; init; }
+    /// <summary>true=替换脚本中上一条同元素同 Pattern 记录（连续输入/拖动每步都触发变化，只保留最终值）。</summary>
+    public bool ReplacePrevious { get; init; }
+
+    /// <summary>转换为 ActionRecord（统一录制格式；可回放记录 PatternName=真实 Pattern 名，回放走 PatternActionRunner）。</summary>
     public ActionRecord ToActionRecord() => new()
     {
         Timestamp = Timestamp,
         ElementPath = ElementPath ?? "",
         ElementName = ElementName,
-        PatternName = $"UIA_Event_{EventId}",
-        MethodName = EventName,
-        Parameters = null,
+        PatternName = PlaybackPattern ?? $"UIA_Event_{EventId}",
+        MethodName = PlaybackMethod ?? EventName,
+        Parameters = PlaybackParameters,
         Success = true,
         Result = ChangedProperties?.Count > 0
             ? string.Join("; ", ChangedProperties.Select(p => p.ToString() ?? ""))
@@ -71,6 +81,7 @@ public sealed class EventListenerCore : IDisposable
     private readonly int _ownProcessId = Environment.ProcessId;
     private AutomationElement? _hookElement;      // 实际挂载的元素（Stop 注销必须与注册同一元素，否则泄漏）
     private bool _structureRegistered;            // 结构事件是否已注册（独立 API，独立注销）
+    private bool _propertiesRegistered;           // 属性变化是否已注册（独立 API，独立注销）
     private volatile bool _detached;              // Dispose 后立即停止转发（后台注销最长数秒，期间不再重复记事件）
 
     // ★ UIA 专用 STA 管道线程：注册/注销（尤其全桌面 RootElement）是重量级跨进程操作，
@@ -120,6 +131,26 @@ public sealed class EventListenerCore : IDisposable
 
     /// <summary>结构变化事件（同样不能经 AddAutomationEventHandler——抛 ArgumentException，独立 API 注册）。</summary>
     private static readonly AutomationEvent StructureEvent = AutomationElement.StructureChangedEvent;
+
+    // ==== 语义映射：UIA 事件 → 可回放 Pattern 操作（Pattern 名与 Axe.Windows A11yPattern.Name 对齐） ====
+    // 事件类
+    private static readonly (AutomationEvent Event, string Pattern, string Method)[] SemanticEvents =
+    {
+        (InvokePattern.InvokedEvent, "InvokePattern", "Invoke"),                                // 按钮点击
+        (SelectionItemPattern.ElementSelectedEvent, "SelectionItemPattern", "Select"),          // 选中（单选/下拉）
+        (SelectionItemPattern.ElementAddedToSelectionEvent, "SelectionItemPattern", "AddToSelection"),
+        (SelectionItemPattern.ElementRemovedFromSelectionEvent, "SelectionItemPattern", "RemoveFromSelection"),
+    };
+
+    // 属性变化类（AddAutomationPropertyChangedEventHandler，含输入文字/滑块拖动等值变化）
+    //  ★ 连续变化（逐字符输入、拖动过程）ReplacePrevious=true：脚本中只保留最终值，回放 SetValue 幂等
+    private static readonly AutomationProperty[] SemanticProperties =
+    {
+        ValuePattern.ValueProperty,                    // 输入框文字 → ValuePattern.SetValue
+        RangeValuePattern.ValueProperty,          // 滑块/进度拖动 → RangeValuePattern.SetValue
+        TogglePattern.ToggleStateProperty,             // 复选/开关 → TogglePattern.Toggle
+        ExpandCollapsePattern.ExpandCollapseStateProperty, // 展开/折叠 → ExpandCollapsePattern.Expand/Collapse
+    };
 
     /// <summary>高频低价值事件（自由模式=无目标全桌面时排除，防噪声刷屏）。</summary>
     private static readonly HashSet<AutomationEvent> NoisyEvents = new()
@@ -255,6 +286,23 @@ public sealed class EventListenerCore : IDisposable
                 }
             }
 
+            // ★ 语义属性变化（Value/RangeValue/ToggleState/ExpandCollapse）：输入文字/滑块拖动/开关等
+            //   值类连续变化 → 可回放的 SetValue/Toggle 记录
+            try
+            {
+                Automation.AddAutomationPropertyChangedEventHandler(hook, treeScope, OnPropertyChanged,
+                    ValuePattern.ValueProperty, RangeValuePattern.ValueProperty,
+                    TogglePattern.ToggleStateProperty, ExpandCollapsePattern.ExpandCollapseStateProperty);
+                _propertiesRegistered = true;
+                registered++;
+                AppLog.Write("RECORD", "  Registered: Property Changed (Value/RangeValue/ToggleState/ExpandCollapse → SetValue/Toggle/Expand)");
+            }
+            catch (Exception ex)
+            {
+                failed++;
+                AppLog.Write("RECORD", $"  Register FAILED (skipped): Property Changed: {ex.Message}");
+            }
+
             _isListening = registered > 0;
             AppLog.Write("RECORD", $"EventListenerCore.Start → {(registered > 0 ? "OK" : "FAILED")} (scope={treeScope}, {registered} registered, {failed} skipped, {sw.ElapsedMilliseconds}ms)");
         }
@@ -284,6 +332,12 @@ public sealed class EventListenerCore : IDisposable
                 catch { /* 忽略移除失败 */ }
                 _structureRegistered = false;
             }
+            if (_propertiesRegistered)
+            {
+                try { Automation.RemoveAutomationPropertyChangedEventHandler(hook, OnPropertyChanged); }
+                catch { /* 忽略移除失败 */ }
+                _propertiesRegistered = false;
+            }
 
             AppLog.Write("RECORD", $"EventListenerCore.Stop → OK (seen={_seen}, recorded={_recorded}, filteredOwn={_filteredOwn}, filteredOther={_filteredOther}, lastFilteredPid={_lastFilteredPid}, {sw.ElapsedMilliseconds}ms)");
         }
@@ -296,17 +350,40 @@ public sealed class EventListenerCore : IDisposable
         _hookElement = null;
     }
 
-    /// <summary>WPF 原生 UIA 事件回调。</summary>
+    /// <summary>WPF 原生 UIA 事件回调：命中语义表则产出可回放记录（Invoke/Select 等）。</summary>
     private void OnAutomationEvent(object sender, AutomationEventArgs e)
-        => HandleEvent(sender, e.EventId.Id,
-            EventNames.TryGetValue(e.EventId.Id, out var name) ? name : $"Event_{e.EventId.Id}");
+    {
+        var name = EventNames.TryGetValue(e.EventId.Id, out var n) ? n : $"Event_{e.EventId.Id}";
+        var semantic = SemanticEvents.FirstOrDefault(s => s.Event == e.EventId);
+        if (semantic != default)
+            HandleEvent(sender, e.EventId.Id, name, semantic.Pattern, semantic.Method);
+        else
+            HandleEvent(sender, e.EventId.Id, name); // 仅记录（Menu/Window/Text 等）
+    }
 
-    /// <summary>结构变化回调（独立 API）。</summary>
+    /// <summary>结构变化回调（独立 API；仅记录）。</summary>
     private void OnStructureChanged(object sender, StructureChangedEventArgs e)
         => HandleEvent(sender, StructureEvent.Id, "Structure Changed");
 
-    /// <summary>公共处理：进程过滤 → 读取元素信息 → 转发 UiaEventRecord。</summary>
-    private void HandleEvent(object sender, int eventId, string eventName)
+    /// <summary>属性变化回调（独立 API）：输入文字/滑块拖动/开关/展开折叠 → 可回放 SetValue/Toggle/Expand。</summary>
+    private void OnPropertyChanged(object sender, AutomationPropertyChangedEventArgs e)
+    {
+        if (e.Property == ValuePattern.ValueProperty)
+            HandleEvent(sender, e.Property.Id, "Value Changed",
+                "ValuePattern", "SetValue", new object?[] { e.NewValue }, replacePrevious: true);
+        else if (e.Property == RangeValuePattern.ValueProperty)
+            HandleEvent(sender, e.Property.Id, "RangeValue Changed",
+                "RangeValuePattern", "SetValue", new object?[] { e.NewValue }, replacePrevious: true);
+        else if (e.Property == TogglePattern.ToggleStateProperty)
+            HandleEvent(sender, e.Property.Id, "Toggle State Changed", "TogglePattern", "Toggle");
+        else if (e.Property == ExpandCollapsePattern.ExpandCollapseStateProperty)
+            HandleEvent(sender, e.Property.Id, "ExpandCollapse Changed", "ExpandCollapsePattern",
+                e.NewValue?.ToString() == "Expanded" ? "Expand" : "Collapse");
+    }
+
+    /// <summary>公共处理：进程过滤 → 读取元素信息 → 转发 UiaEventRecord（带语义映射时可回放）。</summary>
+    private void HandleEvent(object sender, int eventId, string eventName,
+        string? pattern = null, string? method = null, object?[]? parameters = null, bool replacePrevious = false)
     {
         try
         {
@@ -340,11 +417,16 @@ public sealed class EventListenerCore : IDisposable
                 ElementUniqueId = 0,
                 ElementName = elemName,
                 ControlType = ctrlType,
-                ElementPath = null,
-                ChangedProperties = null
+                ElementPath = pattern is null ? null : BuildSpec(elem), // 可回放记录附带定位 spec
+                ChangedProperties = null,
+                PlaybackPattern = pattern,
+                PlaybackMethod = method,
+                PlaybackParameters = parameters,
+                ReplacePrevious = replacePrevious
             };
 
-            AppLog.Write("RECORD", $"OnAutomationEvent: {eventName} elem={elemName} type={ctrlType}");
+            AppLog.Write("RECORD", $"OnAutomationEvent: {eventName} elem={elemName} type={ctrlType}" +
+                (pattern is not null ? $" → {pattern}.{method}({string.Join(", ", parameters ?? Array.Empty<object?>())}){(replacePrevious ? " [merge]" : "")}" : ""));
             _recorded++;
             _onEvent?.Invoke(record);
         }
@@ -353,6 +435,27 @@ public sealed class EventListenerCore : IDisposable
             AppLog.Write("RECORD", $"OnAutomationEvent → exception (ignored): {ex.Message}");
         }
     }
+
+    // ==== 元素定位 spec：录制时现场构建（AutoId/Name/Type/Class/矩形），回放时在目标窗口树中重定位 ====
+    //  格式：spec:v1|autoId=..|name=..|type=..|class=..|rect=L,T,R,B（值 URL 编码，可含 | = 等字符）
+    /// <summary>从 WPF AutomationElement 现场构建定位 spec（回放端 MainWindow.ResolveElementForPlayback 解析）。</summary>
+    public static string BuildSpec(AutomationElement elem)
+    {
+        try
+        {
+            var c = elem.Current;
+            var r = c.BoundingRectangle;
+            var rect = r.IsEmpty || r.Width <= 0 || r.Height <= 0 ? "" : $"{(int)r.Left},{(int)r.Top},{(int)r.Right},{(int)r.Bottom}";
+            return $"spec:v1|autoId={Esc(c.AutomationId)}|name={Esc(c.Name)}|type={TypeShort(c.ControlType?.ProgrammaticName)}|class={Esc(c.ClassName)}|rect={rect}";
+        }
+        catch { return "spec:v1|"; }
+    }
+
+    private static string? Esc(string? s) => string.IsNullOrEmpty(s) ? "" : Uri.EscapeDataString(s);
+
+    /// <summary>"ControlType.Button" → "Button"（与树采样 ControlTypeName 同格式）。</summary>
+    private static string TypeShort(string? programmaticName)
+        => string.IsNullOrEmpty(programmaticName) ? "" : programmaticName.Replace("ControlType.", "");
 
     /// <summary>过滤统计节流日志：每累计 50 条被过滤事件输出 1 次（避免高频事件刷爆日志）。</summary>
     private void LogFilterStats()

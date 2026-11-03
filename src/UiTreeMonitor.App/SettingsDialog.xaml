@@ -1,7 +1,7 @@
 <Window x:Class="UiTreeMonitor.App.SettingsDialog"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="设置" Height="360" Width="440"
+        Title="设置" Height="430" Width="460"
         WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
         FontFamily="Microsoft YaHei" FontSize="13">
     <StackPanel Margin="20,16">
@@ -16,21 +16,32 @@
             <TextBox x:Name="TxtExtractMarker" Grid.Column="1" Height="28" VerticalContentAlignment="Center"
                      ToolTip="值提取的默认标记（起止同串）。例：@@ 截取 @@614.466@@ → 614.466"/>
         </Grid>
-        <TextBlock Foreground="#666666" FontSize="12" TextWrapping="Wrap" Margin="0,0,0,12"
-                   Text="监控值中成对出现该字符时，软件自动截取两者之间的内容作为提取值。新增任务的提取规则默认使用此标记；建议选不易与监控值冲突的字符（默认 @@）。"/>
 
-        <!-- 自动录制捕获 -->
-        <TextBlock Text="自动录制捕获：" FontWeight="Bold" Margin="0,0,0,6"/>
-        <CheckBox x:Name="CkRecordMouseLeft" Content="鼠标左键点击" Margin="8,0,0,6"
-                  ToolTip="录制时捕获鼠标左键点击（记录点击坐标与目标元素）"/>
-        <CheckBox x:Name="CkRecordMouseRight" Content="鼠标右键点击" Margin="8,0,0,6"
-                  ToolTip="录制时捕获鼠标右键点击（记录点击坐标与目标元素）"/>
-        <CheckBox x:Name="CkRecordKeyboard" Content="键盘按键" Margin="8,0,0,6"
-                  ToolTip="录制时捕获键盘按键（含 Ctrl/Shift/Alt 组合键）"/>
-        <CheckBox x:Name="CkRecordUiaEvents" Content="UIA 事件（按钮触发/菜单/窗口/文本变化）" Margin="8,0,0,6"
-                  ToolTip="附加监听目标窗口的 UIA 事件（Invoke/选择/菜单/窗口/结构变化等）。默认关闭"/>
-        <TextBlock Foreground="#666666" FontSize="12" TextWrapping="Wrap" Margin="0,0,0,12"
-                   Text="自动录制默认捕获鼠标左键/右键点击与键盘按键（可回放）；勾选 UIA 事件会附加监听目标窗口事件（仅记录）。设置在下一次开始录制时生效。"/>
+        <!-- 自动录制模式 -->
+        <TextBlock Text="自动录制模式：" FontWeight="Bold" Margin="0,4,0,6"/>
+        <RadioButton x:Name="RbModeUia" GroupName="RecordMode" Margin="8,0,0,4" Checked="RbModeUia_Checked"
+                     ToolTip="监测目标窗口的 UIA 事件与属性变化，录制为 Invoke/SetValue/Select 等语义操作，回放不依赖窗口位置">
+            <TextBlock TextWrapping="Wrap"
+                       Text="UIA 事件（默认）：按钮点击/输入文字/选择/滑块拖动/开关等，录制为可回放的语义步骤"/>
+        </RadioButton>
+        <RadioButton x:Name="RbModeInput" GroupName="RecordMode" Margin="8,4,0,6" Checked="RbModeInput_Checked"
+                     ToolTip="低级输入钩子捕获物理动作（坐标+按键），回放按记录时的屏幕坐标模拟">
+            <TextBlock TextWrapping="Wrap"
+                       Text="鼠标键盘动作：捕获鼠标左键/右键点击、长按拖动与键盘按键，按屏幕坐标回放"/>
+        </RadioButton>
+
+        <!-- input 模式细项 -->
+        <StackPanel x:Name="PnlInputOptions" Margin="20,0,0,4" IsEnabled="False">
+            <CheckBox x:Name="CkRecordMouseLeft" Content="鼠标左键点击 / 长按拖动" Margin="0,0,0,4"
+                      ToolTip="捕获左键点击与左键拖动（记录起点+终点坐标）"/>
+            <CheckBox x:Name="CkRecordMouseRight" Content="鼠标右键点击 / 右键拖动" Margin="0,0,0,4"
+                      ToolTip="捕获右键点击与右键拖动"/>
+            <CheckBox x:Name="CkRecordKeyboard" Content="键盘按键（含 Ctrl/Shift/Alt 组合）" Margin="0,0,0,4"
+                      ToolTip="捕获键盘按键与组合键"/>
+        </StackPanel>
+
+        <TextBlock Foreground="#666666" FontSize="12" TextWrapping="Wrap" Margin="0,6,0,12"
+                   Text="说明：UIA 事件模式录制语义操作（推荐，回放不受窗口移动/分辨率影响）；鼠标键盘动作模式按物理坐标回放（通用性最好）。设置在下一次开始录制时生效。"/>
 
         <!-- 按钮 -->
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,8,0,0">

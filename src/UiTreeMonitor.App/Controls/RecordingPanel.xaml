@@ -22,7 +22,7 @@
                                  ToolTip="手动模式：执行 Actions 对话框中的操作时记录"
                                  Margin="4,0,8,0" VerticalAlignment="Center" FontSize="11"/>
                     <RadioButton x:Name="RbModeAuto" Content="自动" GroupName="RecordMode" IsChecked="True"
-                                 ToolTip="自动模式：捕获鼠标左键/右键点击与键盘按键（默认，可回放）；可在设置中附加 UIA 事件监听"
+                                 ToolTip="自动模式：默认监测 UIA 事件（按钮点击/输入文字/选择/滑块拖动等，语义回放）；可在设置中切换为鼠标键盘动作模式（坐标回放）"
                                  VerticalAlignment="Center" FontSize="11"/>
                 </StackPanel>
             </Border>
@@ -53,10 +53,10 @@
                     Click="BtnImport_Click" ToolTip="从 JSON 文件导入脚本"/>
         </StackPanel>
 
-        <!-- 自动模式提示（仅自动模式显示，开始录制后按捕获设置动态更新文案） -->
+        <!-- 自动模式提示（仅自动模式显示，开始录制后按录制模式动态更新文案） -->
         <TextBlock Grid.Row="2" x:Name="TxtAutoHint" Visibility="Visible"
                    Foreground="#B8860B" FontSize="11" Margin="0,0,0,4" TextWrapping="Wrap"
-                   Text="自动模式：点击开始录制后将捕获鼠标左键/右键点击与键盘按键（可在设置中修改捕获选项，或附加 UIA 事件监听）。"/>
+                   Text="自动模式（默认 UIA 事件）：在目标窗口中点击按钮、输入文字、选择、拖动滑块等操作将录制为可回放的语义步骤；可在设置中切换为鼠标键盘动作模式。"/>
 
         <!-- 已录制操作列表 -->
         <DataGrid Grid.Row="3" x:Name="DgRecords"

@@ -201,10 +201,11 @@ public partial class MainWindow : Window
         RecordingPanel.GetCurrentA11yElement = () => _detailsA11yElement;
         // ★ 注入目标窗口信息（自动录制：监听挂到目标窗口子树 + 按进程过滤，不再全桌面监听）
         RecordingPanel.GetTargetWindowInfo = () => _currentTarget;
-        // ★ 注入录制捕获选项（设置持久化：默认捕获鼠标左右键+键盘，UIA 事件按设置附加）
+        // ★ 注入录制捕获选项（设置持久化：uia=UIA 语义事件默认 / input=鼠标键盘动作）
         RecordingPanel.GetCaptureOptions = () => new Core.Uia.CaptureOptions(
+            _settings.RecordMode,
             _settings.RecordMouseLeft, _settings.RecordMouseRight,
-            _settings.RecordKeyboard, _settings.RecordUiaEvents);
+            _settings.RecordKeyboard);
         RecordingPanel.RecordingStateChanged += (recording) =>
         {
             var isAuto = ((System.Windows.Controls.RadioButton)RecordingPanel.RbModeAuto).IsChecked == true;
@@ -956,6 +957,15 @@ public partial class MainWindow : Window
     /// <summary>回放时的元素解析器：通过 ElementPath 在当前目标窗口 UIA 树中找到实时 A11yElement。</summary>
     private Axe.Windows.Core.Bases.A11yElement? ResolveElementForPlayback(string elementPath)
     {
+        // ★ UIA 语义录制的定位 spec（spec:v1|autoId=..|name=..|type=..|class=..|rect=..）：
+        //   在目标窗口树中按属性+矩形评分重定位（回放不受窗口移动影响，rect 仅作近似加分）
+        if (elementPath.StartsWith("spec:v1|", StringComparison.Ordinal))
+        {
+            var bySpec = ResolveBySpec(elementPath);
+            if (bySpec is not null) return bySpec;
+            Log("ResolveElement: spec 未命中 → 走兜底逻辑");
+        }
+
         // ★ 关键修复：_detailsA11yElement 的 Patterns[] 包含过期的 COM 引用
         //   即使 .Name 可访问（元素基础 COM 对象存活），pattern.Invoke() 仍会抛 0x80040201
         //   解决方案：总是从 UIA 树获取全新元素引用，确保 Patterns 也是新鲜的
@@ -1056,6 +1066,104 @@ public partial class MainWindow : Window
         }
         catch { /* 搜索过程中元素可能销毁 */ }
         return null;
+    }
+
+    /// <summary>解析录制 spec（EventListenerCore.BuildSpec 产出）并在目标窗口树中评分重定位元素。
+    /// 评分：AutomationId 精确(50) > ControlType(20) + Name(20)；矩形相近仅近似加分(15)；
+    /// 阈值 40 = 至少 AutoId+Type 或 Type+Name 组合命中。遍历上限 3000 节点防大窗口卡顿。</summary>
+    private Axe.Windows.Core.Bases.A11yElement? ResolveBySpec(string spec)
+    {
+        try
+        {
+            string autoId = "", name = "", type = "", cls = "", rectStr = "";
+            foreach (var seg in spec.Split('|'))
+            {
+                int eq = seg.IndexOf('=');
+                if (eq <= 0) continue;
+                var k = seg[..eq];
+                var v = Uri.UnescapeDataString(seg[(eq + 1)..]);
+                switch (k)
+                {
+                    case "autoId": autoId = v; break;
+                    case "name": name = v; break;
+                    case "type": type = v; break;
+                    case "class": cls = v; break;
+                    case "rect": rectStr = v; break;
+                }
+            }
+            if (_currentTarget is null || _currentTarget.Handle == IntPtr.Zero)
+            {
+                Log("ResolveBySpec: 无目标窗口（先抓取/悬停目标后再回放）");
+                return null;
+            }
+
+            using var session = Core.Uia.UiaSession.Create();
+            var root = session.GetRootFromHandle(_currentTarget.Handle);
+            if (root is null) return null;
+
+            // 期望矩形（未移动窗口时的强佐证；移动后失效不惩罚）
+            int[]? rect = null;
+            if (rectStr.Length > 0)
+            {
+                var p = rectStr.Split(',');
+                if (p.Length == 4 && int.TryParse(p[0], out var l) && int.TryParse(p[1], out var t))
+                    rect = new[] { l, t };
+            }
+
+            var best = (Score: 0, El: null as Axe.Windows.Core.Bases.A11yElement);
+            const int threshold = 40;
+            const int maxNodes = 3000;
+            var visited = 0;
+
+            var stack = new Stack<Axe.Windows.Core.Bases.A11yElement>();
+            stack.Push(root);
+            while (stack.Count > 0 && visited < maxNodes)
+            {
+                var el = stack.Pop();
+                visited++;
+                int score = 0;
+                try
+                {
+                    string elAutoId = el.AutomationId ?? "", elName = el.Name ?? "", elType = Core.Sampler.TreeSampler.ControlTypeName(el.ControlTypeId), elClass = el.ClassName ?? "";
+                    if (autoId.Length > 0 && elAutoId == autoId) score += 50;
+                    if (type.Length > 0 && elType == type) score += 20;
+                    if (name.Length > 0 && elName == name) score += 20;
+                    else if (name.Length > 0 && elName.Length > 0) score -= 10; // 名字不同仅轻惩罚（动态名元素）
+                    if (cls.Length > 0 && elClass == cls) score += 5;
+                    if (rect is not null && el.BoundingRectangle is { Width: > 0 } r
+                        && Math.Abs(r.Left - rect[0]) <= 40 && Math.Abs(r.Top - rect[1]) <= 40)
+                        score += 15;
+
+                    if (score > best.Score) best = (score, el);
+                    if (score >= 50 + 20 + 20) break; // 满分提前结束
+                }
+                catch { /* 元素已销毁，跳过 */ }
+
+                try
+                {
+                    var child = session.GetFirstChild(el);
+                    while (child is not null)
+                    {
+                        stack.Push(child);
+                        child = session.GetNextSibling(child);
+                    }
+                }
+                catch { /* 子树遍历失败 */ }
+            }
+
+            if (best.El is not null && best.Score >= threshold)
+            {
+                Log($"ResolveBySpec: hit score={best.Score} (visited={visited}) elem='{best.El.Name}' → 回放目标");
+                return best.El;
+            }
+            Log($"ResolveBySpec: no match (best={best.Score} < {threshold}, visited={visited}, spec autoId='{autoId}' name='{name}' type='{type}')");
+            return null;
+        }
+        catch (Exception ex)
+        {
+            Log($"ResolveBySpec: {ex.GetType().Name}: {ex.Message}");
+            return null;
+        }
     }
 
     /// <summary>初始化 UIA 桌面元素上下文（ListenAction 的前置条件）。</summary>
@@ -1871,21 +1979,21 @@ public partial class MainWindow : Window
         }
     }
 
-    /// <summary>设置弹窗：截取字符 + 自动录制捕获选项，保存后立即生效。</summary>
+    /// <summary>设置弹窗：截取字符 + 自动录制模式，保存后立即生效。</summary>
     private void BtnSettings_Click(object sender, RoutedEventArgs e)
     {
         var dlg = new SettingsDialog(_settings.ExtractMarker,
+            _settings.RecordMode,
             _settings.RecordMouseLeft, _settings.RecordMouseRight,
-            _settings.RecordKeyboard, _settings.RecordUiaEvents)
+            _settings.RecordKeyboard)
         { Owner = this };
-        if (dlg.ShowDialog() != true || dlg.ExtractMarker is null || dlg.CaptureOptions is null) return;
+        if (dlg.ShowDialog() != true || dlg.ExtractMarker is null || dlg.RecordMode is null || dlg.InputOptions is null) return;
         _settings.ExtractMarker = dlg.ExtractMarker;
-        (_settings.RecordMouseLeft, _settings.RecordMouseRight,
-         _settings.RecordKeyboard, _settings.RecordUiaEvents) = dlg.CaptureOptions.Value;
+        _settings.RecordMode = dlg.RecordMode;
+        (_settings.RecordMouseLeft, _settings.RecordMouseRight, _settings.RecordKeyboard) = dlg.InputOptions.Value;
         _settings.Save(SettingsFilePath);
-        var caps = $"{(_settings.RecordMouseLeft ? "左键 " : "")}{(_settings.RecordMouseRight ? "右键 " : "")}" +
-                   $"{(_settings.RecordKeyboard ? "键盘 " : "")}{(_settings.RecordUiaEvents ? "UIA事件" : "")}".TrimEnd();
-        TxtStatus.Text = $"设置已保存：截取字符 = {_settings.ExtractMarker}；录制捕获 = {(caps.Length > 0 ? caps : "无")}（下次开始录制生效）";
+        var modeText = _settings.RecordMode == "input" ? "鼠标键盘动作（坐标回放）" : "UIA 事件（语义回放）";
+        TxtStatus.Text = $"设置已保存：截取字符 = {_settings.ExtractMarker}；录制模式 = {modeText}（下次开始录制生效）";
     }
 
     private void TaskList_SelectionChanged(object sender, SelectionChangedEventArgs e)

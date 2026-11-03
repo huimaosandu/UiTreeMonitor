@@ -11,11 +11,17 @@ public sealed class AppSettings
     /// <summary>值提取默认截取标记（起止同串，如 @@）。非法/为空时回落 @@。</summary>
     public string ExtractMarker { get; set; } = "@@";
 
-    // ==== 自动录制捕获选项（默认：捕获鼠标左右键+键盘；UIA 事件关闭）====
+    // ==== 自动录制模式（设置弹窗选择） ====
+    /// <summary>录制模式："uia"=UIA 语义事件（默认，可回放 Invoke/SetValue/Select 等）；"input"=鼠标键盘动作（坐标回放）。非法值回落 uia。</summary>
+    public string RecordMode { get; set; } = "uia";
+    // input 模式细项（左右键捕获已含长按拖动）
     public bool RecordMouseLeft { get; set; } = true;
     public bool RecordMouseRight { get; set; } = true;
     public bool RecordKeyboard { get; set; } = true;
-    public bool RecordUiaEvents { get; set; } = false;
+
+    /// <summary>规范录制模式：非 "input" 一律回落 "uia"。</summary>
+    public static string NormalizeRecordMode(string? mode)
+        => string.Equals(mode, "input", StringComparison.OrdinalIgnoreCase) ? "input" : "uia";
 
     private static readonly JsonSerializerOptions Options = new()
     {
@@ -41,6 +47,7 @@ public sealed class AppSettings
                 if (s is not null)
                 {
                     s.ExtractMarker = NormalizeMarker(s.ExtractMarker);
+                    s.RecordMode = NormalizeRecordMode(s.RecordMode);
                     return s;
                 }
             }
@@ -53,6 +60,7 @@ public sealed class AppSettings
     public void Save(string filePath)
     {
         ExtractMarker = NormalizeMarker(ExtractMarker);
+        RecordMode = NormalizeRecordMode(RecordMode);
         File.WriteAllText(filePath, JsonSerializer.Serialize(this, Options));
     }
 }

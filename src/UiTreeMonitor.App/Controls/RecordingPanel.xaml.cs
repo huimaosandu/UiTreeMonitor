@@ -104,13 +104,7 @@ public partial class RecordingPanel : UserControl
         {
             // 停止录制
             StopInputHook();
-            if (_isAutoMode && _autoListener is not null)
-            {
-                _autoListener.Stop();
-                _autoListener.Dispose();
-                _autoListener = null;
-                _listenerPid = 0;
-            }
+            StopUiaListenerQuiet();
 
             _isRecording = false;
             BtnToggleRecord.Content = "● 开始录制";
@@ -124,37 +118,52 @@ public partial class RecordingPanel : UserControl
     }
 
     /// <summary>
-    /// 启动自动模式录制：
-    /// ① 输入动作捕获（默认开启）：InputHookCore 低级钩子捕获鼠标左键/右键点击与键盘按键
-    /// ② UIA 事件监听（设置开启才挂）：目标解析降级链——
-    ///    抓过树（目标窗口 hwnd+pid）→ 挂目标窗口子树（全事件）；
-    ///    无 hwnd 但知道目标 pid（悬停捕获）→ 全桌面+按进程过滤；
-    ///    什么都没有 → 全桌面+仅排除自己（交互类事件）；悬停后由 TryAttachAutoListener 升级
+    /// 启动自动模式录制（按设置的模式）：
+    /// ① UIA 语义模式（默认）：EventListenerCore 监听语义事件/属性变化 → 可回放记录
+    ///    （按钮 Invoke、输入文字 SetValue、选择 Select、滑块拖动 SetValue、开关/展开折叠）；
+    ///    目标解析降级链：抓过树（hwnd+pid）→ 挂目标窗口子树；仅悬停 pid → 全桌面+进程过滤；
+    ///    无目标 → 全桌面+排除自己（交互类事件）；悬停后 TryAttachAutoListener 升级
+    /// ② 输入动作模式：InputHookCore 低级钩子捕获鼠标左/右键、长按拖动与键盘按键（坐标回放）
     /// </summary>
     private void StartAutoRecording()
     {
         var opt = GetCaptureOptions?.Invoke() ?? new CaptureOptions();
-        var caps = new List<string>();
-        if (opt.MouseLeft) caps.Add("左键");
-        if (opt.MouseRight) caps.Add("右键");
-        if (opt.Keyboard) caps.Add("键盘");
-
-        // ① 输入动作捕获（钩子级，开销极小）
-        if (caps.Count > 0)
-            StartInputHook(opt);
-        else
-            AppLog.Write("RECORD", "InputHook disabled by settings");
-
-        // ② UIA 事件监听（全桌面注册是重操作，默认关闭）
-        if (opt.UiaEvents)
+        if (opt.IsUiaMode)
+        {
+            StopInputHook();
+            AppLog.Write("RECORD", $"StartAutoRecording: mode=uia (semantic events)");
             StartUiaListener();
+            TxtAutoHint.Text = "自动模式（UIA 事件）：在目标窗口中点击按钮、输入文字、选择、拖动滑块、切换开关等，" +
+                               "操作将被录制为可回放的语义步骤（不依赖窗口位置）。";
+            TxtStatus.Text = "● 自动录制中…UIA 语义事件（点击/输入/选择/拖动值）";
+        }
         else
-            AppLog.Write("RECORD", "UIA event listener disabled by settings (input hook only)");
+        {
+            StopUiaListenerQuiet();
+            var caps = new List<string>();
+            if (opt.MouseLeft) caps.Add("左键");
+            if (opt.MouseRight) caps.Add("右键");
+            if (opt.Keyboard) caps.Add("键盘");
+            AppLog.Write("RECORD", $"StartAutoRecording: mode=input (left={opt.MouseLeft}, right={opt.MouseRight}, keys={opt.Keyboard})");
+            if (caps.Count > 0)
+                StartInputHook(opt);
+            else
+                AppLog.Write("RECORD", "InputHook disabled by settings (no capture kind checked)");
 
-        var capsText = caps.Count > 0 ? string.Join("/", caps) : "无";
-        TxtAutoHint.Text = $"自动模式：正在捕获 {capsText} 输入动作{(opt.UiaEvents ? " + UIA 事件" : "")}。" +
-                           "在任意应用中的操作将被自动记录（本软件自己的窗口除外）。";
-        TxtStatus.Text = $"● 自动录制中…捕获 {capsText}{(opt.UiaEvents ? " + UIA 事件" : "")}";
+            var capsText = caps.Count > 0 ? string.Join("/", caps) : "无";
+            TxtAutoHint.Text = $"自动模式（鼠标键盘动作）：正在捕获 {capsText} 输入动作（含长按拖动）。按记录时的屏幕坐标回放。";
+            TxtStatus.Text = $"● 自动录制中…捕获 {capsText}（坐标模式）";
+        }
+    }
+
+    /// <summary>静默停掉 UIA 监听（模式切换/停止时；忽略未运行）。</summary>
+    private void StopUiaListenerQuiet()
+    {
+        if (_autoListener is null) return;
+        _autoListener.Stop();
+        _autoListener.Dispose();
+        _autoListener = null;
+        _listenerPid = 0;
     }
 
     /// <summary>启动低级输入钩子（按设置开关过滤左右键/键盘）。</summary>
@@ -322,8 +331,8 @@ public partial class RecordingPanel : UserControl
     public void TryAttachAutoListener(int hoverProcessId)
     {
         if (!_isRecording || !_isAutoMode) return;
-        // UIA 事件未开启时无需挂监听（输入钩子不依赖目标窗口）
-        if ((GetCaptureOptions?.Invoke() ?? new CaptureOptions()).UiaEvents != true) return;
+        // 仅 UIA 语义模式需要按目标挂监听（输入钩子不依赖目标窗口）
+        if ((GetCaptureOptions?.Invoke() ?? new CaptureOptions()).IsUiaMode != true) return;
         _hoverProcessId = hoverProcessId;
 
         bool needAttach = _autoListener is null
@@ -347,7 +356,8 @@ public partial class RecordingPanel : UserControl
         StartUiaListener(); // 只重挂 UIA 监听（输入钩子不依赖目标，无需重启）
     }
 
-    /// <summary>自动模式事件回调：UIA 事件 → UiaEventRecord → ActionRecord → 追加到脚本。</summary>
+    /// <summary>自动模式事件回调：UIA 事件 → UiaEventRecord → ActionRecord → 追加到脚本。
+    /// 值类连续变化（逐字符输入/拖动过程）ReplacePrevious：替换上一条同元素同 Pattern 记录，只保留最终值。</summary>
     private void OnAutoEvent(UiaEventRecord uiaEvent)
     {
         Dispatcher.Invoke(() =>
@@ -355,10 +365,30 @@ public partial class RecordingPanel : UserControl
             if (!_isRecording) return;
 
             var record = uiaEvent.ToActionRecord();
+
+            // 连续值变化合并：上一条同元素同 Pattern 同方法 → 替换（输入 "abc" 只留最终 "abc"，回放幂等）
+            if (uiaEvent.ReplacePrevious && _script.Records.Count > 0)
+            {
+                var last = _script.Records[^1];
+                if (last.PatternName == record.PatternName
+                    && last.MethodName == record.MethodName
+                    && last.ElementPath == record.ElementPath)
+                {
+                    _script.Records[^1] = record;
+                    RefreshList();
+                    TxtStatus.Text = $"● 已捕获 {_script.Records.Count} 个动作: {record.MethodName}({string.Join(", ", record.Parameters ?? Array.Empty<object?>())})";
+                    AppLog.Write("RECORD", $"OnAutoEvent merge: {uiaEvent.EventName} → {record.MethodName}({string.Join(", ", record.Parameters ?? Array.Empty<object?>())}) elem={uiaEvent.ElementName}");
+                    return;
+                }
+            }
+
             _script.Records.Add(record);
             RefreshList();
-            TxtStatus.Text = $"● 已捕获 {_script.Records.Count} 个事件: {uiaEvent.EventName} ({uiaEvent.ElementName})";
-            AppLog.Write("RECORD", $"OnAutoEvent #{_script.Records.Count}: {uiaEvent.EventName} elem={uiaEvent.ElementName} id={uiaEvent.ElementUniqueId}");
+            var detail = record.Parameters is { Length: > 0 }
+                ? $"{record.MethodName}({string.Join(", ", record.Parameters)})"
+                : record.MethodName;
+            TxtStatus.Text = $"● 已捕获 {_script.Records.Count} 个动作: {detail} ({uiaEvent.ElementName})";
+            AppLog.Write("RECORD", $"OnAutoEvent #{_script.Records.Count}: {uiaEvent.EventName} elem={uiaEvent.ElementName} id={uiaEvent.ElementUniqueId} → {record.PatternName}.{record.MethodName}");
         });
     }
 
@@ -366,13 +396,7 @@ public partial class RecordingPanel : UserControl
     {
         // 先停止输入钩子与自动监听
         StopInputHook();
-        if (_autoListener is not null)
-        {
-            _autoListener.Stop();
-            _autoListener.Dispose();
-            _autoListener = null;
-            _listenerPid = 0;
-        }
+        StopUiaListenerQuiet();
 
         _script.Records.Clear();
         _stepIndex = -1;
