@@ -361,7 +361,19 @@ public partial class RecordingPanel : UserControl
 
     private void RefreshList()
     {
-        DgRecords.ItemsSource = _script.Records.Select((r, i) => new { Id = i + 1, r }).ToList();
+        // ★ 扁平化匿名类型：将 ActionRecord 属性展开到根级别，匹配 XAML Binding 路径
+        // 旧代码：new { Id, r } → Binding="{Binding r.Timestamp}" 无法解析（WPF 不支持子属性路径对匿名类型的反射）
+        DgRecords.ItemsSource = _script.Records.Select((r, i) => new
+        {
+            Id = i + 1,
+            r.Timestamp,
+            r.ElementPath,
+            r.ElementName,
+            r.PatternName,
+            r.MethodName,
+            r.DisplayText,
+            Record = r // 保留完整引用供 SelectionChanged 使用
+        }).ToList();
     }
 
     private void DgRecords_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -369,7 +381,8 @@ public partial class RecordingPanel : UserControl
         if (DgRecords.SelectedItem is not null)
         {
             dynamic? item = DgRecords.SelectedItem;
-            if (item?.r is ActionRecord rec)
+            // ★ 适配新的扁平化数据结构（Record 属性保存完整 ActionRecord 引用）
+            if (item?.Record is ActionRecord rec)
                 TxtStatus.Text = $"[{rec.PatternName}.{rec.MethodName}] 路径={rec.ElementPath} 参数={rec.Parameters?.Length ?? 0}个";
         }
     }
