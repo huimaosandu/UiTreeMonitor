@@ -166,23 +166,36 @@ public sealed class ActionReplayer : IDisposable
         return (result.Success, result.DisplayText);
     }
 
-    /// <summary>回放一条输入动作记录（Input_Mouse：坐标+左右键 SendInput；Input_Keyboard：组合键 SendInput）。</summary>
+    /// <summary>回放一条输入动作记录（Input_Mouse：点击/拖动 SendInput；Input_Keyboard：组合键 SendInput）。</summary>
     private static ActionResult ReplayInput(ActionRecord record)
     {
         try
         {
             if (record.PatternName == InputSimulator.MousePattern)
             {
-                var coord = record.Parameters?.FirstOrDefault()?.ToString() ?? "";
-                var parts = coord.Split(',');
-                if (parts.Length == 2
-                    && int.TryParse(parts[0].Trim(), out var x)
-                    && int.TryParse(parts[1].Trim(), out var y))
+                var coords = (record.Parameters ?? Array.Empty<object?>())
+                    .Select(p => p?.ToString() ?? "").ToList();
+
+                // 拖动：两个坐标参数（起点、终点）
+                if (record.MethodName is InputSimulator.DragMethod or InputSimulator.RightDragMethod)
+                {
+                    if (coords.Count >= 2
+                        && TryParseCoord(coords[0], out var sx, out var sy)
+                        && TryParseCoord(coords[1], out var ex, out var ey))
+                    {
+                        InputSimulator.MouseDrag(sx, sy, ex, ey, record.MethodName == InputSimulator.RightDragMethod);
+                        return new ActionResult { Success = true };
+                    }
+                    return new ActionResult { Success = false, Error = $"拖动坐标无效: {string.Join(" | ", coords)}" };
+                }
+
+                // 点击：一个坐标参数
+                if (coords.Count >= 1 && TryParseCoord(coords[0], out var x, out var y))
                 {
                     InputSimulator.MouseClick(x, y, record.MethodName == InputSimulator.RightClickMethod);
                     return new ActionResult { Success = true };
                 }
-                return new ActionResult { Success = false, Error = $"鼠标坐标无效: {coord}" };
+                return new ActionResult { Success = false, Error = $"鼠标坐标无效: {string.Join(" | ", coords)}" };
             }
 
             if (InputSimulator.TryParseCombo(record.MethodName, out var vk, out var ctrl, out var shift, out var alt))
@@ -196,6 +209,16 @@ public sealed class ActionReplayer : IDisposable
         {
             return new ActionResult { Success = false, Error = ex.Message };
         }
+    }
+
+    /// <summary>"x,y" 坐标字符串解析。</summary>
+    private static bool TryParseCoord(string s, out int x, out int y)
+    {
+        x = y = 0;
+        var parts = s.Split(',');
+        return parts.Length == 2
+            && int.TryParse(parts[0].Trim(), out x)
+            && int.TryParse(parts[1].Trim(), out y);
     }
 
     public void Dispose()

@@ -233,7 +233,7 @@ public partial class RecordingPanel : UserControl
             {
                 var elem = input.Kind == InputActionKind.KeyDown
                     ? AutomationElement.FocusedElement
-                    : AutomationElement.FromPoint(new Point(input.X, input.Y));
+                    : AutomationElement.FromPoint(new Point(input.X, input.Y)); // 拖动取按下点元素
 
                 int pid = 0;
                 string elemName = "", ctrlType = "", procName = "";
@@ -278,6 +278,18 @@ public partial class RecordingPanel : UserControl
                         Success = true,
                         Result = $"{procName} {ctrlType} ({input.X},{input.Y})",
                     },
+                    InputActionKind.MouseLeftDrag or InputActionKind.MouseRightDrag => new ActionRecord
+                    {
+                        Timestamp = input.Timestamp,
+                        ElementName = elemName,
+                        PatternName = InputSimulator.MousePattern,
+                        MethodName = input.Kind == InputActionKind.MouseLeftDrag
+                            ? InputSimulator.DragMethod
+                            : InputSimulator.RightDragMethod,
+                        Parameters = new object?[] { $"{input.X},{input.Y}", $"{input.EndX},{input.EndY}" },
+                        Success = true,
+                        Result = $"{procName} {ctrlType} ({input.X},{input.Y})→({input.EndX},{input.EndY})",
+                    },
                     _ => new ActionRecord
                     {
                         Timestamp = input.Timestamp,
@@ -293,7 +305,8 @@ public partial class RecordingPanel : UserControl
                 RefreshList();
                 TxtStatus.Text = $"● 已捕获 {_script.Records.Count} 个动作: {record.MethodName}" +
                                  (elemName != "" ? $" ({elemName})" : "");
-                AppLog.Write("RECORD", $"OnInputAction #{_script.Records.Count}: {record.MethodName} elem={elemName} type={ctrlType} pid={pid} proc={procName} at=({input.X},{input.Y})");
+                AppLog.Write("RECORD", $"OnInputAction #{_script.Records.Count}: {record.MethodName} elem={elemName} type={ctrlType} pid={pid} proc={procName} at=({input.X},{input.Y})" +
+                    (record.MethodName is InputSimulator.DragMethod or InputSimulator.RightDragMethod ? $"→({input.EndX},{input.EndY})" : ""));
             }
             catch (Exception ex)
             {

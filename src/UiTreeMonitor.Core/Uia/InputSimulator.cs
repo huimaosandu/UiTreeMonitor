@@ -14,6 +14,8 @@ public static class InputSimulator
     public const string KeyboardPattern = "Input_Keyboard";
     public const string LeftClickMethod = "LeftClick";
     public const string RightClickMethod = "RightClick";
+    public const string DragMethod = "Drag";
+    public const string RightDragMethod = "RightDrag";
 
     // ==== VK ↔ 键名（录制显示与回放反查共用） ====
 
@@ -141,6 +143,26 @@ public static class InputSimulator
         Send(Mouse(INPUT_MOUSE, new INPUTUNION { mi = new MOUSEINPUT { dwFlags = down } }));
         Thread.Sleep(ClickDelayMs);
         Send(Mouse(INPUT_MOUSE, new INPUTUNION { mi = new MOUSEINPUT { dwFlags = up } }));
+    }
+
+    /// <summary>模拟鼠标拖动（移到起点 → 按下 → 直线渐移到终点 → 抬起；right=true 为右键拖）。
+    /// 渐移分多步（部分拖放目标依赖移动事件/悬停展开，瞬移会判定失败）。</summary>
+    public static void MouseDrag(int sx, int sy, int ex, int ey, bool rightButton = false)
+    {
+        SetCursorPos(sx, sy);
+        Thread.Sleep(ClickDelayMs);
+        var down = rightButton ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_LEFTDOWN;
+        var up = rightButton ? MOUSEEVENTF_RIGHTUP : MOUSEEVENTF_LEFTUP;
+        Send(Mouse(INPUT_MOUSE, new INPUTUNION { mi = new MOUSEINPUT { dwFlags = down } }));
+        Thread.Sleep(ClickDelayMs);
+        const int steps = 8;
+        for (int i = 1; i <= steps; i++)
+        {
+            SetCursorPos(sx + (ex - sx) * i / steps, sy + (ey - sy) * i / steps);
+            Thread.Sleep(ClickDelayMs / 2);
+        }
+        Send(Mouse(INPUT_MOUSE, new INPUTUNION { mi = new MOUSEINPUT { dwFlags = up } }));
+        Thread.Sleep(ClickDelayMs);
     }
 
     /// <summary>模拟键盘组合键（修饰键按下 → 主键按下/抬起 → 修饰键抬起）。</summary>

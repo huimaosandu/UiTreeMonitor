@@ -13,6 +13,8 @@ public enum InputActionKind
 {
     MouseLeftClick,
     MouseRightClick,
+    MouseLeftDrag,      // 长按拖动（按下→移动→抬起，位移超过阈值）
+    MouseRightDrag,
     KeyDown,
 }
 
@@ -20,7 +22,8 @@ public enum InputActionKind
 public sealed record InputActionRecord(
     DateTime Timestamp,
     InputActionKind Kind,
-    int X, int Y,          // 鼠标动作的屏幕物理像素坐标
+    int X, int Y,          // 鼠标动作起点（点击点 / 拖动按下点）
+    int EndX, int EndY,    // 拖动终点（仅 Drag 类有效）
     uint VkCode,           // 键盘虚拟键码（VK_*）
     bool Ctrl, bool Shift, bool Alt);
 
@@ -40,13 +43,16 @@ public sealed class InputHookCore : IDisposable
     private const int WH_MOUSE_LL = 14;
     private const int WH_KEYBOARD_LL = 13;
     private const uint WM_LBUTTONDOWN = 0x0201;
+    private const uint WM_LBUTTONUP = 0x0202;
     private const uint WM_RBUTTONDOWN = 0x0204;
+    private const uint WM_RBUTTONUP = 0x0205;
     private const uint WM_KEYDOWN = 0x0100;
     private const uint WM_SYSKEYDOWN = 0x0104;
     private const uint WM_QUIT = 0x0012;
     private const uint VK_SHIFT = 0x10, VK_CONTROL = 0x11, VK_MENU = 0x12;      // 修饰键
     private const uint VK_LWIN = 0x5B, VK_RWIN = 0x5C;                          // Win 键
     private const int RepeatSuppressMs = 300;                                   // 自动重复去重窗口
+    private const int DragThresholdPx = 5;                                      // 按下→抬起位移超过该值判定为拖动
 
     [StructLayout(LayoutKind.Sequential)]
     private struct POINT { public int X, Y; }
@@ -98,6 +104,9 @@ public sealed class InputHookCore : IDisposable
     private int _captured;                       // 诊断计数（Stop 时输出）
     private uint _lastVk;                        // 键盘自动重复去重（钩子线程单线程访问）
     private long _lastVkTick;
+    private bool _downValid;                     // 鼠标按下暂存（钩子线程单线程访问）：抬起时判定点击/拖动
+    private int _downX, _downY;
+    private bool _downRight;
 
     /// <summary>捕获开关（按设置生效；钩子常驻期间修改即时生效）。</summary>
     public bool CaptureMouseLeft { get; set; } = true;
@@ -148,18 +157,41 @@ public sealed class InputHookCore : IDisposable
         if (nCode >= 0)
         {
             var msg = (uint)wParam.ToInt64();
-            var want = (msg == WM_LBUTTONDOWN && CaptureMouseLeft)
-                    || (msg == WM_RBUTTONDOWN && CaptureMouseRight);
-            if (want)
+            var m = Marshal.PtrToStructure<MSLLHOOKSTRUCT>(lParam);
+            // 按下暂存、抬起判定：位移 ≤ 阈值 = 点击；> 阈值 = 长按拖动（起点+终点）
+            switch (msg)
             {
-                var m = Marshal.PtrToStructure<MSLLHOOKSTRUCT>(lParam);
-                Raise(new InputActionRecord(
-                    DateTime.Now,
-                    msg == WM_LBUTTONDOWN ? InputActionKind.MouseLeftClick : InputActionKind.MouseRightClick,
-                    m.pt.X, m.pt.Y, 0, false, false, false));
+                case WM_LBUTTONDOWN when CaptureMouseLeft:
+                    _downValid = true; _downRight = false; _downX = m.pt.X; _downY = m.pt.Y;
+                    break;
+                case WM_RBUTTONDOWN when CaptureMouseRight:
+                    _downValid = true; _downRight = true; _downX = m.pt.X; _downY = m.pt.Y;
+                    break;
+                case WM_LBUTTONUP when _downValid && !_downRight:
+                case WM_RBUTTONUP when _downValid && _downRight:
+                    RaiseMouseAction(m.pt.X, m.pt.Y);
+                    break;
             }
         }
         return CallNextHookEx(_mouseHook, nCode, wParam, lParam);
+    }
+
+    /// <summary>按下→抬起完成：按位移判定点击或拖动并产出记录。</summary>
+    private void RaiseMouseAction(int upX, int upY)
+    {
+        _downValid = false;
+        var dx = upX - _downX;
+        var dy = upY - _downY;
+        var isDrag = dx * dx + dy * dy >= DragThresholdPx * DragThresholdPx;
+        var kind = (_downRight, isDrag) switch
+        {
+            (false, false) => InputActionKind.MouseLeftClick,
+            (false, true) => InputActionKind.MouseLeftDrag,
+            (true, false) => InputActionKind.MouseRightClick,
+            (true, true) => InputActionKind.MouseRightDrag,
+        };
+        Raise(new InputActionRecord(
+            DateTime.Now, kind, _downX, _downY, upX, upY, 0, false, false, false));
     }
 
     private IntPtr KeyboardProc(int nCode, IntPtr wParam, IntPtr lParam)
@@ -184,7 +216,7 @@ public sealed class InputHookCore : IDisposable
                 _lastVkTick = now;
 
                 Raise(new InputActionRecord(
-                    DateTime.Now, InputActionKind.KeyDown, 0, 0, vk,
+                    DateTime.Now, InputActionKind.KeyDown, 0, 0, 0, 0, vk,
                     GetAsyncKeyState((int)VK_CONTROL) < 0,
                     GetAsyncKeyState((int)VK_SHIFT) < 0,
                     GetAsyncKeyState((int)VK_MENU) < 0));
