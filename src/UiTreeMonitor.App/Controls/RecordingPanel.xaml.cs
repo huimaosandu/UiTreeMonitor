@@ -1,10 +1,14 @@
 // RecordingPanel：操作录制与回放控制面板
-// 录制：用户通过 Actions 对话框执行的操作自动记录到当前脚本
-// 回放：按脚本顺序重放操作（通过 ElementPath 重定位元素 + PatternActionRunner 执行）
+// 
+// 双录制模式：
+//   1. 手动模式（默认）：用户通过 Actions 对话框执行的操作自动记录到当前脚本
+//   2. 自动模式：基于 Axe.Windows.ListenAction 监听目标窗口 UIA 事件（点击/输入/焦点变化等）自动捕获
+//
+// 回放：按脚本顺序重放操作（通过 ElementPath 在当前 UIA 树中重定位元素后调用 PatternActionRunner）
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
-using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using Microsoft.Win32;
@@ -19,15 +23,20 @@ public partial class RecordingPanel : UserControl
 {
     private ActionScript _script = new();
     private bool _isRecording;
-    private int _stepIndex = -1; // 单步回放位置
+    private bool _isAutoMode;           // true=自动(UIA事件监听), false=手动(Actions执行)
+    private int _stepIndex = -1;
+    private EventListenerCore? _autoListener; // 自动模式的事件监听器
 
     /// <summary>录制状态变化通知。</summary>
     public event Action<bool>? RecordingStateChanged;
 
-    /// <summary>请求解析元素的回调（MainWindow 注入：ElementPath → A11yElement）。</summary>
+    /// <summary>请求解析元素的回调（MainWindow 注入：ElementPath → 实时 A11yElement）。</summary>
     public Func<string, A11yElement?>? ResolveElement { get; set; }
 
-    /// <summary>获取当前录制中的目标窗口信息（用于回放时抓树定位元素）。</summary>
+    /// <summary>获取当前目标元素的 UniqueId（自动模式需要，MainWindow 注入）。</summary>
+    public Func<int?>? GetTargetElementUniqueId { get; set; }
+
+    /// <summary>获取当前目标窗口信息（回放时抓树定位元素用）。</summary>
     public Func<object>? GetCurrentTarget { get; set; }
 
     public RecordingPanel()
@@ -36,47 +45,157 @@ public partial class RecordingPanel : UserControl
         RefreshUI();
     }
 
-    /// <summary>追加一条录制记录（由 PatternActionDialog 执行后调用）。</summary>
+    /// <summary>追加一条录制记录（手动模式：由 PatternActionDialog 执行后调用）。</summary>
     public void RecordAction(ActionRecord record)
     {
-        if (!_isRecording) return;
+        if (!_isRecording || _isAutoMode) return; // 自动模式不使用此入口
         _script.Records.Add(record);
         RefreshList();
-        TxtStatus.Text = $"已录制 {_script.Records.Count} 条操作";
+        TxtStatus.Text = $"已录制 {_script.Records.Count} 条操作（手动模式）";
     }
 
     // ==== 录制控制 ====
 
     private void BtnToggleRecord_Click(object sender, RoutedEventArgs e)
     {
-        _isRecording = !_isRecording;
-        if (_isRecording)
+        _isAutoMode = ((RadioButton)RbModeAuto).IsChecked == true;
+
+        if (!_isRecording)
         {
-            // 开始新录制
+            // 开始录制
             _script = new ActionScript { CreatedAt = DateTime.Now };
             _stepIndex = -1;
+
+            if (_isAutoMode)
+            {
+                StartAutoRecording();
+            }
+            else
+            {
+                _isRecording = true;
+                TxtStatus.Text = "● 手动录制中…执行 Actions 将自动记录";
+            }
+
             BtnToggleRecord.Content = "■ 停止录制";
             BtnToggleRecord.Foreground = System.Windows.Media.Brushes.Red;
-            TxtStatus.Text = "● 录制中…执行 Actions 将自动记录";
-            RefreshList();
         }
         else
         {
+            // 停止录制
+            if (_isAutoMode && _autoListener is not null)
+            {
+                _autoListener.Stop();
+                _autoListener.Dispose();
+                _autoListener = null;
+            }
+
+            _isRecording = false;
             BtnToggleRecord.Content = "● 开始录制";
             BtnToggleRecord.Foreground = System.Windows.Media.Brushes.Black;
-            TxtStatus.Text = $"录制停止，共 {_script.Records.Count} 条操作";
+            TxtStatus.Text = $"录制停止，共 {_script.Records.Count} 条操作" +
+                             (_isAutoMode ? "（自动模式）" : "（手动模式）");
         }
+
         RefreshUI();
         RecordingStateChanged?.Invoke(_isRecording);
     }
 
+    /// <summary>启动自动模式 UIA 事件监听。</summary>
+    private void StartAutoRecording()
+    {
+        var uniqueId = GetTargetElementUniqueId?.Invoke();
+        if (uniqueId is null or <= 0)
+        {
+            TxtStatus.Text = "⚠ 自动模式需要目标元素 UniqueId（请先在左侧结构树选中节点或悬停捕获）";
+            return;
+        }
+
+        try
+        {
+            _isRecording = true;
+            _autoListener = new EventListenerCore(uniqueId.Value,
+                EventListenScope.Descendants, OnAutoEvent);
+
+            // 使用默认事件列表（覆盖常见操作）
+            _autoListener.Start();
+
+            TxtAutoHint.Visibility = Visibility.Visible;
+            TxtStatus.Text = "● 自动录制中…正在监听目标窗口的 UIA 事件";
+        }
+        catch (Exception ex)
+        {
+            _isRecording = false;
+            _autoListener?.Dispose();
+            _autoListener = null;
+            TxtStatus.Text = $"✗ 自动录制启动失败: {ex.Message}";
+        }
+    }
+
+    /// <summary>自动模式事件回调：UIA 事件 → UiaEventRecord → ActionRecord → 追加到脚本。</summary>
+    private void OnAutoEvent(UiaEventRecord uiaEvent)
+    {
+        Dispatcher.Invoke(() =>
+        {
+            if (!_isRecording) return;
+
+            var record = uiaEvent.ToActionRecord();
+            _script.Records.Add(record);
+            RefreshList();
+            TxtStatus.Text = $"● 已捕获 {_script.Records.Count} 个事件: {uiaEvent.EventName} ({uiaEvent.ElementName})";
+        });
+    }
+
     private void BtnClearRecord_Click(object sender, RoutedEventArgs e)
     {
+        // 先停止自动监听
+        if (_autoListener is not null)
+        {
+            _autoListener.Stop();
+            _autoListener.Dispose();
+            _autoListener = null;
+        }
+
         _script.Records.Clear();
         _stepIndex = -1;
+        _isRecording = false;
+        TxtAutoHint.Visibility = Visibility.Collapsed;
         RefreshList();
         TxtStatus.Text = "已清空";
+        BtnToggleRecord.Content = "● 开始录制";
+        BtnToggleRecord.Foreground = System.Windows.Media.Brushes.Black;
         RefreshUI();
+    }
+
+    // ==== 模式切换 ====
+
+    private void RbModeManual_Checked(object sender, RoutedEventArgs e)
+    {
+        _isAutoMode = false;
+        TxtAutoHint.Visibility = Visibility.Collapsed;
+        if (_isRecording && _autoListener is not null)
+        {
+            // 切换到手动模式：停止自动监听，保持录制状态
+            _autoListener.Stop();
+            _autoListener.Dispose();
+            _autoListener = null;
+            TxtStatus.Text = "● 录制中（已切换为手动模式）";
+        }
+    }
+
+    private void RbModeAuto_Checked(object sender, RoutedEventArgs e)
+    {
+        _isAutoMode = true;
+        if (_isRecording)
+        {
+            // 切换到自动模式：启动事件监听
+            if (_autoListener is not null) _autoListener.Stop();
+            _autoListener?.Dispose();
+            StartAutoRecording();
+        }
+        else
+        {
+            TxtAutoHint.Visibility = Visibility.Visible;
+        }
     }
 
     // ==== 回放控制 ====
@@ -111,7 +230,6 @@ public partial class RecordingPanel : UserControl
                         });
                 }));
 
-            // 更新结果列
             for (int i = 0; i < Math.Min(results.Count, _script.Records.Count); i++)
             {
                 _script.Records[i] = _script.Records[i] with
@@ -150,8 +268,9 @@ public partial class RecordingPanel : UserControl
         try
         {
             using var replayer = new ActionReplayer();
-            var (ok, result) = replayer.ExecuteOne(record, ResolveElement(record.ElementPath)
-                ?? throw new Exception($"元素路径 [{record.ElementPath}] 未找到"));
+            var targetElem = ResolveElement(record.ElementPath)
+                ?? throw new Exception($"元素路径 [{record.ElementPath}] 未找到");
+            var (ok, result) = replayer.ExecuteOne(record, targetElem);
 
             _script.Records[_stepIndex] = record with { Success = ok, Result = result };
             RefreshList();
@@ -232,12 +351,11 @@ public partial class RecordingPanel : UserControl
 
     private void DgRecords_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        // 选中行时显示详情
         if (DgRecords.SelectedItem is not null)
         {
             dynamic? item = DgRecords.SelectedItem;
             if (item?.r is ActionRecord rec)
-                TxtStatus.Text = $"[{rec.PatternName}.{rec.MethodName}()] 路径={rec.ElementPath} 参数={rec.Parameters?.Length ?? 0}个";
+                TxtStatus.Text = $"[{rec.PatternName}.{rec.MethodName}] 路径={rec.ElementPath} 参数={rec.Parameters?.Length ?? 0}个";
         }
     }
 }

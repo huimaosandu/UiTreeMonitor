@@ -189,8 +189,14 @@ public partial class MainWindow : Window
 
         // 录制回放面板：注入元素解析回调（ElementPath → 实时 A11yElement，需 STA 线程抓树）
         RecordingPanel.ResolveElement = ResolveElementForPlayback;
+        RecordingPanel.GetTargetElementUniqueId = () =>
+            _detailsA11yElement is not null ? (int?)_detailsA11yElement.UniqueId : null;
         RecordingPanel.RecordingStateChanged += (recording) =>
-            TxtStatus.Text = recording ? "● 操作录制中…执行 Actions 将自动记录" : "录制已停止";
+        {
+            var isAuto = ((System.Windows.Controls.RadioButton)RecordingPanel.RbModeAuto).IsChecked == true;
+            var modeText = isAuto ? "(自动模式)" : "(手动模式)";
+            TxtStatus.Text = recording ? $"● 操作录制…{modeText}" : "录制已停止";
+        };
 
         RefreshWindows();
         LoadSavedTasks();
