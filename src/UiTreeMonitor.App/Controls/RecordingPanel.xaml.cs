@@ -37,6 +37,9 @@ public partial class RecordingPanel : UserControl
     /// <summary>获取当前目标元素的 UniqueId（自动模式需要，MainWindow 注入）。</summary>
     public Func<int?>? GetTargetElementUniqueId { get; set; }
 
+    /// <summary>获取当前目标 A11yElement 引用（自动模式+手动录制都需要，MainWindow 注入）。</summary>
+    public Func<Axe.Windows.Core.Bases.A11yElement?>? GetCurrentA11yElement { get; set; }
+
     /// <summary>获取当前目标窗口信息（回放时抓树定位元素用）。</summary>
     public Func<object>? GetCurrentTarget { get; set; }
 
@@ -105,19 +108,24 @@ public partial class RecordingPanel : UserControl
     private void StartAutoRecording()
     {
         var uniqueId = GetTargetElementUniqueId?.Invoke();
-        AppLog.Write("RECORD", $"StartAutoRecording: uniqueId={uniqueId}, _detailsA11yElement={(uniqueId.HasValue ? "available" : "NULL")}");
+        // ★ 使用回调获取元素引用（MainWindow 注入），不再直接访问 MainWindow 私有字段
+        var hasElement = GetCurrentA11yElement?.Invoke() is not null;
+        AppLog.Write("RECORD", $"StartAutoRecording: uniqueId={uniqueId}, hasDetails={hasElement}");
 
-        if (uniqueId is null or <= 0)
+        // ★ 允许 UniqueId=0（某些 UIA 元素的 UniqueId 为 0，但元素引用有效）
+        // targetElementId 仅用于日志，EventListenerCore 内部用 Guid 标识监听器实例
+        if (!hasElement)
         {
             TxtStatus.Text = "⚠ 自动模式需要目标元素（请先悬停捕获或选中结构树节点获取元素引用）";
-            AppLog.Write("RECORD", "StartAutoRecording → ABORTED: no target element UniqueId");
+            AppLog.Write("RECORD", "StartAutoRecording → ABORTED: no target element at all");
             return;
         }
 
         try
         {
             _isRecording = true;
-            _autoListener = new EventListenerCore(uniqueId.Value,
+            // 传 0 作为占位（仅日志用途），实际监听范围由 ListenAction 的 scope 参数决定
+            _autoListener = new EventListenerCore(uniqueId ?? 0,
                 EventListenScope.Descendants, OnAutoEvent);
 
             // 使用默认事件列表（覆盖常见操作）

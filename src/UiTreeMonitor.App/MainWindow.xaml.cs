@@ -192,6 +192,8 @@ public partial class MainWindow : Window
         RecordingPanel.ResolveElement = ResolveElementForPlayback;
         RecordingPanel.GetTargetElementUniqueId = () =>
             _detailsA11yElement is not null ? (int?)_detailsA11yElement.UniqueId : null;
+        // ★ 注入当前元素引用回调（RecordingPanel 用它判断是否有目标元素，不再直接访问 MainWindow 私有字段）
+        RecordingPanel.GetCurrentA11yElement = () => _detailsA11yElement;
         RecordingPanel.RecordingStateChanged += (recording) =>
         {
             var isAuto = ((System.Windows.Controls.RadioButton)RecordingPanel.RbModeAuto).IsChecked == true;
@@ -404,7 +406,7 @@ public partial class MainWindow : Window
         _detailsLocked = false;
         _mouseCapture.ResultProduced += OnCaptureResult;
         _mouseCapture.Start();
-        Log("静默捕获已启动（录制模式：鼠标跟踪高亮，无捕获框）");
+        Log($"静默捕获已启动（录制模式：鼠标跟踪高亮，无捕获框） target={_currentTarget?.ProcessName} treeLoaded={_currentTree is not null}");
     }
 
     /// <summary>停止静默捕获。</summary>
@@ -457,6 +459,9 @@ public partial class MainWindow : Window
     private void OnCaptureResult(MouseCaptureResult result)
     {
         _captureQueue.Enqueue(result);
+        // 诊断：确认鼠标事件是否到达（每秒约 8 次=120ms 间隔）
+        if (_silentCapturing)
+            Log($"[CAPTURE] result: pid={result.ProcessId} name={result.Name} type={result.ControlType} valid={result.IsValid}");
     }
 
     private void DrainCaptureQueue()
@@ -465,6 +470,10 @@ public partial class MainWindow : Window
 
         while (_captureQueue.TryDequeue(out var result))
         {
+            // 诊断：静默模式下确认结果处理
+            if (_silentCapturing && result.IsValid)
+                Log($"[DRAIN] processing: pid={result.ProcessId} name={result.Name} ecId={result.ElementContextId}");
+
             // 原版高亮链路：HollowHighlightDriver.SetElement(A11yElement)
             // 内部完成 SetLocation(蓝框) + SetText(Glimpse + Focusable/NotFocusable) + 显隐控制
             // 静默捕获模式（录制中）：跳过视觉高亮，只做树定位+Details刷新
@@ -852,15 +861,18 @@ public partial class MainWindow : Window
         // ★ 录制中：执行完成后自动追加到录制脚本
         if (RecordingPanel != null)
         {
+            // 从 PatternItem.Tag 获取方法名（PatternAction_Click 设置的 btn.Tag=patIdx，但需要实际方法名）
+            // 通过 patIdx 在 pattern 的 Methods 中查找——更可靠的方式是在闭包中捕获
             dlg.ActionExecuted += (result) =>
             {
-                // 计算当前元素的 ElementPath（从最新树快照中查找）
+                // 计算当前元素的 ElementPath（无条件尝试：UniqueId>0 用 UniqueId 查找，否则用矩形/属性兜底）
                 string elemPath = "";
                 string elemName = _detailsA11yElement.Name ?? "";
-                if (_currentTree is not null && _detailsA11yElement.UniqueId > 0)
+
+                // ★ 无条件计算 ElementPath（不再要求 UniqueId > 0）
+                if (_currentTree is not null)
                 {
-                    // 通过 UniqueId 在树中找节点（需遍历——快照无 UniqueId 字段，
-                    // 改用矩形/属性匹配近似定位后取路径）
+                    // 优先用矩形匹配（最稳定），其次用属性匹配
                     var rectStr = _detailsElemBoundingRect;
                     if (!string.IsNullOrEmpty(rectStr))
                     {
@@ -868,7 +880,23 @@ public partial class MainWindow : Window
                         if (byRect is not null)
                             elemPath = ElementMatcher.BuildPath(_currentTree, byRect.Id) ?? "";
                     }
+                    // 矩形未命中时：尝试用 Name+ControlType 属性精确匹配
+                    if (string.IsNullOrEmpty(elemPath) && !string.IsNullOrEmpty(elemName))
+                    {
+                        var exact = ElementMatcher.FindExact(
+                            _currentTree.Order.Select(id => _currentTree.Nodes[id]),
+                            elemName, _detailsElemAutomationId, _detailsElemControlType);
+                        if (exact is not null)
+                            elemPath = ElementMatcher.BuildPath(_currentTree, exact.Id) ?? "";
+                    }
                 }
+
+                // ★ 获取实际方法名（从对话框当前选中 Tab 的 PatternActionView）
+                string methodName = "Unknown";
+                if (dlg.TcActions.SelectedItem is TabItem ti && ti.Content is PatternActionView pav)
+                    methodName = pav.MethodName;
+
+                UiTreeMonitor.Core.AppLog.Write("RECORD", $"RecordAction: {methodName}() on [{elemName}] path={elemPath} success={result.Success}");
 
                 RecordingPanel.RecordAction(new UiTreeMonitor.Core.Models.ActionRecord
                 {
@@ -876,8 +904,8 @@ public partial class MainWindow : Window
                     ElementPath = elemPath,
                     ElementName = elemName,
                     PatternName = pattern.Name,
-                    MethodName = result.ReturnValue?.ToString() ?? "",
-                    Parameters = null, // TODO: 从 PatternActionView 获取实际参数
+                    MethodName = methodName,    // ★ 实际方法名（非 ReturnValue）
+                    Parameters = null,         // TODO: 从 PatternActionView 获取实际参数值
                     Success = result.Success,
                     Result = result.Error ?? result.ReturnValue?.ToString()
                 });
