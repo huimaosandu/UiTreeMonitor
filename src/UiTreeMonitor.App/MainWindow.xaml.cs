@@ -406,7 +406,7 @@ public partial class MainWindow : Window
         _detailsLocked = false;
         _mouseCapture.ResultProduced += OnCaptureResult;
         _mouseCapture.Start();
-        Log($"静默捕获已启动（录制模式：鼠标跟踪高亮，无捕获框） target={_currentTarget?.ProcessName} treeLoaded={_currentTree is not null}");
+        Log($"静默捕获已启动（录制模式：鼠标跟踪高亮，无捕获框） target={_currentTarget?.ProcessName} treeLoaded={_currentTree is not null} nodeCount={_currentTree?.NodeCount}");
     }
 
     /// <summary>停止静默捕获。</summary>
@@ -523,7 +523,13 @@ public partial class MainWindow : Window
     /// <summary>悬停/烧杯路径共用：在当前树中定位捕获元素并展开+高亮（矩形优先，属性兜底）。</summary>
     private void TryHighlightCaptureResult(MouseCaptureResult result)
     {
-        if (_currentTree is null) return;
+        if (_currentTree is null)
+        {
+            // ★ 诊断：树未加载时记录（自动录制模式下常见——用户可能没先抓树）
+            if (_silentCapturing)
+                Log($"[HIGHLIGHT] SKIPPED: tree not loaded (silent capture, name={result.Name} type={result.ControlType})");
+            return;
+        }
         int? nodeId = MouseCapture.LocateInTree(_currentTree, result);
         ClearHighlight();
         if (nodeId is int id && _nodeLookup.TryGetValue(id, out var vm))
