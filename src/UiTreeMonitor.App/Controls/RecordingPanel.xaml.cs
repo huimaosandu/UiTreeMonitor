@@ -135,7 +135,8 @@ public partial class RecordingPanel : UserControl
             StartUiaListener();
             TxtAutoHint.Text = "自动模式（UIA 事件）：在目标窗口中点击按钮、输入文字、选择、拖动滑块、切换开关等，" +
                                "操作将被录制为可回放的语义步骤（不依赖窗口位置）。";
-            TxtStatus.Text = "● 自动录制中…UIA 语义事件（点击/输入/选择/拖动值）";
+            // 监听注册异步完成（全桌面 ~5s / 目标窗口 <1s），就绪回调 OnListenerStarted 会再次更新文案
+            TxtStatus.Text = "● UIA 监听启动中…（提示就绪后再操作；先在目标窗口悬停片刻可加速锁定）";
         }
         else
         {
@@ -200,22 +201,22 @@ public partial class RecordingPanel : UserControl
         var listenMode = hwnd != IntPtr.Zero
             ? $"window-subtree (hwnd={hwnd}, pid={pid}, proc={target?.ProcessName})"
             : pid != 0
-                ? $"desktop + pid-filter (pid={pid})"
-                : "desktop + exclude-self (free mode, interactive events only)";
+                ? $"pid-target (pid={pid} → attach process window subtree, desktop fallback)"
+                : "desktop + exclude-self (free mode; hover target window to upgrade fast path)";
         AppLog.Write("RECORD", $"StartUiaListener: uniqueId={uniqueId}, listen={listenMode}");
 
         try
         {
-            // 自由模式只监听交互类事件（无 Text/Structure 高频噪声）；有目标时监听全事件
-            var eventIds = hwnd != IntPtr.Zero || pid != 0
-                ? EventListenerCore.DefaultEventIds
-                : EventListenerCore.InteractiveEventIds;
+            // ★ 语义模式统一只注册可回放事件（4 事件+属性变化=5 次调用；曾注册 11~14 次全桌面事件，
+            //   注册期 9~14.5s 内用户操作全部漏录 seen=0。Menu/ToolTip/Window/Text/Structure 无回放价值已砍）
+            var eventIds = EventListenerCore.SemanticEventIds;
             _autoListener = new EventListenerCore(uniqueId ?? 0,
                 EventListenScope.Descendants, OnAutoEvent,
-                hwnd, pid);
+                hwnd, pid, OnListenerStarted);
             _autoListener.Start(eventIds);
             _listenerPid = pid;
-            // 注册在 UIA 管道线程异步执行（全桌面注册 ~2s，不卡 UI）；完成结果看日志 "Start → OK"
+            // 注册在 UIA 管道线程异步执行（free mode 全桌面 ~5s / 目标窗口子树 <1s）；
+            // 完成后 OnListenerStarted 回调更新状态文案（此时才真正开始捕获）
             AppLog.Write("RECORD", $"StartUiaListener → listener starting (async): {listenMode}, element {uniqueId}");
         }
         catch (Exception ex)
@@ -227,6 +228,19 @@ public partial class RecordingPanel : UserControl
             TxtStatus.Text = "● 自动录制中…UIA 事件监听启动失败（输入捕获仍正常）";
             AppLog.Write("RECORD", $"StartUiaListener → FAILED (input capture continues): {ex.GetType().Name}: {ex.Message}");
         }
+    }
+
+    /// <summary>监听注册完成回调（管道线程 → UI 线程）：明确告知用户何时可以开始操作（注册期操作会漏录）。</summary>
+    private void OnListenerStarted(bool ok)
+    {
+        Dispatcher.BeginInvoke(() =>
+        {
+            if (!_isRecording) return;
+            TxtStatus.Text = ok
+                ? "● UIA 监听就绪：在目标窗口中点击/输入/拖动即可录制"
+                : "● UIA 事件监听启动失败（详见日志）";
+            AppLog.Write("RECORD", $"ListenerStarted → {(ok ? "ready" : "failed")} (pid={_listenerPid})");
+        });
     }
 
     /// <summary>
@@ -333,6 +347,8 @@ public partial class RecordingPanel : UserControl
         if (!_isRecording || !_isAutoMode) return;
         // 仅 UIA 语义模式需要按目标挂监听（输入钩子不依赖目标窗口）
         if ((GetCaptureOptions?.Invoke() ?? new CaptureOptions()).IsUiaMode != true) return;
+        // 悬停自己 UI（如点停止按钮）不升级：挂到自己窗口子树后所有事件都会被"排除自己"过滤，录不到任何东西
+        if (hoverProcessId == Environment.ProcessId) return;
         _hoverProcessId = hoverProcessId;
 
         bool needAttach = _autoListener is null
