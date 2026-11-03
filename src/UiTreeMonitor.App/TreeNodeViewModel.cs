@@ -7,6 +7,7 @@ using Axe.Windows.Core.Bases;
 using Axe.Windows.Desktop.UIAutomation;
 using UiTreeMonitor.Core.Models;
 using UiTreeMonitor.Core.Sampler;
+using UiTreeMonitor.Core.Uia;
 
 namespace UiTreeMonitor.App;
 
@@ -24,6 +25,12 @@ public sealed class PatternItem
     public string Name { get; init; } = "";
     public string Value { get; init; } = "";
     public IReadOnlyList<PropertyItem> SubProperties { get; init; } = Array.Empty<PropertyItem>();
+
+    /// <summary>该 Pattern 是否有可执行的 Actions（仅 FromA11yElement 场景可检测）。</summary>
+    public bool HasActions { get; init; }
+
+    /// <summary>该 Pattern 在 el.Patterns 列表中的索引（用于 Actions 执行时定位）。</summary>
+    public int PatternIndex { get; init; }
 }
 
 /// <summary>结构树节点 VM（用于 TreeView 显示 + 高亮 + Details 面板）。
@@ -103,7 +110,8 @@ public sealed class TreeNodeViewModel : INotifyPropertyChanged
             var subProps = pd.SubProps.Select(sp =>
                 new PropertyItem { Name = sp.Name, Value = sp.Value.Length > 120 ? sp.Value.Substring(0, 117) + "..." : sp.Value, FullValue = sp.Value }
             ).ToList();
-            list.Add(new PatternItem { Name = pd.Name, Value = pd.DisplayValue, SubProperties = subProps });
+            list.Add(new PatternItem { Name = pd.Name, Value = pd.DisplayValue, SubProperties = subProps,
+                HasActions = false, PatternIndex = list.Count }); // 快照无 A11yPattern 引用，不支持 Actions
         }
 
         return list;
@@ -160,8 +168,11 @@ public sealed class TreeNodeViewModel : INotifyPropertyChanged
         try
         {
             if (el.Patterns is not null)
+            {
+                int patIdx = 0;
                 foreach (var p in el.Patterns)
                 {
+                    var hasActions = PatternActionRunner.HasActions(p);
                     if (p.Properties is not null && p.Properties.Count > 0)
                     {
                         // 有属性值：显示每个子属性
@@ -174,15 +185,18 @@ public sealed class TreeNodeViewModel : INotifyPropertyChanged
                         }
                         // 用第一个属性的值作为 Pattern 的主显示值
                         var mainVal = p.Properties[0].NodeValue ?? "(null)";
-                        pats.Add(new PatternItem { Name = p.Name, Value = mainVal, SubProperties = subProps });
-                        hasValue.Add(p.Name);
+                        pats.Add(new PatternItem { Name = p.Name, Value = mainVal, SubProperties = subProps,
+                            HasActions = hasActions, PatternIndex = patIdx });
                     }
                     else
                     {
-                        pats.Add(new PatternItem { Name = p.Name, Value = "(supported, no current value)" });
-                        hasValue.Add(p.Name);
+                        pats.Add(new PatternItem { Name = p.Name, Value = "(supported, no current value)",
+                            HasActions = hasActions, PatternIndex = patIdx });
                     }
+                    patIdx++;
+                    hasValue.Add(p.Name);
                 }
+            }
         }
         catch { /* Patterns 读取异常 */ }
 

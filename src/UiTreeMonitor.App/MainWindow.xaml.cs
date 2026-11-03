@@ -25,8 +25,19 @@ using UiTreeMonitor.Export;
 using UiTreeMonitor.Persistence;
 using UiTreeMonitor.Scheduler;
 using TaskScheduler = UiTreeMonitor.Scheduler.TaskScheduler;
+using UiTreeMonitor.App.Controls;
 
 namespace UiTreeMonitor.App;
+
+/// <summary>bool → Visibility 转换器（XAML 绑定用）</summary>
+public sealed class BoolToVisibilityConverter : System.Windows.Data.IValueConverter
+{
+    public static readonly BoolToVisibilityConverter Default = new();
+    public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        => value is true ? Visibility.Visible : Visibility.Collapsed;
+    public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+        => value is Visibility.Visible;
+}
 
 /// <summary>任务列表项 VM。</summary>
 public sealed class TaskListItem : INotifyPropertyChanged
@@ -142,6 +153,9 @@ public partial class MainWindow : Window
     // 悬停元素的屏幕矩形（"L,T,R,B"，UIA 物理像素）：创建任务时优先按矩形在树中定位算 ElementPath
     // （矩形稳定唯一——Name 是实时变化值、AutomationId 常缺失/重复，属性匹配算不出路径导致任务失捕）
     private string? _detailsElemBoundingRect;
+
+    // Details 面板当前元素的原始 A11yElement（Actions 执行用：需实时 Pattern 引用，快照无此能力）
+    private Axe.Windows.Core.Bases.A11yElement? _detailsA11yElement;
 
     private static readonly string AppDataDir =
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".ui-tree-monitor");
@@ -425,6 +439,7 @@ public partial class MainWindow : Window
             // ★ Details 跟随鼠标捕获刷新（未锁定时）
             if (!_detailsLocked)
             {
+                _detailsA11yElement = el; // 缓存原始元素（Actions 执行需实时 Pattern 引用）
                 var (props, pats) = TreeNodeViewModel.FromA11yElement(el, result.ProcessName);
                 TxtDetailsTitle.Text = $"[{result.ControlType}] {result.Name ?? ""}";
                 PropertiesGrid.ItemsSource = props;
@@ -526,6 +541,7 @@ public partial class MainWindow : Window
     private void TreeView_SelectedItemChanged(object sender, RoutedPropertyChangedEventArgs<object> e)
     {
         _detailsLocked = false; // 用户手动选中树节点 → 解锁 Details
+        _detailsA11yElement = null; // 树选中来自快照，无原始 A11yElement → Actions 不可用
         if (e.NewValue is TreeNodeViewModel vm)
         {
             _selectedNode = vm;
@@ -769,6 +785,29 @@ public partial class MainWindow : Window
             PropertiesGrid.SelectedItem = row.Item;
             _rightClickedItem = row.Item;
         }
+    }
+
+    /// <summary>Patterns 区域 "Actions..." 按钮点击：打开 Action 执行对话框。</summary>
+    private void PatternAction_Click(object sender, RoutedEventArgs e)
+    {
+        if (_detailsA11yElement is null)
+        {
+            TxtStatus.Text = "Actions 执行需要原始元素引用（仅鼠标悬停/烧杯捕获场景可用，树选中快照不支持）";
+            return;
+        }
+        if (sender is not Button btn || btn.Tag is not int patIdx) return;
+
+        // 从缓存的 A11yElement 取对应 Pattern（A11yElement 已在悬停/烧杯时填充 Patterns 数据）
+        if (_detailsA11yElement.Patterns is null || patIdx < 0 || patIdx >= _detailsA11yElement.Patterns.Count)
+        {
+            TxtStatus.Text = "Pattern 信息不可用（元素可能已销毁）";
+            return;
+        }
+        var pattern = _detailsA11yElement.Patterns[patIdx];
+
+        // 打开 Actions 对话框
+        var dlg = new Controls.PatternActionDialog(_detailsA11yElement, pattern) { Owner = this };
+        dlg.ShowDialog();
     }
 
     private void PatternsTree_MouseRightButtonUp(object sender, MouseButtonEventArgs e)

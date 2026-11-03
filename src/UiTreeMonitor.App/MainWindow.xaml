@@ -124,6 +124,11 @@
                                             <StackPanel Orientation="Horizontal">
                                                 <TextBlock Text="{Binding Name}" FontWeight="Bold" Margin="0,0,6,0"/>
                                                 <TextBlock Text="{Binding Value}" Foreground="#0066CC"/>
+                                                <Button Content="Actions..." Visibility="{Binding HasActions, Converter={x:Static local:BoolToVisibilityConverter.Default}}"
+                                                        Click="PatternAction_Click" Margin="8,0,0,0"
+                                                        Padding="4,2" FontSize="11" FontWeight="Normal"
+                                                        ToolTip="执行此 Pattern 的 UIA 操作方法"
+                                                        Tag="{Binding PatternIndex}"/>
                                             </StackPanel>
                                         </HierarchicalDataTemplate>
                                     </TreeView.ItemTemplate>
