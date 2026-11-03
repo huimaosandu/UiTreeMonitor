@@ -70,13 +70,16 @@ public partial class RecordingPanel : UserControl
             _script = new ActionScript { CreatedAt = DateTime.Now };
             _stepIndex = -1;
 
+            // ★ 先统一设置 _isRecording=true（确保 RecordingStateChanged 传递 true → 启动静默捕获）
+            // 无论手动/自动模式，静默捕获（鼠标跟踪+树高亮）都是必需的
+            _isRecording = true;
+
             if (_isAutoMode)
             {
                 StartAutoRecording();
             }
             else
             {
-                _isRecording = true;
                 TxtStatus.Text = "● 手动录制中…执行 Actions 将自动记录";
             }
 
@@ -114,16 +117,19 @@ public partial class RecordingPanel : UserControl
 
         // ★ 允许 UniqueId=0（某些 UIA 元素的 UniqueId 为 0，但元素引用有效）
         // targetElementId 仅用于日志，EventListenerCore 内部用 Guid 标识监听器实例
+        // 注意：即使 !hasElement 也不 return——静默捕获（鼠标跟踪+树高亮）仍然有效，
+        //       只是 UIA 事件监听无法启动（用户可通过悬停获取元素后再切换到自动模式）
         if (!hasElement)
         {
-            TxtStatus.Text = "⚠ 自动模式需要目标元素（请先悬停捕获或选中结构树节点获取元素引用）";
-            AppLog.Write("RECORD", "StartAutoRecording → ABORTED: no target element at all");
-            return;
+            AppLog.Write("RECORD", "StartAutoRecording → SKIP: no target element (silent capture still active)");
+            TxtAutoHint.Visibility = Visibility.Visible;
+            TxtStatus.Text = "● 自动录制中…悬停目标窗口获取元素后 UIA 事件监听将自动生效";
+            return;  // ← 不再影响 _isRecording（已由调用方设置）
         }
 
         try
         {
-            _isRecording = true;
+            // _isRecording 已在 BtnToggleRecord_Click 中设置，此处不再重复
             // 传 0 作为占位（仅日志用途），实际监听范围由 ListenAction 的 scope 参数决定
             _autoListener = new EventListenerCore(uniqueId ?? 0,
                 EventListenScope.Descendants, OnAutoEvent);
@@ -137,11 +143,11 @@ public partial class RecordingPanel : UserControl
         }
         catch (Exception ex)
         {
-            _isRecording = false;
+            // UIA 监听失败不影响录制状态（静默捕获仍工作），只记录日志
             _autoListener?.Dispose();
             _autoListener = null;
-            TxtStatus.Text = $"✗ 自动录制启动失败: {ex.Message}";
-            AppLog.Write("RECORD", $"StartAutoRecording → FAILED: {ex.GetType().Name}: {ex.Message}");
+            TxtStatus.Text = "● 自动录制中…UIA 事件监听启动失败（鼠标捕获仍正常）";
+            AppLog.Write("RECORD", $"StartAutoRecording → UIA listener failed (recording continues): {ex.GetType().Name}: {ex.Message}");
         }
     }
 
