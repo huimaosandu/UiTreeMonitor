@@ -942,24 +942,19 @@ public partial class MainWindow : Window
     /// <summary>回放时的元素解析器：通过 ElementPath 在当前目标窗口 UIA 树中找到实时 A11yElement。</summary>
     private Axe.Windows.Core.Bases.A11yElement? ResolveElementForPlayback(string elementPath)
     {
-        // ★ 策略1：如果当前 Details 面板有活跃的 A11yElement，尝试验证它是否仍然有效
+        // ★ 关键修复：_detailsA11yElement 的 Patterns[] 包含过期的 COM 引用
+        //   即使 .Name 可访问（元素基础 COM 对象存活），pattern.Invoke() 仍会抛 0x80040201
+        //   解决方案：总是从 UIA 树获取全新元素引用，确保 Patterns 也是新鲜的
+        string? targetName = null;
+
+        // 策略1：从缓存元素获取目标名称（用于在树中查找同名新鲜元素）
         if (_detailsA11yElement is not null)
         {
-            // 检查元素是否仍有效（通过访问 PlatformObject 触发 COM 调用）
-            try
-            {
-                var name = _detailsA11yElement.Name; // 如果抛异常说明元素已失效
-                Log($"ResolveElement: using current Details element '{name}' for path={elementPath ?? "(empty)"}");
-                return _detailsA11yElement;
-            }
-            catch (Exception ex)
-            {
-                Log($"ResolveElement: current Details element is STALE ({ex.GetType().Name}), will try refresh...");
-                _detailsA11yElement = null; // 清除过期引用
-            }
+            try { targetName = _detailsA11yElement.Name; }
+            catch { _detailsA11yElement = null; }
         }
 
-        // ★ 策略2：通过目标窗口句柄重新获取实时元素
+        // 策略2：通过窗口句柄获取全新根元素，再按名称查找目标子元素
         if (_currentTarget is not null && _currentTarget.Handle != IntPtr.Zero)
         {
             try
@@ -968,19 +963,84 @@ public partial class MainWindow : Window
                 var rootEl = session.GetRootFromHandle(_currentTarget.Handle);
                 if (rootEl is not null)
                 {
-                    Log($"ResolveElement: got FRESH element from window handle (pid={_currentTarget.ProcessId})");
-                    // 缓存供后续使用
-                    _detailsA11yElement = rootEl;
+                    // 如果知道目标名称，尝试在子树中查找同名元素
+                    if (!string.IsNullOrEmpty(targetName))
+                    {
+                        var freshEl = FindChildByName(session, rootEl, targetName);
+                        if (freshEl is not null)
+                        {
+                            Log($"ResolveElement: found FRESH element '{targetName}' in window tree");
+                            _detailsA11yElement = freshEl; // 更新缓存
+                            return freshEl;
+                        }
+                    }
+
+                    // 兜底：返回窗口根元素（用户录制的是窗口级操作）
+                    Log($"ResolveElement: using window root (targetName='{targetName ?? "(unknown)"}' not found in children)");
                     return rootEl;
                 }
             }
             catch (Exception ex)
             {
-                Log($"ResolveElement: refresh from handle failed: {ex.GetType().Name}: {ex.Message}");
+                Log($"ResolveElement: refresh failed: {ex.GetType().Name}: {ex.Message}");
             }
         }
 
-        Log($"ResolveElement: no valid element available (user should hover/select target before playback)");
+        // 策略3：最后兜底 — 返回缓存元素（可能过期但总比没有好）
+        if (_detailsA11yElement is not null)
+        {
+            Log($"ResolveElement: using cached element (may have stale Patterns!)");
+            return _detailsA11yElement;
+        }
+
+        Log($"ResolveElement: no element available");
+        return null;
+    }
+
+    /// <summary>在 UIA 子树中按名称查找元素（广度优先）。</summary>
+    private static Axe.Windows.Core.Bases.A11yElement? FindChildByName(
+        UiTreeMonitor.Core.Uia.UiaSession session,
+        Axe.Windows.Core.Bases.A11yElement parent,
+        string name)
+    {
+        try
+        {
+            // 先检查自身
+            if (string.Equals(parent.Name, name, StringComparison.OrdinalIgnoreCase))
+                return parent;
+
+            // BFS 遍历子树（限制深度避免性能问题）
+            var queue = new Queue<Axe.Windows.Core.Bases.A11yElement>();
+            var child = session.GetFirstChild(parent);
+            while (child is not null)
+            {
+                if (string.Equals(child.Name, name, StringComparison.OrdinalIgnoreCase))
+                    return child;
+                queue.Enqueue(child);
+                child = session.GetNextSibling(child);
+            }
+
+            int depth = 1;
+            const int maxDepth = 5; // 限制搜索深度
+            while (queue.Count > 0 && depth < maxDepth)
+            {
+                int count = queue.Count;
+                for (int i = 0; i < count; i++)
+                {
+                    var current = queue.Dequeue();
+                    var c = session.GetFirstChild(current);
+                    while (c is not null)
+                    {
+                        if (string.Equals(c.Name, name, StringComparison.OrdinalIgnoreCase))
+                            return c;
+                        queue.Enqueue(c);
+                        c = session.GetNextSibling(c);
+                    }
+                }
+                depth++;
+            }
+        }
+        catch { /* 搜索过程中元素可能销毁 */ }
         return null;
     }
 
