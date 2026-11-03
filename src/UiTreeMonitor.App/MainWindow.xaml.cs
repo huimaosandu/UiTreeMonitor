@@ -942,16 +942,45 @@ public partial class MainWindow : Window
     /// <summary>回放时的元素解析器：通过 ElementPath 在当前目标窗口 UIA 树中找到实时 A11yElement。</summary>
     private Axe.Windows.Core.Bases.A11yElement? ResolveElementForPlayback(string elementPath)
     {
-        // ★ 简化方案：直接返回当前 Details 面板的 A11yElement
-        //   完整的路径→元素定位需要重新抓树+匹配（开销大且容易失败）
-        //   用户在回放前应先悬停/选中目标元素以确保 _detailsA11yElement 有效
+        // ★ 策略1：如果当前 Details 面板有活跃的 A11yElement，尝试验证它是否仍然有效
         if (_detailsA11yElement is not null)
         {
-            Log($"ResolveElement: using current Details element for path={elementPath}");
-            return _detailsA11yElement;
+            // 检查元素是否仍有效（通过访问 PlatformObject 触发 COM 调用）
+            try
+            {
+                var name = _detailsA11yElement.Name; // 如果抛异常说明元素已失效
+                Log($"ResolveElement: using current Details element '{name}' for path={elementPath ?? "(empty)"}");
+                return _detailsA11yElement;
+            }
+            catch (Exception ex)
+            {
+                Log($"ResolveElement: current Details element is STALE ({ex.GetType().Name}), will try refresh...");
+                _detailsA11yElement = null; // 清除过期引用
+            }
         }
 
-        Log($"ResolveElement: no target element (user should hover/select before playback)");
+        // ★ 策略2：通过目标窗口句柄重新获取实时元素
+        if (_currentTarget is not null && _currentTarget.Handle != IntPtr.Zero)
+        {
+            try
+            {
+                using var session = UiaSession.Create();
+                var rootEl = session.GetRootFromHandle(_currentTarget.Handle);
+                if (rootEl is not null)
+                {
+                    Log($"ResolveElement: got FRESH element from window handle (pid={_currentTarget.ProcessId})");
+                    // 缓存供后续使用
+                    _detailsA11yElement = rootEl;
+                    return rootEl;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"ResolveElement: refresh from handle failed: {ex.GetType().Name}: {ex.Message}");
+            }
+        }
+
+        Log($"ResolveElement: no valid element available (user should hover/select target before playback)");
         return null;
     }
 
