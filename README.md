@@ -128,7 +128,7 @@ ui-tree-monitor\
 | `test_ui.py` | 只读 `QLineEdit` | **Edit 控件，Value 属性 = 实时数值** | 捕获 Value 属性（`IsReadOnly=True`，SetValue 会被拒绝属预期） |
 | `test_ui_name.py` | `QLabel` | **Text 控件，Name 属性 = 实时数字** | 捕获 Name 属性持续变化（模拟真实检测软件 QLabel 读数） |
 
-两者结构一致：**组1 → 组2 → 组3 → 组4** 层层嵌套（UIA 嵌套 Group），右侧 **深度/μm、峰值坐标、最大峰值** 每 **500ms** 随机波动；`test_ui_name.py` 另含顶部大号读数。基于 PySide6（Qt6）——Tkinter 的 UIA/MSAA 桥有缺陷（Label 文本不暴露、Entry 不暴露为 Edit），故被测面板使用 Qt。
+两者结构一致：**组1 → 组2 → 组3 → 组4** 层层嵌套（UIA 嵌套 Group），右侧 **深度/μm、峰值坐标、最大峰值** 每 **500ms** 随机波动；`test_ui_name.py` 另含顶部大号读数与「输入数值…」按钮（点击弹出数字输入框 QDoubleSpinBox，确定后写入顶部读数并同步 Name）。基于 PySide6（Qt6）——Tkinter 的 UIA/MSAA 桥有缺陷（Label 文本不暴露、Entry 不暴露为 Edit），故被测面板使用 Qt。
 
 ```powershell
 cd test_ui
