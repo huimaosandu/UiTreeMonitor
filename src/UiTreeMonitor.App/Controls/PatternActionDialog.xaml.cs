@@ -7,6 +7,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using Axe.Windows.Core.Bases;
+using UiTreeMonitor.Core;
 using UiTreeMonitor.Core.Uia;
 
 namespace UiTreeMonitor.App.Controls;
@@ -26,9 +27,12 @@ public partial class PatternActionDialog : Window
         _pattern = pattern ?? throw new ArgumentNullException(nameof(pattern));
 
         Title = $"{pattern.Name} Actions()";
+        AppLog.Write("ACTION", $"PatternActionDialog opened: element.UniqueId={element.UniqueId}, pattern={pattern.Name}");
 
         // 获取所有带 [PatternMethodAttribute] 的方法，每个方法一个 Tab
         var methods = PatternActionRunner.GetActionMethods(pattern);
+        AppLog.Write("ACTION", $"  Found {methods.Length} action methods: [{string.Join(", ", methods.Select(m => m.Name))}]");
+
         if (methods.Length == 0)
         {
             TcActions.Visibility = Visibility.Collapsed;

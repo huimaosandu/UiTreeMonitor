@@ -140,6 +140,7 @@ public partial class MainWindow : Window
     private TargetWindowInfo? _currentTarget;
     private DispatcherTimer? _drainTimer;
     private bool _capturing;
+    private bool _silentCapturing; // 静默捕获模式（录制用：鼠标跟踪+树高亮+Details刷新，无捕获框/烧杯）
     private MouseCaptureResult? _lastHoverResult; // 当前悬停选中的元素（烧杯按钮回调用）
     private TreeNodeViewModel? _selectedNode; // 当前树选中节点（Details 面板联动）
     private readonly DispatcherTimer? _historyTimer; // 采样历史页激活期间自动刷新
@@ -196,6 +197,12 @@ public partial class MainWindow : Window
             var isAuto = ((System.Windows.Controls.RadioButton)RecordingPanel.RbModeAuto).IsChecked == true;
             var modeText = isAuto ? "(自动模式)" : "(手动模式)";
             TxtStatus.Text = recording ? $"● 操作录制…{modeText}" : "录制已停止";
+
+            // 录制模式：自动启动/停止静默捕获（鼠标跟踪+树高亮，无捕获框）
+            if (recording)
+                StartSilentCapture();
+            else
+                StopSilentCapture();
         };
 
         RefreshWindows();
@@ -389,6 +396,28 @@ public partial class MainWindow : Window
         TxtCaptureStatus.Text = "";
     }
 
+    /// <summary>启动静默捕获（录制模式用：鼠标跟踪+树高亮+Details刷新，无捕获框/烧杯）。</summary>
+    private void StartSilentCapture()
+    {
+        if (_capturing || _silentCapturing) return;
+        _silentCapturing = true;
+        _detailsLocked = false;
+        _mouseCapture.ResultProduced += OnCaptureResult;
+        _mouseCapture.Start();
+        Log("静默捕获已启动（录制模式：鼠标跟踪高亮，无捕获框）");
+    }
+
+    /// <summary>停止静默捕获。</summary>
+    private void StopSilentCapture()
+    {
+        if (!_silentCapturing) return;
+        _silentCapturing = false;
+        _mouseCapture.ResultProduced -= OnCaptureResult;
+        _mouseCapture.Stop();
+        ClearHighlight();
+        Log("静默捕获已停止");
+    }
+
     /// <summary>
     /// 烧杯按钮点击回调（原版 Win32SnapshotButton.Clicked，经 SetCallBackForSnapshot 接线，
     /// 在 UI 线程触发）：把当前悬停元素填入右侧"新建监控任务"表单作为监测目标，并退出随鼠标捕获。
@@ -438,13 +467,14 @@ public partial class MainWindow : Window
         {
             // 原版高亮链路：HollowHighlightDriver.SetElement(A11yElement)
             // 内部完成 SetLocation(蓝框) + SetText(Glimpse + Focusable/NotFocusable) + 显隐控制
+            // 静默捕获模式（录制中）：跳过视觉高亮，只做树定位+Details刷新
             if (!result.IsValid || result.ElementContextId is not Guid ecId
                 || GetDataAction.GetElementContext(ecId)?.Element is not { } el)
             {
-                driver.Clear();
+                if (!_silentCapturing) driver.Clear();
                 continue;
             }
-            driver.SetElement(el); // el 归 DataManager/SelectAction 管理，严禁 Dispose（原版同款）
+            if (!_silentCapturing) driver.SetElement(el); // 静默模式不显示蓝框+烧杯
             _lastHoverResult = result; // 供烧杯按钮回调（OnSnapshotAddTarget）取当前悬停元素
 
             // ★ Details 跟随鼠标捕获刷新（未锁定时）

@@ -146,6 +146,8 @@ public sealed class EventListenerCore : IDisposable
         var ids = (eventIds ?? DefaultEventIds).ToList();
         var pids = (propertyIds ?? DefaultPropertyIds).ToList();
 
+        AppLog.Write("RECORD", $"EventListenerCore.Start: scope={_scope}, targetElementId={_targetElementId}, eventCount={ids.Count}, propCount={pids.Count}");
+
         // 将 EventListenScope 转为 Axe.Windows 的 ListenScope
         var axScope = _scope switch
         {
@@ -155,11 +157,20 @@ public sealed class EventListenerCore : IDisposable
             _ => ListenScope.Descendants
         };
 
-        // ListenAction.CreateInstance 需要一个 Guid 作为监听器实例标识（用于后续 GetInstance/ReleaseInstance）
-        // 目标元素通过回调中的 EventMessage.Element 获取，此处传 Guid.NewGuid() 创建新监听器
-        _listenerId = Guid.NewGuid();
-        ListenAction.CreateInstance(axScope, _listenerId.Value, OnEventMessage);
-        ListenAction.GetInstance(_listenerId.Value).Start(ids, pids);
+        try
+        {
+            // ListenAction.CreateInstance 需要一个 Guid 作为监听器实例标识（用于后续 GetInstance/ReleaseInstance）
+            // 目标元素通过回调中的 EventMessage.Element 获取，此处传 Guid.NewGuid() 创建新监听器
+            _listenerId = Guid.NewGuid();
+            ListenAction.CreateInstance(axScope, _listenerId.Value, OnEventMessage);
+            ListenAction.GetInstance(_listenerId.Value).Start(ids, pids);
+            AppLog.Write("RECORD", $"EventListenerCore.Start → OK: listenerId={_listenerId}");
+        }
+        catch (Exception ex)
+        {
+            AppLog.Write("RECORD", $"EventListenerCore.Start → EXCEPTION: {ex.GetType().Name}: {ex.Message}");
+            throw;
+        }
     }
 
     /// <summary>停止监听并释放资源。</summary>
@@ -172,8 +183,12 @@ public sealed class EventListenerCore : IDisposable
             var la = ListenAction.GetInstance(_listenerId.Value);
             la.Stop();
             ListenAction.ReleaseInstance(_listenerId.Value);
+            AppLog.Write("RECORD", $"EventListenerCore.Stop: listenerId={_listenerId}");
         }
-        catch { /* 忽略停止时的异常 */ }
+        catch (Exception ex)
+        {
+            AppLog.Write("RECORD", $"EventListenerCore.Stop → exception (ignored): {ex.Message}");
+        }
 
         _listenerId = null;
     }
@@ -197,11 +212,12 @@ public sealed class EventListenerCore : IDisposable
                 ChangedProperties = message.Properties?.Cast<object>().ToList(),
             };
 
+            AppLog.Write("RECORD", $"OnEventMessage: {eventName} elem={elem?.Name ?? "(null)"} id={elem?.UniqueId ?? -1}");
             _onEvent?.Invoke(record);
         }
-        catch
+        catch (Exception ex)
         {
-            // 事件回调异常不应影响监听继续运行
+            AppLog.Write("RECORD", $"OnEventMessage → exception (ignored): {ex.Message}");
         }
     }
 

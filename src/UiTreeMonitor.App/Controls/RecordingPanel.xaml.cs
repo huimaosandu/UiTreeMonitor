@@ -13,6 +13,7 @@ using System.Windows;
 using System.Windows.Controls;
 using Microsoft.Win32;
 using Axe.Windows.Core.Bases;
+using UiTreeMonitor.Core;
 using UiTreeMonitor.Core.Models;
 using UiTreeMonitor.Core.Tasks;
 using UiTreeMonitor.Core.Uia;
@@ -104,9 +105,12 @@ public partial class RecordingPanel : UserControl
     private void StartAutoRecording()
     {
         var uniqueId = GetTargetElementUniqueId?.Invoke();
+        AppLog.Write("RECORD", $"StartAutoRecording: uniqueId={uniqueId}, _detailsA11yElement={(uniqueId.HasValue ? "available" : "NULL")}");
+
         if (uniqueId is null or <= 0)
         {
-            TxtStatus.Text = "⚠ 自动模式需要目标元素 UniqueId（请先在左侧结构树选中节点或悬停捕获）";
+            TxtStatus.Text = "⚠ 自动模式需要目标元素（请先悬停捕获或选中结构树节点获取元素引用）";
+            AppLog.Write("RECORD", "StartAutoRecording → ABORTED: no target element UniqueId");
             return;
         }
 
@@ -121,6 +125,7 @@ public partial class RecordingPanel : UserControl
 
             TxtAutoHint.Visibility = Visibility.Visible;
             TxtStatus.Text = "● 自动录制中…正在监听目标窗口的 UIA 事件";
+            AppLog.Write("RECORD", $"StartAutoRecording → SUCCESS: listening on element {uniqueId}");
         }
         catch (Exception ex)
         {
@@ -128,6 +133,7 @@ public partial class RecordingPanel : UserControl
             _autoListener?.Dispose();
             _autoListener = null;
             TxtStatus.Text = $"✗ 自动录制启动失败: {ex.Message}";
+            AppLog.Write("RECORD", $"StartAutoRecording → FAILED: {ex.GetType().Name}: {ex.Message}");
         }
     }
 
@@ -142,6 +148,7 @@ public partial class RecordingPanel : UserControl
             _script.Records.Add(record);
             RefreshList();
             TxtStatus.Text = $"● 已捕获 {_script.Records.Count} 个事件: {uiaEvent.EventName} ({uiaEvent.ElementName})";
+            AppLog.Write("RECORD", $"OnAutoEvent #{_script.Records.Count}: {uiaEvent.EventName} elem={uiaEvent.ElementName} id={uiaEvent.ElementUniqueId}");
         });
     }
 

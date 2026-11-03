@@ -5,26 +5,27 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
-            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
         <!-- 方法名标题 -->
-        <TextBlock Grid.Row="0" x:Name="TxtMethodName" FontWeight="Bold" FontSize="13" Margin="0,0,0,8"/>
+        <TextBlock Grid.Row="0" x:Name="TxtMethodName" FontWeight="Bold" FontSize="13" Margin="0,0,0,6"/>
 
         <!-- 参数区域（有参数时显示） -->
-        <StackPanel Grid.Row="1" x:Name="PanelParams" Visibility="Collapsed" Margin="0,0,0,8"/>
+        <StackPanel Grid.Row="1" x:Name="PanelParams" Visibility="Collapsed" Margin="0,0,0,6"/>
 
         <!-- Delay + Run action 行 -->
-        <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,4,0,8">
+        <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,4,0,6">
             <TextBlock Text="Delay in sec" VerticalAlignment="Center" Margin="0,0,8,0"/>
-            <TextBox x:Name="TbDelay" Width="80" Text="0" VerticalContentAlignment="Center"
+            <TextBox x:Name="TbDelay" Width="60" Text="0" VerticalContentAlignment="Center"
                      PreviewTextInput="TbDelay_PreviewTextInput"/>
-            <Button x:Name="BtnRun" Content="Run action" Padding="16,5" Margin="12,0,0,0"
-                    Click="BtnRun_Click" FontWeight="Bold"/>
+            <Button x:Name="BtnRun" Content="Run action" Padding="12,3" Margin="12,0,0,0"
+                    Click="BtnRun_Click" FontWeight="Bold" MinWidth="90"/>
         </StackPanel>
 
         <!-- 结果区域 -->
         <TextBlock Grid.Row="3" x:Name="TxtResult" TextWrapping="Wrap"
-                   FontSize="12" Foreground="#333333"/>
+                   FontSize="12" Foreground="#333333" Margin="0,4,0,0"/>
     </Grid>
 </UserControl>

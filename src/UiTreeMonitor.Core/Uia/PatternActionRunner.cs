@@ -37,22 +37,34 @@ public static class PatternActionRunner
     /// <returns>执行结果（Success/ReturnValue/Error）</returns>
     public static ActionResult Run(A11yElement element, A11yPattern pattern, string methodName, object?[]? parameters = null)
     {
-        if (element is null) return new ActionResult { Success = false, Error = "element is null" };
-        if (pattern is null) return new ActionResult { Success = false, Error = "pattern is null" };
-        if (string.IsNullOrEmpty(methodName)) return new ActionResult { Success = false, Error = "methodName is empty" };
+        AppLog.Write("ACTION", $"Run() called: element.UniqueId={element?.UniqueId ?? -1}, pattern={pattern?.Name}, method={methodName}");
+
+        if (element is null) { var r1 = new ActionResult { Success = false, Error = "element is null" }; AppLog.Write("ACTION", $"Run() → {r1.DisplayText}"); return r1; }
+        if (pattern is null) { var r2 = new ActionResult { Success = false, Error = "pattern is null" }; AppLog.Write("ACTION", $"Run() → {r2.DisplayText}"); return r2; }
+        if (string.IsNullOrEmpty(methodName)) { var r3 = new ActionResult { Success = false, Error = "methodName is empty" }; AppLog.Write("ACTION", $"Run() → {r3.DisplayText}"); return r3; }
 
         try
         {
             // 查找匹配的方法（按 [PatternMethodAttribute] 标记过滤）
+            var methods = GetActionMethods(pattern);
+            AppLog.Write("ACTION", $"  Pattern '{pattern.Name}' has {methods.Length} action methods: [{string.Join(", ", methods.Select(m => m.Name))}]");
+
             var method = FindPatternMethod(pattern, methodName);
             if (method is null)
-                return new ActionResult { Success = false, Error = $"Method '{methodName}' not found on pattern '{pattern.Name}'" };
+            {
+                var r = new ActionResult { Success = false, Error = $"Method '{methodName}' not found on pattern '{pattern.Name}'" };
+                AppLog.Write("ACTION", $"Run() → {r.DisplayText}");
+                return r;
+            }
 
             // 转换参数类型并调用
             var convertedParams = ConvertParameters(method, parameters);
+            AppLog.Write("ACTION", $"  Invoking {method.Name}({(convertedParams is not null ? string.Join(", ", convertedParams.Select(p => p?.ToString() ?? "null")) : "")})");
             var ret = method.Invoke(pattern, convertedParams);
 
-            return new ActionResult { Success = true, ReturnValue = ret };
+            var ok = new ActionResult { Success = true, ReturnValue = ret };
+            AppLog.Write("ACTION", $"Run() → {ok.DisplayText}");
+            return ok;
         }
 #pragma warning disable CA1031 // Do not catch general exception types
         catch (TargetInvocationException tie)
@@ -61,10 +73,13 @@ public static class PatternActionRunner
             var inner = tie.InnerException;
             var msg = inner?.Message ?? tie.Message;
             var hResult = inner?.HResult ?? tie.HResult.GetHashCode();
-            return new ActionResult { Success = false, Error = $"{msg} (0x{hResult:X8})" };
+            var err = $"{msg} (0x{hResult:X8})";
+            AppLog.Write("ACTION", $"Run() → TargetInvocationException: {err}");
+            return new ActionResult { Success = false, Error = err };
         }
         catch (Exception ex)
         {
+            AppLog.Write("ACTION", $"Run() → Exception: {ex.GetType().Name}: {ex.Message}");
             return new ActionResult { Success = false, Error = ex.Message };
         }
 #pragma warning restore CA1031
