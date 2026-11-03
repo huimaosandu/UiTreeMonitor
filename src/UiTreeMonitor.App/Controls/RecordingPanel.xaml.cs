@@ -46,6 +46,7 @@ public partial class RecordingPanel : UserControl
     public RecordingPanel()
     {
         InitializeComponent();
+        _isAutoMode = true; // ★ 默认自动模式
         RefreshUI();
     }
 
@@ -191,32 +192,18 @@ public partial class RecordingPanel : UserControl
 
     private void RbModeManual_Checked(object sender, RoutedEventArgs e)
     {
+        // ★ 录制中忽略模式切换（RadioButton 已禁用，但防御性检查）
+        if (_isRecording) return;
         _isAutoMode = false;
         TxtAutoHint.Visibility = Visibility.Collapsed;
-        if (_isRecording && _autoListener is not null)
-        {
-            // 切换到手动模式：停止自动监听，保持录制状态
-            _autoListener.Stop();
-            _autoListener.Dispose();
-            _autoListener = null;
-            TxtStatus.Text = "● 录制中（已切换为手动模式）";
-        }
     }
 
     private void RbModeAuto_Checked(object sender, RoutedEventArgs e)
     {
+        // ★ 录制中忽略模式切换（RadioButton 已禁用，但防御性检查）
+        if (_isRecording) return;
         _isAutoMode = true;
-        if (_isRecording)
-        {
-            // 切换到自动模式：启动事件监听
-            if (_autoListener is not null) _autoListener.Stop();
-            _autoListener?.Dispose();
-            StartAutoRecording();
-        }
-        else
-        {
-            TxtAutoHint.Visibility = Visibility.Visible;
-        }
+        TxtAutoHint.Visibility = Visibility.Visible;
     }
 
     // ==== 回放控制 ====
@@ -363,6 +350,10 @@ public partial class RecordingPanel : UserControl
         BtnPlayAll.IsEnabled = hasRecords && !_isRecording;
         BtnStep.IsEnabled = hasRecords && !_isRecording;
         BtnExport.IsEnabled = hasRecords;
+
+        // ★ 录制中禁用模式切换（RadioButton），防止录制过程中切换模式导致状态混乱
+        RbModeManual.IsEnabled = !_isRecording;
+        RbModeAuto.IsEnabled = !_isRecording;
     }
 
     private void RefreshList()

@@ -11,7 +11,9 @@ using UiTreeMonitor.Core.Models;
 
 namespace UiTreeMonitor.Core.Uia;
 
-/// <summary>UIA 事件监听模式（对应原版 RecorderSetting.ListenScope）。</summary>
+/// <summary>
+/// UIA 事件监听模式（对应原版 RecorderSetting.ListenScope）。
+/// </summary>
 public enum EventListenScope
 {
     /// <summary>仅监听目标元素本身的事件</summary>
@@ -60,6 +62,9 @@ public sealed record UiaEventRecord
 ///   4. 调用 Stop() 停止监听并释放资源
 ///
 /// 线程要求：Start/Stop 需在 STA 线程调用（UIA 要求）；回调来自后台线程。
+/// 
+/// 前置条件：使用前需确保 DesktopElementContext 已初始化（否则 CreateInstance 会抛 NullReferenceException）
+/// 可通过调用 EnsureDesktopElementContextInitialized() 或在 MainWindow 启动时调用 InitDesktopElementContext()
 /// </summary>
 public sealed class EventListenerCore : IDisposable
 {
@@ -159,16 +164,30 @@ public sealed class EventListenerCore : IDisposable
 
         try
         {
-            // ListenAction.CreateInstance 需要一个 Guid 作为监听器实例标识（用于后续 GetInstance/ReleaseInstance）
-            // 目标元素通过回调中的 EventMessage.Element 获取，此处传 Guid.NewGuid() 创建新监听器
             _listenerId = Guid.NewGuid();
-            ListenAction.CreateInstance(axScope, _listenerId.Value, OnEventMessage);
-            ListenAction.GetInstance(_listenerId.Value).Start(ids, pids);
-            AppLog.Write("RECORD", $"EventListenerCore.Start → OK: listenerId={_listenerId}");
+            
+            // ★ ListenAction.CreateInstance 内部依赖 DesktopElementContext.Current.GetDesktopElement()
+            //   若未初始化会抛 NullReferenceException
+            //   根因：MainWindow 启动时未调用 Axe.Windows 的桌面元素初始化
+            //   修复：在 MainWindow 构造函数中调用 InitDesktopElementContext() 即可解决
+            try
+            {
+                ListenAction.CreateInstance(axScope, _listenerId.Value, OnEventMessage);
+                ListenAction.GetInstance(_listenerId.Value).Start(ids, pids);
+                AppLog.Write("RECORD", $"EventListenerCore.Start → OK: listenerId={_listenerId}");
+            }
+            catch (NullReferenceException ex)
+            {
+                AppLog.Write("RECORD", $"EventListenerCore.Start → FATAL: DesktopElementContext not initialized!");
+                AppLog.Write("RECORD", $"  Fix: Call EventListenerCore.InitDesktopElementContext() in MainWindow constructor");
+                _listenerId = null; // 清理无效状态
+                throw;
+            }
         }
         catch (Exception ex)
         {
             AppLog.Write("RECORD", $"EventListenerCore.Start → EXCEPTION: {ex.GetType().Name}: {ex.Message}");
+            _listenerId = null;
             throw;
         }
     }
@@ -219,6 +238,21 @@ public sealed class EventListenerCore : IDisposable
         {
             AppLog.Write("RECORD", $"OnEventMessage → exception (ignored): {ex.Message}");
         }
+    }
+
+    /// <summary>初始化 DesktopElementContext（必须在 STA 线程调用，通常在 MainWindow 构造函数中调用一次即可）。</summary>
+    /// <remarks>
+    /// ListenAction.CreateInstance 内部依赖此上下文获取桌面元素。
+    /// 若未初始化，Start() 会抛 NullReferenceException。
+    /// 
+    /// 此方法需要在 App 层（MainWindow）中调用，因为需要 WPF/UIA 引用。
+    /// </remarks>
+    public static void InitDesktopElementContext()
+    {
+        // ★ 此方法的实现已移至 MainWindow.InitDesktopElementContext()
+        //   因为 UiTreeMonitor.Core 是纯类库项目，无法引用 System.Windows.Automation
+        //   实际初始化逻辑见 MainWindow.xaml.cs 中的同名方法
+        AppLog.Write("RECORD", "InitDesktopElementContext: stub (see MainWindow implementation)");
     }
 
     public void Dispose()

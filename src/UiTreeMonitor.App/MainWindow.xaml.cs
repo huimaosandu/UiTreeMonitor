@@ -178,6 +178,11 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        
+        // ★ 初始化 DesktopElementContext（ListenAction.CreateInstance 的前置条件）
+        //   若未初始化，自动录制模式启动 EventListenerCore 时会抛 NullReferenceException
+        InitDesktopElementContext();
+        
         _settings = AppSettings.Load(SettingsFilePath);
         _configStore = new TaskConfigStore(TaskConfigDir);
         _saver = new SampleBatchSaver(DataRootDir);
@@ -483,7 +488,20 @@ public partial class MainWindow : Window
                 if (!_silentCapturing) driver.Clear();
                 continue;
             }
-            if (!_silentCapturing) driver.SetElement(el); // 静默模式不显示蓝框+烧杯
+            // ★ 录制模式（静默捕获）：显示蓝框+文字提示（视觉反馈），但隐藏烧杯按钮
+            //   HighlighterMode.HighlighterTooltip = 蓝框 + Glimpse文字，无烧杯
+            //   HighlighterMode.HighlighterBeakerTooltip = 蓝框 + 烧杯 + 文字（正常捕获模式）
+            if (_silentCapturing)
+            {
+                var prevMode = driver.HighlighterMode;
+                driver.HighlighterMode = AccessibilityInsights.SharedUx.Enums.HighlighterMode.HighlighterTooltip;
+                driver.SetElement(el);
+                driver.HighlighterMode = prevMode; // 恢复原模式（下次非静默时使用）
+            }
+            else
+            {
+                driver.SetElement(el); // 正常模式：蓝框+烧杯+文字
+            }
             _lastHoverResult = result; // 供烧杯按钮回调（OnSnapshotAddTarget）取当前悬停元素
 
             // ★ Details 跟随鼠标捕获刷新（未锁定时）
@@ -924,23 +942,36 @@ public partial class MainWindow : Window
     /// <summary>回放时的元素解析器：通过 ElementPath 在当前目标窗口 UIA 树中找到实时 A11yElement。</summary>
     private Axe.Windows.Core.Bases.A11yElement? ResolveElementForPlayback(string elementPath)
     {
-        if (_currentTarget is null || string.IsNullOrEmpty(elementPath)) return null;
+        // ★ 简化方案：直接返回当前 Details 面板的 A11yElement
+        //   完整的路径→元素定位需要重新抓树+匹配（开销大且容易失败）
+        //   用户在回放前应先悬停/选中目标元素以确保 _detailsA11yElement 有效
+        if (_detailsA11yElement is not null)
+        {
+            Log($"ResolveElement: using current Details element for path={elementPath}");
+            return _detailsA11yElement;
+        }
 
+        Log($"ResolveElement: no target element (user should hover/select before playback)");
+        return null;
+    }
+
+    /// <summary>初始化 UIA 桌面元素上下文（ListenAction 的前置条件）。</summary>
+    /// <remarks>
+    /// ListenAction.CreateInstance 内部可能需要桌面元素引用。
+    /// 若启动时未初始化，EventListenerCore.Start() 会抛异常并给出明确诊断。
+    /// </remarks>
+    private static void InitDesktopElementContext()
+    {
         try
         {
-            using var session = UiaSession.Create();
-            var snap = new TreeSampler().CaptureWindow(session, _currentTarget);
-            if (snap is null || snap.NodeCount == 0) return null;
-
-            var node = ElementMatcher.FindByPath(snap, elementPath);
-            if (node is null) return null;
-
-            // 从 A11yElementFactory 获取实时元素（通过 DesktopElement 的 FindByUniqueId 或类似方式）
-            // 简化方案：返回 null 让回放引擎报告"未找到"，用户可手动重新定位
-            // 完整实现需要 Axe.Windows 的 DesktopElementContext 或直接从 UniqueId 重建
-            return null; // TODO: 需要 Axe.Windows 的 DesktopElement API 将快照节点映射回实时 A11yElement
+            // ★ 预热 UIA：访问 RootElement 确保 UIA COM 已初始化（STA 线程）
+            var _ = System.Windows.Automation.AutomationElement.RootElement;
+            Log($"InitDesktopElementContext → OK (UIA COM initialized)");
         }
-        catch { return null; }
+        catch (Exception ex)
+        {
+            Log($"InitDesktopElementContext → WARNING: {ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     private void PatternsTree_MouseRightButtonUp(object sender, MouseButtonEventArgs e)

@@ -18,10 +18,10 @@
             <!-- 录制模式切换 -->
             <Border BorderBrush="#CCCCCC" BorderThickness="1" CornerRadius="3" Margin="12,0,0,0" Padding="2">
                 <StackPanel Orientation="Horizontal">
-                    <RadioButton x:Name="RbModeManual" Content="手动" GroupName="RecordMode" IsChecked="True"
+                    <RadioButton x:Name="RbModeManual" Content="手动" GroupName="RecordMode"
                                  ToolTip="手动模式：执行 Actions 对话框中的操作时记录"
                                  Margin="4,0,8,0" VerticalAlignment="Center" FontSize="11"/>
-                    <RadioButton x:Name="RbModeAuto" Content="自动" GroupName="RecordMode"
+                    <RadioButton x:Name="RbModeAuto" Content="自动" GroupName="RecordMode" IsChecked="True"
                                  ToolTip="自动模式：监听目标窗口的所有 UIA 事件（点击、输入、焦点变化等）自动捕获"
                                  VerticalAlignment="Center" FontSize="11"/>
                 </StackPanel>
@@ -53,8 +53,8 @@
                     Click="BtnImport_Click" ToolTip="从 JSON 文件导入脚本"/>
         </StackPanel>
 
-        <!-- 自动模式提示（仅自动模式显示） -->
-        <TextBlock Grid.Row="2" x:Name="TxtAutoHint" Visibility="Collapsed"
+        <!-- 自动模式提示（仅自动模式显示，默认可见因为默认模式是自动） -->
+        <TextBlock Grid.Row="2" x:Name="TxtAutoHint" Visibility="Visible"
                    Foreground="#B8860B" FontSize="11" Margin="0,0,0,4"
                    Text="自动模式：正在监听目标窗口的 UIA 事件。在目标窗口中操作（点击按钮、输入文本、切换选项等），所有操作将被自动捕获。"/>
 
