@@ -1,0 +1,64 @@
+<UserControl x:Class="UiTreeMonitor.App.Controls.RecordingPanel"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Margin="8">
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- 标题 + 录制控制 -->
+        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
+            <TextBlock Text="操作录制与回放" FontWeight="Bold" FontSize="13" VerticalAlignment="Center"/>
+            <Button x:Name="BtnToggleRecord" Content="● 开始录制" Margin="12,0,0,0" Padding="8,3"
+                    Click="BtnToggleRecord_Click" ToolTip="开始/停止录制 Action 操作序列"/>
+            <Button x:Name="BtnClearRecord" Content="清空" Margin="4,0,0,0" Padding="8,3"
+                    Click="BtnClearRecord_Click" IsEnabled="False" ToolTip="清空已录制的操作"/>
+        </StackPanel>
+
+        <!-- 回放控制 -->
+        <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,8">
+            <TextBlock Text="回放:" VerticalAlignment="Center" Margin="0,0,6,0"/>
+            <Button x:Name="BtnPlayAll" Content="▶ 全部回放" Padding="8,3"
+                    Click="BtnPlayAll_Click" IsEnabled="False" ToolTip="按顺序回放所有已录制操作"/>
+            <Button x:Name="BtnStep" Content="单步→" Margin="4,0,0,0" Padding="8,3"
+                    Click="BtnStep_Click" IsEnabled="False" ToolTip="执行下一条操作"/>
+            <TextBlock Text="速度:" VerticalAlignment="Center" Margin="12,0,4,0"/>
+            <ComboBox x:Name="CboSpeed" Width="70" SelectedIndex="1">
+                <ComboBoxItem Content="0.5x"/>
+                <ComboBoxItem Content="1x"/>
+                <ComboBoxItem Content="2x"/>
+                <ComboBoxItem Content="5x"/>
+            </ComboBox>
+            <Button x:Name="BtnExport" Content="导出JSON" Margin="12,0,0,0" Padding="8,3"
+                    Click="BtnExport_Click" IsEnabled="False" ToolTip="导出脚本为 JSON 文件"/>
+            <Button x:Name="BtnImport" Content="导入JSON" Margin="4,0,0,0" Padding="8,3"
+                    Click="BtnImport_Click" ToolTip="从 JSON 文件导入脚本"/>
+        </StackPanel>
+
+        <!-- 已录制操作列表 -->
+        <DataGrid Grid.Row="2" x:Name="DgRecords"
+                  AutoGenerateColumns="False" IsReadOnly="True"
+                  CanUserAddRows="False" CanUserDeleteRows="False"
+                  HeadersVisibility="Column" GridLinesVisibility="Horizontal"
+                  SelectionMode="Single"
+                  SelectionChanged="DgRecords_SelectionChanged">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="#" Binding="{Binding}" Width="40"/>
+                <DataGridTextColumn Header="时间" Binding="{Binding Timestamp, StringFormat='HH:mm:ss'}" Width="70"/>
+                <DataGridTextColumn Header="元素路径" Binding="{Binding ElementPath}" Width="120"/>
+                <DataGridTextColumn Header="Pattern" Binding="{Binding PatternName}" Width="100"/>
+                <DataGridTextColumn Header="方法" Binding="{Binding MethodName}" Width="80"/>
+                <DataGridTextColumn Header="结果" Binding="{Binding DisplayText}" Width="*"/>
+            </DataGrid.Columns>
+        </DataGrid>
+
+        <!-- 状态栏 -->
+        <StackPanel Grid.Row="3" Orientation="Horizontal">
+            <TextBlock x:Name="TxtStatus" Text="就绪" Foreground="#666666" FontSize="11"/>
+        </StackPanel>
+    </Grid>
+</UserControl>

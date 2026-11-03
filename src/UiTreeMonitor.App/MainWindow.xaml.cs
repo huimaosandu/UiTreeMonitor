@@ -187,6 +187,11 @@ public partial class MainWindow : Window
         TreeView.ItemsSource = _treeRoots;
         TaskList.ItemsSource = _taskItems;
 
+        // 录制回放面板：注入元素解析回调（ElementPath → 实时 A11yElement，需 STA 线程抓树）
+        RecordingPanel.ResolveElement = ResolveElementForPlayback;
+        RecordingPanel.RecordingStateChanged += (recording) =>
+            TxtStatus.Text = recording ? "● 操作录制中…执行 Actions 将自动记录" : "录制已停止";
+
         RefreshWindows();
         LoadSavedTasks();
 
@@ -807,7 +812,65 @@ public partial class MainWindow : Window
 
         // 打开 Actions 对话框
         var dlg = new Controls.PatternActionDialog(_detailsA11yElement, pattern) { Owner = this };
+
+        // ★ 录制中：执行完成后自动追加到录制脚本
+        if (RecordingPanel != null)
+        {
+            dlg.ActionExecuted += (result) =>
+            {
+                // 计算当前元素的 ElementPath（从最新树快照中查找）
+                string elemPath = "";
+                string elemName = _detailsA11yElement.Name ?? "";
+                if (_currentTree is not null && _detailsA11yElement.UniqueId > 0)
+                {
+                    // 通过 UniqueId 在树中找节点（需遍历——快照无 UniqueId 字段，
+                    // 改用矩形/属性匹配近似定位后取路径）
+                    var rectStr = _detailsElemBoundingRect;
+                    if (!string.IsNullOrEmpty(rectStr))
+                    {
+                        var byRect = ElementMatcher.FindByRect(_currentTree, rectStr, _detailsElemControlType);
+                        if (byRect is not null)
+                            elemPath = ElementMatcher.BuildPath(_currentTree, byRect.Id) ?? "";
+                    }
+                }
+
+                RecordingPanel.RecordAction(new UiTreeMonitor.Core.Models.ActionRecord
+                {
+                    Timestamp = DateTime.Now,
+                    ElementPath = elemPath,
+                    ElementName = elemName,
+                    PatternName = pattern.Name,
+                    MethodName = result.ReturnValue?.ToString() ?? "",
+                    Parameters = null, // TODO: 从 PatternActionView 获取实际参数
+                    Success = result.Success,
+                    Result = result.Error ?? result.ReturnValue?.ToString()
+                });
+            };
+        }
+
         dlg.ShowDialog();
+    }
+
+    /// <summary>回放时的元素解析器：通过 ElementPath 在当前目标窗口 UIA 树中找到实时 A11yElement。</summary>
+    private Axe.Windows.Core.Bases.A11yElement? ResolveElementForPlayback(string elementPath)
+    {
+        if (_currentTarget is null || string.IsNullOrEmpty(elementPath)) return null;
+
+        try
+        {
+            using var session = UiaSession.Create();
+            var snap = new TreeSampler().CaptureWindow(session, _currentTarget);
+            if (snap is null || snap.NodeCount == 0) return null;
+
+            var node = ElementMatcher.FindByPath(snap, elementPath);
+            if (node is null) return null;
+
+            // 从 A11yElementFactory 获取实时元素（通过 DesktopElement 的 FindByUniqueId 或类似方式）
+            // 简化方案：返回 null 让回放引擎报告"未找到"，用户可手动重新定位
+            // 完整实现需要 Axe.Windows 的 DesktopElementContext 或直接从 UniqueId 重建
+            return null; // TODO: 需要 Axe.Windows 的 DesktopElement API 将快照节点映射回实时 A11yElement
+        }
+        catch { return null; }
     }
 
     private void PatternsTree_MouseRightButtonUp(object sender, MouseButtonEventArgs e)

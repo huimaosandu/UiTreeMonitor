@@ -16,6 +16,9 @@ public partial class PatternActionDialog : Window
     private readonly A11yElement _element;
     private readonly A11yPattern _pattern;
 
+    /// <summary>任一 Tab 中的 Action 执行完成后触发。</summary>
+    public event Action<ActionResult>? ActionExecuted;
+
     public PatternActionDialog(A11yElement element, A11yPattern pattern)
     {
         InitializeComponent();
@@ -38,6 +41,8 @@ public partial class PatternActionDialog : Window
         foreach (var method in methods)
         {
             var view = new PatternActionView(_element, _pattern, method);
+            // ★ 将子视图的执行完成事件冒泡到对话框级别
+            view.ActionExecuted += (result) => ActionExecuted?.Invoke(result);
             TcActions.Items.Add(new TabItem
             {
                 Header = $"{method.Name}()",
