@@ -36,6 +36,7 @@ public partial class RecordingPanel : UserControl
     private InputHookCore? _inputHook;        // 低级输入钩子（默认：鼠标左右键+键盘）
     private int _listenerPid;           // 当前监听器锁定/瞄准的进程（0=自由模式：全桌面+排除自己）
     private int _hoverProcessId;        // 最近一次悬停捕获的进程（补挂/切换监听用）
+    private Guid? _hoverEcId;           // 最近一次悬停元素的 ElementContext id（窗口级挂载：爬到顶层窗口）
     private DateTime _lastAttach = DateTime.MinValue; // 上次挂载时刻（重挂防抖）
 
     /// <summary>录制状态变化通知。</summary>
@@ -207,15 +208,16 @@ public partial class RecordingPanel : UserControl
 
         try
         {
-            // ★ 语义模式统一只注册可回放事件（4 事件+属性变化=5 次调用；曾注册 11~14 次全桌面事件，
-            //   注册期 9~14.5s 内用户操作全部漏录 seen=0。Menu/ToolTip/Window/Text/Structure 无回放价值已砍）
+            // ★ 语义模式统一只注册可回放事件（4 事件+属性变化；Menu/ToolTip/Window/Text/Structure 无回放价值已砍）
             var eventIds = EventListenerCore.SemanticEventIds;
+            // 挂载解析（EventListenerCore 内部）：hwnd（抓树目标）→ 悬停元素爬顶层窗口 → 桌面根兜底
             _autoListener = new EventListenerCore(uniqueId ?? 0,
                 EventListenScope.Descendants, OnAutoEvent,
-                hwnd, pid, OnListenerStarted);
+                hwnd, pid, OnListenerStarted,
+                hoverElementContextId: hwnd == IntPtr.Zero ? _hoverEcId : null);
             _autoListener.Start(eventIds);
             _listenerPid = pid;
-            // 注册在 UIA 管道线程异步执行（free mode 全桌面 ~5s / 目标窗口子树 <1s）；
+            // 注册在 UIA 管道线程异步执行（窗口级 <1s / 全桌面数秒）；
             // 完成后 OnListenerStarted 回调更新状态文案（此时才真正开始捕获）
             AppLog.Write("RECORD", $"StartUiaListener → listener starting (async): {listenMode}, element {uniqueId}");
         }
@@ -340,9 +342,9 @@ public partial class RecordingPanel : UserControl
 
     /// <summary>
     /// 自动录制补挂/切换监听（MainWindow 静默捕获链路在悬停元素有效时调用）。
-    /// ★ 全桌面挂载的监听就地切换 pid 过滤（零真空期）；仅窗口子树挂载或无监听时才重挂。
+    /// ★ 桌面根挂载：就地切换 pid 过滤（零真空期）；窗口级挂载：同 pid 不动、换 pid 重挂（窗口级注册 &lt;1s）。
     /// </summary>
-    public void TryAttachAutoListener(int hoverProcessId)
+    public void TryAttachAutoListener(int hoverProcessId, Guid? hoverElementContextId = null)
     {
         if (!_isRecording || !_isAutoMode) return;
         // 仅 UIA 语义模式需要按目标挂监听（输入钩子不依赖目标窗口）
@@ -350,22 +352,22 @@ public partial class RecordingPanel : UserControl
         // 悬停自己 UI（如点停止按钮）不升级：挂到自己窗口子树后所有事件都会被"排除自己"过滤，录不到任何东西
         if (hoverProcessId == Environment.ProcessId) return;
         _hoverProcessId = hoverProcessId;
+        if (hoverElementContextId.HasValue) _hoverEcId = hoverElementContextId;
 
-        // ★ 就地切换过滤目标：全桌面监听在岗时只改 pid，绝不重启
-        //   （曾 Stop+Start 重挂：旧实例 Dispose 立即断流、全桌面注销 4.3s 拖慢新实例注册，
-        //    4.7s 真空期内用户点击全漏 seen=0）
-        if (_autoListener is not null && _autoListener.IsDesktopScope)
+        if (_autoListener is not null)
         {
-            if (_listenerPid == hoverProcessId) return; // 目标未变
-            _autoListener.UpdateTargetProcess(hoverProcessId);
-            _listenerPid = hoverProcessId;
-            return;
-        }
+            if (_listenerPid == hoverProcessId) return; // 目标未变（含窗口级/桌面根通用）
 
-        // 窗口子树挂载（范围固定）或监听未启动 → 需要重挂/新起
-        bool needAttach = _autoListener is null
-            || (_listenerPid != 0 && hoverProcessId != 0 && hoverProcessId != _listenerPid); // 切换目标进程
-        if (!needAttach) return;
+            if (_autoListener.IsDesktopScope)
+            {
+                // ★ 就地切换过滤目标：桌面根监听在岗时只改 pid，绝不重启（零真空期）
+                _autoListener.UpdateTargetProcess(hoverProcessId);
+                _listenerPid = hoverProcessId;
+                return;
+            }
+            // 窗口级挂载范围固定，切进程需重挂（注册 <1s，窗口期小）
+        }
+        // 监听未启动（首次悬停）或窗口级需换目标 → 新起/重挂
         if ((DateTime.Now - _lastAttach).TotalSeconds < 2) return; // 防抖：鼠标扫过窗口不疯狂重挂
 
         if (_autoListener is not null)

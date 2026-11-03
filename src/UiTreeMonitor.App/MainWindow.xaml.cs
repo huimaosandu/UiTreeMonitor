@@ -515,9 +515,10 @@ public partial class MainWindow : Window
             _lastHoverResult = result; // 供烧杯按钮回调（OnSnapshotAddTarget）取当前悬停元素
 
             // ★ 自动录制补挂：录制开始时可能无目标（监听器以自由模式启动或未启动），
-            //   悬停到目标元素后自动升级/切换监听（兑现"悬停后监听自动生效"的提示）
+            //   悬停到目标元素后自动升级/切换监听（兑现"悬停后监听自动生效"的提示）；
+            //   同时传悬停元素 ElementContext id（EventListenerCore 爬到顶层窗口做窗口级挂载）
             if (_silentCapturing && result.ProcessId != 0)
-                RecordingPanel.TryAttachAutoListener(result.ProcessId);
+                RecordingPanel.TryAttachAutoListener(result.ProcessId, result.ElementContextId);
 
             // ★ Details 跟随鼠标捕获刷新（未锁定时）
             if (!_detailsLocked)
