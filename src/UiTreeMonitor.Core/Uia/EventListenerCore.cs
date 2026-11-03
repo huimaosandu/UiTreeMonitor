@@ -77,7 +77,7 @@ public sealed class EventListenerCore : IDisposable
     private readonly EventListenScope _scope;
     private readonly Action<UiaEventRecord>? _onEvent;
     private readonly IntPtr _targetWindowHandle;  // 目标窗口句柄：≠0 时监听挂到该窗口子树（不再全桌面）
-    private readonly int _targetProcessId;        // 目标进程：≠0 时回调按进程过滤，只录目标应用的操作
+    private volatile int _targetProcessId;        // 目标进程：≠0 时回调按进程过滤；volatile 支持 UpdateTargetProcess 就地切换
     private readonly int _ownProcessId = Environment.ProcessId;
     private readonly Action<bool>? _onStartCompleted; // 注册完成回调（管道线程调用；通知 UI "监听就绪可操作"）
     private AutomationElement? _hookElement;      // 实际挂载的元素（Stop 注销必须与注册同一元素，否则泄漏）
@@ -101,6 +101,21 @@ public sealed class EventListenerCore : IDisposable
 
     /// <summary>是否正在监听中。</summary>
     public bool IsListening => _isListening;
+
+    /// <summary>是否全桌面挂载（free mode 起步）：true 时可用 UpdateTargetProcess 就地切换过滤目标（不重启）。</summary>
+    public bool IsDesktopScope => _targetWindowHandle == IntPtr.Zero;
+
+    /// <summary>★ 就地切换进程过滤目标——不重启监听。
+    /// 曾 Stop+Start 重挂切换：旧实例 Dispose 立即断流，其全桌面注销（4.3s）又拖慢新实例注册，
+    /// 4.7s 真空期内用户操作全部漏录（seen=0）。pid 过滤本就在回调层做，改字段即可零窗口期切换。
+    /// 仅适用于全桌面挂载；窗口子树挂载范围固定，切目标必须重挂。</summary>
+    public void UpdateTargetProcess(int pid)
+    {
+        var old = _targetProcessId;
+        if (old == pid) return;
+        _targetProcessId = pid;
+        AppLog.Write("RECORD", $"EventListenerCore.UpdateTargetProcess: {old} → {pid} (in-place, listener stays, no re-attach gap)");
+    }
 
     // ★ 核心 UIA 事件定义（仅使用 WPF Automation 类中实际存在的静态字段）
     //   ID 一律运行时取 AutomationEvent.Id（曾硬编码数字与 WPF 实际 ID 错位，

@@ -340,7 +340,7 @@ public partial class RecordingPanel : UserControl
 
     /// <summary>
     /// 自动录制补挂/切换监听（MainWindow 静默捕获链路在悬停元素有效时调用）。
-    /// 自由模式 → 悬停后升级为按进程过滤；已锁定进程 → 悬停到别的进程 2 秒以上切换目标。
+    /// ★ 全桌面挂载的监听就地切换 pid 过滤（零真空期）；仅窗口子树挂载或无监听时才重挂。
     /// </summary>
     public void TryAttachAutoListener(int hoverProcessId)
     {
@@ -351,15 +351,26 @@ public partial class RecordingPanel : UserControl
         if (hoverProcessId == Environment.ProcessId) return;
         _hoverProcessId = hoverProcessId;
 
+        // ★ 就地切换过滤目标：全桌面监听在岗时只改 pid，绝不重启
+        //   （曾 Stop+Start 重挂：旧实例 Dispose 立即断流、全桌面注销 4.3s 拖慢新实例注册，
+        //    4.7s 真空期内用户点击全漏 seen=0）
+        if (_autoListener is not null && _autoListener.IsDesktopScope)
+        {
+            if (_listenerPid == hoverProcessId) return; // 目标未变
+            _autoListener.UpdateTargetProcess(hoverProcessId);
+            _listenerPid = hoverProcessId;
+            return;
+        }
+
+        // 窗口子树挂载（范围固定）或监听未启动 → 需要重挂/新起
         bool needAttach = _autoListener is null
-            || (_listenerPid == 0 && hoverProcessId != 0)                                  // 自由模式 → 升级
             || (_listenerPid != 0 && hoverProcessId != 0 && hoverProcessId != _listenerPid); // 切换目标进程
         if (!needAttach) return;
         if ((DateTime.Now - _lastAttach).TotalSeconds < 2) return; // 防抖：鼠标扫过窗口不疯狂重挂
 
         if (_autoListener is not null)
         {
-            AppLog.Write("RECORD", $"AutoListener re-attach: pid {_listenerPid} → {hoverProcessId} (hover target changed)");
+            AppLog.Write("RECORD", $"AutoListener re-attach: pid {_listenerPid} → {hoverProcessId} (window-subtree scope, must re-attach)");
             _autoListener.Stop();
             _autoListener.Dispose();
             _autoListener = null;
