@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
+using UiTreeMonitor.Core;
 using UiTreeMonitor.Core.Filters;
 using UiTreeMonitor.Core.Models;
 using UiTreeMonitor.Core.Tasks;
@@ -636,5 +638,61 @@ public class SyncGroupExternalModeTests
         task.MarkStopped();
         task.MarkCompleted();
         Assert.Equal(TaskRunState.Completed, task.State);
+    }
+}
+
+/// <summary>AppLog 行为：每次启动新建一份日志（启动时刻命名）；文件被删/被占用时继续保存不丢日志。</summary>
+public class AppLogTests : IDisposable
+{
+    // AppLog 目录/文件在进程内只解析一次（Lazy）——本类所有测试共用同一份日志文件，Dispose 统一清理
+    public void Dispose()
+    {
+        try
+        {
+            File.Delete(AppLog.LogFilePath);
+            var baseName = Path.GetFileNameWithoutExtension(AppLog.LogFilePath);
+            for (int i = 1; i <= 9; i++)
+                File.Delete(Path.Combine(AppLog.LogDir, $"{baseName}_{i}.log"));
+        }
+        catch { }
+    }
+
+    [Fact]
+    public void LogFilePath_NamedByStartupTimestamp()
+    {
+        // 每次打开软件都新建一份日志：文件名 = 启动时刻 yyyyMMdd_HHmmss
+        Assert.Matches(new System.Text.RegularExpressions.Regex(@"^\d{8}_\d{6}\.log$"),
+            Path.GetFileName(AppLog.LogFilePath));
+    }
+
+    [Fact]
+    public void Write_DeletedLogFile_RecreatesAndKeepsSaving()
+    {
+        // 测试过程中日志被删除 → 后续写入自动重建文件，日志继续保存
+        AppLog.Write("TEST", "before delete");
+        Assert.True(File.Exists(AppLog.LogFilePath));
+
+        File.Delete(AppLog.LogFilePath);
+        Assert.False(File.Exists(AppLog.LogFilePath));
+
+        AppLog.Write("TEST", "after delete");
+        Assert.True(File.Exists(AppLog.LogFilePath));
+        Assert.Contains("after delete", File.ReadAllText(AppLog.LogFilePath));
+    }
+
+    [Fact]
+    public void Write_FileLockedByOthers_FallsBackToAlternateFile()
+    {
+        // 日志被外部进程独占（或删除后句柄未释放 delete-pending）：降级备用文件继续保存
+        AppLog.Write("TEST", "warmup");
+        using (new FileStream(AppLog.LogFilePath, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            AppLog.Write("TEST", "while locked");
+        }
+
+        var baseName = Path.GetFileNameWithoutExtension(AppLog.LogFilePath);
+        var alt = Path.Combine(AppLog.LogDir, $"{baseName}_1.log");
+        Assert.True(File.Exists(alt));
+        Assert.Contains("while locked", File.ReadAllText(alt));
     }
 }
