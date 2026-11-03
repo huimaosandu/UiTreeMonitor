@@ -128,13 +128,13 @@ public sealed class TreeSampler
             ParentId = parentId,
             Depth = depth,
             Name = Safe(el.Name),
-            ControlType = ControlTypeName(el.ControlTypeId),
+            // ★ 防御：某些 UIA 元素的 int 属性可能因 COM 层返回 null/失败而抛异常
+            //   A11yElement.ProcessId / ControlTypeId 是 int 类型，COM 返回无效值时崩溃
+            ProcessId = SafeGetInt(() => el.ProcessId),
+            ControlType = ControlTypeName(SafeGetInt(() => el.ControlTypeId, fallback: 50000)), // 默认 "Custom"
             AutomationId = Safe(el.AutomationId),
             ClassName = Safe(el.ClassName),
             Framework = Safe(el.Framework),
-            // ★ 防御：某些 UIA 元素的 ProcessId 可能返回 null（非标准元素）
-            //   A11yElement.ProcessId 是 int 类型，COM 层返回 null 会抛 InvalidCastException
-            ProcessId = SafeInt(el.ProcessId),
             IsEnabled = el.IsEnabled,
             IsOffScreen = el.IsOffScreen,
             Value = GetVal("ValuePattern", "Value"),
@@ -154,14 +154,10 @@ public sealed class TreeSampler
 
     private static string? Safe(string? s) => string.IsNullOrEmpty(s) ? null : s;
 
-    /// <summary>安全读取 int 属性（COM 可能返回 null 导致 InvalidCastException）。</summary>
-    private static int SafeInt(int value) => value;
-    
-    // ★ 重载：从 object 安全转 int（处理 COM 返回的 DBNull/Missing 等情况）
-    private static int SafeInt(object? value) => value switch
+    /// <summary>安全读取 int 属性（COM 可能返回 null/失败导致异常）。</summary>
+    private static int SafeGetInt(Func<int> getter, int fallback = 0)
     {
-        int i => i,
-        null => 0,
-        _ => 0
-    };
+        try { return getter(); }
+        catch { return fallback; }
+    }
 }

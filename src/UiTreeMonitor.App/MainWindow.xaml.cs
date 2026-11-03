@@ -422,6 +422,9 @@ public partial class MainWindow : Window
         _mouseCapture.ResultProduced -= OnCaptureResult;
         _mouseCapture.Stop();
         ClearHighlight();
+        // ★ 清理 HollowHighlightDriver 蓝框（录制模式显示的蓝框需要在停止时消失）
+        try { HollowHighlightDriver.GetDefaultInstance().Clear(); }
+        catch { /* 忽略清理失败 */ }
         Log("静默捕获已停止");
     }
 

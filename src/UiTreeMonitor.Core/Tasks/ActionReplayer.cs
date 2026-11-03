@@ -54,6 +54,18 @@ public sealed class ActionReplayer : IDisposable
 
             var record = records[i];
 
+            // ★ 跳过自动录制的 UIA 事件记录（PatternName 以 "UIA_Event_" 开头）
+            //   这些是事件监听日志，不是用户操作脚本，无法通过 Pattern.Invoke 回放
+            if (record.PatternName.StartsWith("UIA_Event_", StringComparison.OrdinalIgnoreCase))
+            {
+                results.Add(new ActionResult
+                {
+                    Success = false,
+                    Error = $"[事件监听] {record.MethodName}（不可回放，仅用于记录/导出）"
+                });
+                continue;
+            }
+
             // 报告进度
             progress?.Report(new PlaybackProgress
             {

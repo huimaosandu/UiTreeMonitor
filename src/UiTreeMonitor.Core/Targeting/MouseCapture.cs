@@ -122,7 +122,7 @@ public sealed class MouseCapture : IDisposable
                                 TreeSampler.ControlTypeName(el.ControlTypeId),
                                 Safe(el.AutomationId),
                                 Safe(el.ClassName),
-                                el.ProcessId,
+                                SafeGetInt(() => el.ProcessId),   // ★ 安全读取，COM 可能返回 null
                                 Safe(el.ProcessName),
                                 NormalizeRect(el.BoundingRectangle),
                                 el.IsKeyboardFocusable,
@@ -186,6 +186,13 @@ public sealed class MouseCapture : IDisposable
         => rect is { } r && r.Width > 0 && r.Height > 0 ? $"{r.Left},{r.Top},{r.Right},{r.Bottom}" : null;
 
     private static string? Safe(string? s) => string.IsNullOrEmpty(s) ? null : s;
+
+    /// <summary>安全读取 int 属性（COM 可能返回 null/失败导致异常）。</summary>
+    private static int SafeGetInt(Func<int> getter, int fallback = 0)
+    {
+        try { return getter(); }
+        catch { return fallback; }
+    }
 
     /// <summary>空矩形（0 尺寸或异常值）返回 null，避免高亮窗口无效定位。</summary>
     private static Rectangle? NormalizeRect(Rectangle r)
