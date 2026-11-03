@@ -135,8 +135,8 @@ public sealed class TreeSampler
             AutomationId = Safe(el.AutomationId),
             ClassName = Safe(el.ClassName),
             Framework = Safe(el.Framework),
-            IsEnabled = el.IsEnabled,
-            IsOffScreen = el.IsOffScreen,
+            IsEnabled = SafeBool(() => el.IsEnabled),
+            IsOffScreen = SafeBool(() => el.IsOffScreen),
             Value = GetVal("ValuePattern", "Value"),
             RangeValue = GetVal("RangeValuePattern", "Value"),
             ToggleState = GetVal("TogglePattern", "ToggleState"),
@@ -156,6 +156,13 @@ public sealed class TreeSampler
 
     /// <summary>安全读取 int 属性（COM 可能返回 null/失败导致异常）。</summary>
     private static int SafeGetInt(Func<int> getter, int fallback = 0)
+    {
+        try { return getter(); }
+        catch { return fallback; }
+    }
+
+    /// <summary>安全读取 bool 属性（COM 可能返回 null/失败导致异常）。</summary>
+    private static bool SafeBool(Func<bool> getter, bool fallback = false)
     {
         try { return getter(); }
         catch { return fallback; }

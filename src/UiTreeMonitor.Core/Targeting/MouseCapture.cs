@@ -125,7 +125,7 @@ public sealed class MouseCapture : IDisposable
                                 SafeGetInt(() => el.ProcessId),   // ★ 安全读取，COM 可能返回 null
                                 Safe(el.ProcessName),
                                 NormalizeRect(el.BoundingRectangle),
-                                el.IsKeyboardFocusable,
+                                SafeBool(() => el.IsKeyboardFocusable),  // ★ 安全读取，COM 可能返回 null
                                 TreeNodeId: null,
                                 IsValid: true,
                                 ElementContextId: ecId);
@@ -189,6 +189,13 @@ public sealed class MouseCapture : IDisposable
 
     /// <summary>安全读取 int 属性（COM 可能返回 null/失败导致异常）。</summary>
     private static int SafeGetInt(Func<int> getter, int fallback = 0)
+    {
+        try { return getter(); }
+        catch { return fallback; }
+    }
+
+    /// <summary>安全读取 bool 属性（COM 可能返回 null/失败导致异常）。</summary>
+    private static bool? SafeBool(Func<bool> getter, bool? fallback = null)
     {
         try { return getter(); }
         catch { return fallback; }
