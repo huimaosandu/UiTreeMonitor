@@ -105,6 +105,13 @@
             </TreeView.ItemContainerStyle>
             <TreeView.ContextMenu>
                 <ContextMenu x:Name="MenuSteps">
+                    <MenuItem Header="▶ 运行此步骤（含子步骤）" Click="MenuRunStep_Click"
+                              ToolTip="只运行选中步骤（循环/触发器按展开语义执行子树；运行中再点=停止）"/>
+                    <Separator/>
+                    <MenuItem Header="插入动作（自动开录制）" Click="MenuInsertAction_Click"
+                              ToolTip="未录制时自动开始录制（保留现有步骤），此后录制的动作依次插到选中行上方"/>
+                    <MenuItem Header="插入截图步骤（📷 元素截图）" Click="MenuInsertScreenshot_Click"
+                              ToolTip="启动随鼠标捕获：把鼠标移到目标元素上，点蓝框右上角 ✂ 剪刀按钮 → 选保存目录 → 插入（运行时自动存 img-时间戳.png）"/>
                     <MenuItem Header="插入循环体（嵌套）" Click="MenuInsertLoop_Click"
                               ToolTip="插入到选中步骤上方（未选中=根级末尾）；Shift 多选行后按 Tab 可把步骤移入"/>
                     <MenuItem Header="插入延时" Click="MenuInsertDelay_Click"/>

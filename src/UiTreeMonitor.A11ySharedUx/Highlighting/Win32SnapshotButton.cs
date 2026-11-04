@@ -1,4 +1,4 @@
-﻿// Copyright (c) Microsoft. All rights reserved.
+// Copyright (c) Microsoft. All rights reserved.
 // Licensed under the MIT license. See LICENSE file in the project root for full license information.
 using AccessibilityInsights.CommonUxComponents.Utilities;
 using AccessibilityInsights.SharedUx.Telemetry;
@@ -26,6 +26,9 @@ namespace AccessibilityInsights.SharedUx.Highlighting
         const int DefaultWidth = 20;
         const int DefaultHeight = 20;
         const String BeakerCode = "\uF3A6";
+        // 当前绘制的图标：默认烧杯（Fabric 私有字体）；可切换为系统字体字符（如剪刀 ✂ U+2702 = Segoe UI Symbol）
+        private string IconCode = BeakerCode;
+        private string? SystemIconFontName;
         private int Width = DefaultWidth;
         private int Height = DefaultHeight;
         private readonly System.Drawing.Color FontBrush;
@@ -56,6 +59,24 @@ namespace AccessibilityInsights.SharedUx.Highlighting
         public string WindowClassName { get; private set; }
         readonly IntPtr hInstance;
         public Action Clicked { get; set; }
+
+        /// <summary>
+        /// 切换按钮图标：code=字符（"\uF3A6" 烧杯 / "\u2702" 剪刀）；
+        /// systemFontName=null 用内嵌 Fabric 字体，否则用系统字体（如 "Segoe UI Symbol"）。
+        /// 清空 DPI 位图缓存并立即重绘（可见时）。
+        /// </summary>
+        public void SetIcon(string code, string? systemFontName = null)
+        {
+            if (this.IconCode == code && this.SystemIconFontName == systemFontName) return;
+            this.IconCode = code;
+            this.SystemIconFontName = systemFontName;
+            this.beakerIconCollection.Clear();
+            this.hoveredBeakerIconCollection.Clear();
+            if (this.isVisible)
+            {
+                try { DrawBeaker(); } catch { /* 窗口句柄可能尚未就绪 */ }
+            }
+        }
 
         private readonly Dictionary<double, Bitmap> beakerIconCollection;
         private readonly Dictionary<double, Bitmap> hoveredBeakerIconCollection;
@@ -149,17 +170,18 @@ namespace AccessibilityInsights.SharedUx.Highlighting
                 // Draw string
                 int fontSize = Convert.ToInt32(9.0f * DPI);
                 g.Clear(bkgColor);
-                using (Font font = new Font(this.IconFontFamily, fontSize, System.Drawing.FontStyle.Regular))
-                using (SolidBrush brush = new SolidBrush(this.FontBrush))
-                {
-                    g.DrawString(
-                        BeakerCode,
-                        font,
-                        brush,
-                        new Rectangle(0, 0, this.Width, this.Height + BorderMargin * 3),
-                        sf
-                        );
-                }
+                // 系统字体字符（如剪刀）用系统字体族并加粗（轮廓字符细）；Fabric 字符（烧杯）用内嵌私有字体
+                using Font font = SystemIconFontName is null
+                    ? new Font(this.IconFontFamily, fontSize, System.Drawing.FontStyle.Regular)
+                    : new Font(SystemIconFontName, fontSize, System.Drawing.FontStyle.Bold);
+                using SolidBrush brush = new SolidBrush(this.FontBrush);
+                g.DrawString(
+                    IconCode,
+                    font,
+                    brush,
+                    new Rectangle(0, 0, this.Width, this.Height + BorderMargin * 3),
+                    sf
+                    );
             }
 
             if (!this.IsHovered)

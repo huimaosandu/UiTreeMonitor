@@ -1,4 +1,4 @@
-﻿// Copyright (c) Microsoft. All rights reserved.
+// Copyright (c) Microsoft. All rights reserved.
 // Licensed under the MIT license. See LICENSE file in the project root for full license information.
 using AccessibilityInsights.SharedUx.Enums;
 using AccessibilityInsights.Win32;
@@ -196,6 +196,14 @@ namespace AccessibilityInsights.SharedUx.Highlighting
             {
                 this.Win32Snapshot.Clicked = callback;
             }
+        }
+
+        /// <summary>
+        /// Switch the snapshot button icon (beaker/scissors): systemFontName=null → embedded Fabric font.
+        /// </summary>
+        public void SetSnapshotIcon(string code, string? systemFontName = null)
+        {
+            this.Win32Snapshot?.SetIcon(code, systemFontName);
         }
 
         /// <summary>

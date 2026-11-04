@@ -32,6 +32,7 @@ public partial class StepEditDialog : Window
             StepKinds.Delay => "编辑延时",
             StepKinds.Timer => "编辑定时器",
             StepKinds.Trigger => "编辑元素触发器",
+            StepKinds.Screenshot => "编辑截图步骤",
             _ => "编辑步骤",
         };
 
@@ -71,6 +72,17 @@ public partial class StepEditDialog : Window
                 };
                 TxtExpected.Text = t?.ExpectedValue ?? "";
                 TxtTimeout.Text = (t?.TimeoutSec ?? 60).ToString();
+                break;
+
+            case StepKinds.Screenshot:
+                PnlScreenshot.Visibility = Visibility.Visible;
+                // 目标元素：新建=剪刀刚捕获的元素；编辑=已保存的截图配置（spec 不可改，重捕获=删除后重新插入）
+                var shotSpec = !string.IsNullOrEmpty(node.ScreenshotSpec) ? node.ScreenshotSpec : _elementSpec;
+                var shotName = !string.IsNullOrEmpty(node.ScreenshotName) ? node.ScreenshotName : _elementName;
+                LblShotElementName.Text = string.IsNullOrEmpty(shotName) ? "(未指定)" : shotName;
+                LblShotElementSpec.Text = shotSpec;
+                _elementSpecUsed = shotSpec;
+                TxtShotDir.Text = node.ScreenshotDir;
                 break;
         }
     }
@@ -113,6 +125,18 @@ public partial class StepEditDialog : Window
     {
         1 => "Name", 2 => "RangeValue", 3 => "ToggleState", 4 => "ExpandCollapseState", 5 => "IsEnabled", _ => "Value",
     };
+
+    /// <summary>选择截图保存目录（运行时自动保存 img-时间戳.png 到该目录）。</summary>
+    private void BtnShotBrowse_Click(object sender, RoutedEventArgs e)
+    {
+        var dlg = new Microsoft.Win32.OpenFolderDialog
+        {
+            Title = "选择截图保存目录",
+            InitialDirectory = System.IO.Directory.Exists(TxtShotDir.Text) ? TxtShotDir.Text : null,
+        };
+        if (dlg.ShowDialog(this) == true)
+            TxtShotDir.Text = dlg.FolderName;
+    }
 
     private void BtnOk_Click(object sender, RoutedEventArgs e)
     {
@@ -159,6 +183,17 @@ public partial class StepEditDialog : Window
                     ExpectedValue = expected,
                     TimeoutSec = to,
                 };
+                break;
+
+            case StepKinds.Screenshot:
+                if (string.IsNullOrEmpty(_elementSpecUsed)) { TxtError.Text = "目标元素未捕获（捕获中点蓝框右上角剪刀按钮）"; return; }
+                var dir = TxtShotDir.Text.Trim();
+                if (dir.Length == 0) { TxtError.Text = "请填写或选择截图保存目录"; return; }
+                _node.ScreenshotSpec = _elementSpecUsed;
+                _node.ScreenshotName = string.IsNullOrEmpty(_elementName)
+                    ? (string.IsNullOrEmpty(LblShotElementName.Text) || LblShotElementName.Text == "(未指定)" ? "(元素)" : LblShotElementName.Text)
+                    : _elementName;
+                _node.ScreenshotDir = dir;
                 break;
         }
         Saved = true;

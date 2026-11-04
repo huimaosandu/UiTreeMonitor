@@ -43,6 +43,9 @@ public partial class RecordingPanel : UserControl
     private StepVm? _selectedVm;        // 步骤树当前选中节点（右键操作目标）
     private StepVm? _anchorVm;          // Shift 范围多选锚点（上次单选项）
     private bool _triggerPickSolo;      // 触发器捕获由右键插入发起（非录制中）：完成/取消后停止静默捕获
+    private bool _screenshotPickSolo;   // 截图捕获由右键插入发起（非录制中）：完成/取消后停止静默捕获并恢复烧杯
+    private StepNode? _insertAnchor;    // "插入动作"录制锚点：新录动作依次插到该节点之后（null=根级末尾追加）
+    private StepNode? _lastAppendedNode; // 录制链路上最后追加/合并的动作节点（merge 判定与锚点插入用）
     private RecordingTaskRunner? _playRunner; // 面板内"全部回放"的执行器（可停止）
     private EventListenerCore? _autoListener; // UIA 事件监听器（设置开启时）
     private InputHookCore? _inputHook;        // 低级输入钩子（默认：鼠标左右键+键盘）
@@ -77,6 +80,12 @@ public partial class RecordingPanel : UserControl
     /// <summary>停止触发器目标捕获（MainWindow 注入：停静默捕获——右键插入且未录制时用）。</summary>
     public Action? StopTriggerCapture { get; set; }
 
+    /// <summary>启动截图目标捕获（MainWindow 注入：蓝框右上角烧杯换剪刀按钮；点剪刀→选目录→插入截图步骤）。</summary>
+    public Func<bool>? StartScreenshotCapture { get; set; }
+
+    /// <summary>停止截图目标捕获（MainWindow 注入：恢复烧杯图标；右键插入且未录制时用）。</summary>
+    public Action? StopScreenshotCapture { get; set; }
+
     public RecordingPanel()
     {
         InitializeComponent();
@@ -107,6 +116,8 @@ public partial class RecordingPanel : UserControl
             _steps.Clear();
             _currentTask = null; // 新录制会话脱离已打开任务（保存为新任务）
             _stepIndex = -1;
+            _insertAnchor = null;      // 新录制会话重置插入锚点
+            _lastAppendedNode = null;
             RefreshTree();
 
             // ★ 先统一设置 _isRecording=true（确保 RecordingStateChanged 传递 true → 启动静默捕获）
@@ -133,6 +144,8 @@ public partial class RecordingPanel : UserControl
             _uiaSemanticMode = false;
 
             _isRecording = false;
+            _insertAnchor = null;      // 停止录制退出插入模式
+            _lastAppendedNode = null;
             BtnToggleRecord.Content = "● 开始录制";
             BtnToggleRecord.Foreground = System.Windows.Media.Brushes.Black;
             TxtStatus.Text = $"录制停止，共 {_steps.Count} 条操作" +
@@ -550,21 +563,23 @@ public partial class RecordingPanel : UserControl
     }
 
     /// <summary>统一追加记录（UIA 事件/输入语义化/坐标回退共用）：
-    /// replacePrevious=true 时若上一条同元素（spec 忽略 rect 抖动）同 Pattern 同方法 → 原位替换（值类合并去抖）。
-    /// ★ 树形步骤为 UI 主数据（_steps）；_script.Records 同步维护（旧格式导出/计数兼容）。</summary>
+    /// replacePrevious=true 时若链路上最后一条同元素（spec 忽略 rect 抖动）同 Pattern 同方法 → 原位替换（值类合并去抖）。
+    /// ★ 树形步骤为 UI 主数据（_steps）；_script.Records 同步维护（旧格式导出/计数兼容）。
+    /// ★ "插入动作"锚点（_insertAnchor）生效时：新动作依次插到锚点之后（选中行上方连续插入），并推进锚点。</summary>
     private void AppendRecord(ActionRecord record, bool replacePrevious, string source, string? statusText = null)
     {
         var merged = false;
-        if (replacePrevious && _steps.Count > 0 && _steps[^1] is { Kind: StepKinds.Action } lastNode
+        if (replacePrevious && _lastAppendedNode is { Kind: StepKinds.Action } lastNode
             && lastNode.Action is not null && MergeKey(lastNode.Action) == MergeKey(record))
         {
             lastNode.Action = record;
-            _script.Records[^1] = record;
+            if (_script.Records.Count > 0) _script.Records[^1] = record;
             merged = true;
         }
         else
         {
-            _steps.Add(new StepNode { Kind = StepKinds.Action, Action = record });
+            var node = new StepNode { Kind = StepKinds.Action, Action = record };
+            InsertRecordedNode(node);
             _script.Records.Add(record);
         }
 
@@ -573,10 +588,30 @@ public partial class RecordingPanel : UserControl
             ? $"{record.MethodName}({string.Join(", ", record.Parameters)})"
             : record.MethodName;
         TxtStatus.Text = statusText ?? $"● 已捕获 {_steps.Count} 个动作: {detail}" +
-                         (record.ElementName != "" ? $" ({record.ElementName})" : "");
+                         (record.ElementName != "" ? $" ({record.ElementName})" : "") +
+                         (_insertAnchor is not null ? "（插入模式）" : "");
         if (merged)
             AppLog.Write("RECORD", $"AppendRecord merge[{source}]: {record.PatternName}.{record.MethodName}" +
                 $"({string.Join(", ", record.Parameters ?? Array.Empty<object?>())}) elem={record.ElementName}");
+    }
+
+    /// <summary>录制动作落树：锚点模式下插到锚点节点之后（连续保持录制顺序），否则根级末尾追加。</summary>
+    private void InsertRecordedNode(StepNode node)
+    {
+        if (_insertAnchor is not null)
+        {
+            var list = FindParentList(_insertAnchor, _steps, out var idx);
+            if (list is not null)
+            {
+                list.Insert(idx + 1, node);
+                _insertAnchor = node;
+                _lastAppendedNode = node;
+                return;
+            }
+            _insertAnchor = null; // 锚点被外部删除（如清空）→ 回落根级末尾
+        }
+        _steps.Add(node);
+        _lastAppendedNode = node;
     }
 
     /// <summary>merge 判定键：spec 去掉 rect 段（双通道对同一元素读 rect 时机不同会差 1~2px）+ Pattern.方法。</summary>
@@ -760,6 +795,8 @@ public partial class RecordingPanel : UserControl
         _currentTask = null;
         _stepIndex = -1;
         _isRecording = false;
+        _insertAnchor = null;
+        _lastAppendedNode = null;
         TxtAutoHint.Visibility = Visibility.Collapsed;
         RefreshTree();
         TxtStatus.Text = "已清空";
@@ -811,7 +848,13 @@ public partial class RecordingPanel : UserControl
         var task = _currentTask != null
             ? new RecordingTask { Name = $"{_currentTask.Name}（面板回放）", Steps = _steps, Mode = _currentTask.Mode }
             : new RecordingTask { Name = "面板回放", Steps = _steps, Mode = _uiaSemanticMode ? "uia" : "input" };
+        StartPlayback(task);
+    }
 
+    /// <summary>启动回放执行器（"全部回放"与右键"运行此步骤"共用；单步=只含选中节点的单根任务）。</summary>
+    private void StartPlayback(RecordingTask task)
+    {
+        if (_playRunner is not null) return;
         BtnPlayAll.Content = "■ 停止回放";
         BtnStep.IsEnabled = false;
         TxtStatus.Text = "▶ 回放中…";
@@ -1279,9 +1322,9 @@ public partial class RecordingPanel : UserControl
 
     private bool EditNodeDialog(StepNode node)
     {
-        // 触发器：目标元素来自已保存配置（重配置元素=删除后重新插入捕获）；读值经 ResolveElement 实时解析
-        string spec = node.Trigger?.ElementSpec ?? "";
-        string name = node.Trigger?.ElementName ?? "";
+        // 触发器/截图：目标元素来自已保存配置（重配置元素=删除后重新插入捕获）；读值经 ResolveElement 实时解析
+        string spec = node.Kind == StepKinds.Screenshot ? node.ScreenshotSpec : node.Trigger?.ElementSpec ?? "";
+        string name = node.Kind == StepKinds.Screenshot ? node.ScreenshotName : node.Trigger?.ElementName ?? "";
         var dlg = new StepEditDialog(node, spec, name,
             prop => RecordingTaskRunner.TryReadProperty(ResolveElement, spec, prop, out var v) ? v : null)
         { Owner = Window.GetWindow(this) };
@@ -1335,6 +1378,108 @@ public partial class RecordingPanel : UserControl
         }
         _triggerPickSolo = !_isRecording; // 录制中静默捕获本就在跑（用完不停）；未录制则为插入而启动（完成即停）
         TxtStatus.Text = "⚗ 触发器：把鼠标移到要监控的元素上，点蓝框右上角 🧪 烧杯按钮选定目标…";
+    }
+
+    /// <summary>插入截图步骤：启动随鼠标捕获（蓝框右上角=剪刀按钮），点剪刀→选保存目录→试截一张→上方插入。</summary>
+    private void MenuInsertScreenshot_Click(object sender, RoutedEventArgs e)
+    {
+        if (StartScreenshotCapture?.Invoke() != true)
+        {
+            TxtStatus.Text = "无法启动捕获（正常\"随鼠标捕获\"进行中？先停止它再插入截图步骤）";
+            return;
+        }
+        _screenshotPickSolo = !_isRecording; // 录制中静默捕获本就在跑（用完不停）；未录制则为插入而启动（完成即停）
+        TxtStatus.Text = "📷 截图：把鼠标移到要截图的元素上，点蓝框右上角 ✂ 剪刀按钮选定目标…";
+    }
+
+    /// <summary>剪刀捕获完成（MainWindow OnSnapshotAddTarget 截图分叉调用，UI 线程）：
+    /// 弹目录选择 → 立即按捕获矩形试截一张 img-时间戳.png → 按"上方插入"规则加入截图步骤。</summary>
+    internal void OnScreenshotCaptured(string spec, string elementName, System.Drawing.Rectangle captureRect)
+    {
+        try
+        {
+            var dlg = new Microsoft.Win32.OpenFolderDialog
+            {
+                Title = "选择截图保存目录（任务运行时自动保存到该目录，不再弹窗）",
+            };
+            if (dlg.ShowDialog(Window.GetWindow(this)) != true)
+            {
+                TxtStatus.Text = "已取消截图步骤插入";
+                return;
+            }
+            var dir = dlg.FolderName;
+
+            // 立即试截一张（img-时间戳.png 存入所选目录）：验证截图链路并给用户即时产物
+            var (ok, file) = ScreenCapture.CaptureRegion(captureRect, dir);
+
+            var node = new StepNode
+            {
+                Kind = StepKinds.Screenshot,
+                ScreenshotSpec = spec,
+                ScreenshotName = elementName,
+                ScreenshotDir = dir,
+            };
+            var (list, index) = ResolveInsertPosition();
+            list.Insert(index, node);
+            RefreshTree();
+            RefreshUI();
+            TxtStatus.Text = ok
+                ? $"📷 已插入截图步骤（预览已保存 → {file}）"
+                : $"📷 已插入截图步骤（预览失败：{file}；运行时将按元素定位重试）";
+            AppLog.Write("RECORD", ok
+                ? $"Screenshot step inserted (elem='{elementName}'), preview → {file}"
+                : $"Screenshot step inserted (elem='{elementName}'), preview FAILED: {file}");
+        }
+        finally
+        {
+            // 右键插入发起的捕获（非录制中）：完成后停止静默捕获并恢复烧杯图标；录制中则录制继续
+            if (_screenshotPickSolo)
+            {
+                _screenshotPickSolo = false;
+                StopScreenshotCapture?.Invoke();
+            }
+        }
+    }
+
+    /// <summary>插入动作：未录制时自动开启录制（★保留当前步骤树不清空），此后录制的动作依次插到选中行上方。</summary>
+    private void MenuInsertAction_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_isRecording)
+        {
+            // 与"开始录制"按钮启动分支一致，但不清空步骤树（插入场景=往现有脚本中插）
+            _isAutoMode = ((RadioButton)RbModeAuto).IsChecked == true;
+            _script = new ActionScript { CreatedAt = DateTime.Now }; // 计数重置，_steps 保留
+            _stepIndex = -1;
+            _isRecording = true;
+            _lastAppendedNode = null;
+            if (_isAutoMode)
+                StartAutoRecording();
+            else
+                TxtStatus.Text = "● 手动录制中…执行 Actions 将自动记录";
+            BtnToggleRecord.Content = "■ 停止录制";
+            BtnToggleRecord.Foreground = System.Windows.Media.Brushes.Red;
+            RefreshUI();
+            RecordingStateChanged?.Invoke(true); // 触发 MainWindow 启动静默捕获
+        }
+        // 锚点=当前选中节点（录制中再次点此菜单=换插入位置；未选中→根级末尾追加）
+        _insertAnchor = _selectedVm?.Node;
+        _lastAppendedNode = _insertAnchor; // merge 基点跟随锚点（非动作节点时 merge 判定自动跳过）
+        TxtStatus.Text = _insertAnchor is not null
+            ? $"● 插入动作：录制中，新动作将依次插到「{_insertAnchor.DisplayText}」上方（停止录制自动退出插入模式）"
+            : "● 插入动作：录制中，新动作将追加到末尾（先选中一行可插到它上方）";
+    }
+
+    /// <summary>右键运行选中步骤（含子树：循环/触发器按展开语义执行；运行中再点=停止）。</summary>
+    private void MenuRunStep_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selectedVm is null) { TxtStatus.Text = "请先选中要运行的步骤"; return; }
+        if (_isRecording) { TxtStatus.Text = "录制中不能运行步骤（先停止录制）"; return; }
+        if (_playRunner is not null) { _playRunner.Stop(); return; }
+        var node = _selectedVm.Node;
+        if (!node.IsEnabled) { TxtStatus.Text = $"该步骤已禁用（⏸）：{node.DisplayText}"; return; }
+        var task = new RecordingTask { Name = $"单步运行：{node.DisplayText}", Steps = new List<StepNode> { node } };
+        StartPlayback(task);
+        TxtStatus.Text = $"▶ 运行此步骤：{node.DisplayText}…";
     }
 
     private void MenuEditStep_Click(object sender, RoutedEventArgs e)

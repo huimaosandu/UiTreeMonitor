@@ -727,6 +727,14 @@ public class RecordingTaskTests
                 },
                 new StepNode { Kind = StepKinds.Delay, DelayMs = 2500, IsEnabled = false },
                 new StepNode { Kind = StepKinds.Timer, TriggerAt = new DateTime(2026, 12, 25, 8, 30, 0) },
+                // 截图步骤：spec 定位 + 显示名 + 保存目录（运行时 img-时间戳.png 自动存入该目录）
+                new StepNode
+                {
+                    Kind = StepKinds.Screenshot,
+                    ScreenshotSpec = "spec:v1|autoId=btnSave",
+                    ScreenshotName = "保存按钮",
+                    ScreenshotDir = @"D:\uitreemonitor\shots",
+                },
                 new StepNode
                 {
                     Kind = StepKinds.Loop,
@@ -761,7 +769,7 @@ public class RecordingTaskTests
         Assert.Equal(task.Id, back!.Id);                       // Guid 往返保持
         Assert.Equal("冒烟任务", back.Name);
         Assert.Equal("uia", back.Mode);
-        Assert.Equal(4, back.Steps.Count);
+        Assert.Equal(5, back.Steps.Count);
 
         // action：全部字段（Parameters 往返后元素为 JsonElement，仅验证结构）
         var action = back.Steps[0];
@@ -785,8 +793,15 @@ public class RecordingTaskTests
         // timer：触发时刻
         Assert.Equal(new DateTime(2026, 12, 25, 8, 30, 0), back.Steps[2].TriggerAt);
 
+        // screenshot：spec/显示名/保存目录三字段完整往返
+        var shot = back.Steps[3];
+        Assert.Equal(StepKinds.Screenshot, shot.Kind);
+        Assert.Equal("spec:v1|autoId=btnSave", shot.ScreenshotSpec);
+        Assert.Equal("保存按钮", shot.ScreenshotName);
+        Assert.Equal(@"D:\uitreemonitor\shots", shot.ScreenshotDir);
+
         // loop：参数与两层嵌套
-        var loop = back.Steps[3];
+        var loop = back.Steps[4];
         Assert.Equal(StepKinds.Loop, loop.Kind);
         Assert.Equal(5, loop.LoopCount);
         Assert.Equal(200, loop.LoopIntervalMs);
@@ -837,5 +852,17 @@ public class RecordingTaskTests
         Assert.Equal("InvokePattern.Invoke 按钮",
             new StepNode { Kind = StepKinds.Action, Action = new ActionRecord { PatternName = "InvokePattern", MethodName = "Invoke", ElementName = "按钮" } }
             .DisplayText);
+
+        // 截图：元素名 + 保存目录；未配置 spec 时标注未配置
+        var shot = new StepNode
+        {
+            Kind = StepKinds.Screenshot,
+            ScreenshotSpec = "spec:v1|autoId=btnSave",
+            ScreenshotName = "保存按钮",
+            ScreenshotDir = @"D:\uitreemonitor\shots",
+        };
+        Assert.Equal("📷 截图 保存按钮", shot.DisplayText);
+        Assert.Equal(@"保存于 D:\uitreemonitor\shots", shot.DetailText);
+        Assert.Equal("📷 截图（未配置）", new StepNode { Kind = StepKinds.Screenshot }.DisplayText);
     }
 }

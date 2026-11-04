@@ -144,6 +144,8 @@ public partial class MainWindow : Window
     private bool _capturing;
     private bool _silentCapturing; // 静默捕获模式（录制用：鼠标跟踪+树高亮+Details刷新，无捕获框/烧杯）
     private MouseCaptureResult? _lastHoverResult; // 当前悬停选中的元素（烧杯按钮回调用）
+    private bool _screenshotPicking;  // 截图目标拾取中（蓝框右上角已临时切换为剪刀）：烧杯回调走截图分叉
+    private bool _screenshotPickSolo; // 截图拾取由右键插入发起且为此单独启动了静默捕获：完成后停止并恢复烧杯图标
     private TreeNodeViewModel? _selectedNode; // 当前树选中节点（Details 面板联动）
     private object? _rightClickedItem; // 右键点击的属性/Pattern 项（ContextMenu 回调用）
     private bool _detailsLocked; // 烧杯按钮点击后锁定 Details 不再刷新
@@ -351,9 +353,37 @@ public partial class MainWindow : Window
         {
             if (_capturing) return false;      // 正常"随鼠标捕获"占用中（其烧杯走添加监控路径）
             if (!_silentCapturing) StartSilentCapture();
+            // 触发器拾取覆盖截图拾取（两者共用蓝框右上角按钮，后发起者优先）：退出截图模式并恢复烧杯
+            if (_screenshotPicking)
+            {
+                _screenshotPicking = false;
+                _screenshotPickSolo = false;
+                try { HollowHighlightDriver.GetDefaultInstance().SetSnapshotIcon("\uF3A6"); } catch { /* 忽略 */ }
+            }
             return true;
         };
         RecordingPanel.StopTriggerCapture = StopSilentCapture;
+        // ★ 注入截图目标捕获通道（右键"插入截图步骤"用）：蓝框右上角烧杯临时切换为剪刀
+        //   （✂ U+2702 用系统字体 Segoe UI Symbol 绘制——Fabric 私有字体无剪刀字形）
+        RecordingPanel.StartScreenshotCapture = () =>
+        {
+            if (_capturing) return false;      // 正常"随鼠标捕获"占用中（其烧杯走添加监控路径）
+            var solo = !_silentCapturing;       // 录制中静默捕获本就在跑（复用，完成后不停）；否则为截图单独启动
+            if (solo) StartSilentCapture();
+            _screenshotPicking = true;
+            _screenshotPickSolo = solo;
+            try { HollowHighlightDriver.GetDefaultInstance().SetSnapshotIcon("\u2702", "Segoe UI Symbol"); }
+            catch { /* 图标切换失败不影响捕获 */ }
+            return true;
+        };
+        RecordingPanel.StopScreenshotCapture = () =>
+        {
+            var solo = _screenshotPickSolo;
+            _screenshotPicking = false;
+            _screenshotPickSolo = false;
+            try { HollowHighlightDriver.GetDefaultInstance().SetSnapshotIcon("\uF3A6"); } catch { /* 忽略 */ }
+            if (solo) StopSilentCapture();     // 仅为截图启动的捕获（非录制中）用完即停
+        };
         RecordingPanel.RecordingStateChanged += (recording) =>
         {
             var isAuto = ((System.Windows.Controls.RadioButton)RecordingPanel.RbModeAuto).IsChecked == true;
@@ -561,6 +591,18 @@ public partial class MainWindow : Window
         TxtCaptureStatus.Text = "";
     }
 
+    /// <summary>监控任务列表右键"添加监控任务（随鼠标捕获）"：与顶部"随鼠标捕获"按钮同一入口
+    /// （空白处右键即可发起，不必移到窗口顶部）；已在捕获中则提示后忽略。</summary>
+    private void MenuAddTaskByCapture_Click(object sender, RoutedEventArgs e)
+    {
+        if (_capturing)
+        {
+            TxtStatus.Text = "已在随鼠标捕获中——悬停选中元素后点蓝框右上角烧杯确定目标";
+            return;
+        }
+        BtnMouseCapture_Click(this, e); // 此处 _capturing=false，必走启动分支
+    }
+
     /// <summary>启动静默捕获（录制模式/触发器目标捕获用：鼠标跟踪+树高亮+Details刷新，蓝框带烧杯按钮）。</summary>
     private void StartSilentCapture()
     {
@@ -589,6 +631,10 @@ public partial class MainWindow : Window
         // ★ 清理 HollowHighlightDriver 蓝框（录制模式显示的蓝框需要在停止时消失）
         try { HollowHighlightDriver.GetDefaultInstance().Clear(); }
         catch { /* 忽略清理失败 */ }
+        // 防御：截图拾取挂起时被停止（如停止录制）——清除拾取标志并确保烧杯图标还原（同值 SetIcon 短路，无副作用）
+        _screenshotPicking = false;
+        _screenshotPickSolo = false;
+        try { HollowHighlightDriver.GetDefaultInstance().SetSnapshotIcon("\uF3A6"); } catch { /* 忽略 */ }
         Log("静默捕获已停止");
     }
 
@@ -603,6 +649,32 @@ public partial class MainWindow : Window
         // ★ 静默分支：烧杯=触发器目标选定（录制中随时可点；右键插入触发器也经此路径）
         if (_silentCapturing)
         {
+            // ★ 截图分叉：剪刀（截图拾取模式，图标已切换）= 截图目标选定：
+            //   弹目录选择 → 按当前悬停元素矩形试截一张 → 插入截图步骤（RecordingPanel 完成）
+            if (_screenshotPicking)
+            {
+                var sr = _lastHoverResult;
+                _detailsLocked = true;
+                if (sr is null || !sr.IsValid || sr.BoundingRectangle is not { Width: > 0, Height: > 0 })
+                {
+                    TxtStatus.Text = "未选中有效元素，未插入截图步骤（可继续悬停后再点剪刀）";
+                    return;
+                }
+                _mouseCapture.ResultProduced -= OnCaptureResult;
+                try { HollowHighlightDriver.GetDefaultInstance().Clear(); } catch { /* 忽略 */ }
+                try
+                {
+                    var spec = BuildSpecFromCapture(sr);
+                    var name = string.IsNullOrEmpty(sr.Name) ? $"{sr.ControlType}（pid {sr.ProcessId}）" : sr.Name!;
+                    Log($"[SHOT-PICK] scissors on '{name}' → spec={Trunc(spec, 80)}");
+                    RecordingPanel.OnScreenshotCaptured(spec, name, sr.BoundingRectangle!.Value);
+                }
+                finally
+                {
+                    _mouseCapture.ResultProduced += OnCaptureResult;
+                }
+                return;
+            }
             var r = _lastHoverResult;
             _detailsLocked = true; // 锁定 Details（弹窗期间不跟随刷新）
             if (r is null || !r.IsValid)
@@ -1654,6 +1726,7 @@ public partial class MainWindow : Window
         MenuSyncStart.IsEnabled = selected.Count >= 2
             && selected.All(s => !string.Equals(s.State, "Running", StringComparison.OrdinalIgnoreCase));
         MenuMergeReport.IsEnabled = selected.Count >= 2;
+        MenuAddTaskByCapture.IsEnabled = !_capturing; // 随鼠标捕获进行中不可再发起（菜单提示走状态栏）
     }
 
     /// <summary>同步启动选中的多个任务：先弹窗统一设置采集间隔/监控时长/数据保存方式（组内强制一致），

@@ -4,7 +4,8 @@
     <TargetFramework>net8.0-windows</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <UseWindowsForms>false</UseWindowsForms>
+    <!-- 截图步骤（ScreenCapture: Graphics.CopyFromScreen/SystemInformation）需要 System.Drawing 完整栈 -->
+    <UseWindowsForms>true</UseWindowsForms>
     <UseWPF>true</UseWPF>
   </PropertyGroup>
 

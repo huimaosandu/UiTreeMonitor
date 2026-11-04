@@ -32,6 +32,38 @@
             <TextBox x:Name="TxtTriggerAt" Margin="0,2,0,4" Padding="2"/>
         </StackPanel>
 
+        <!-- 截图步骤：目标元素由剪刀捕获只读展示；保存目录可改（运行时自动存 img-时间戳.png） -->
+        <Grid Grid.Row="1" x:Name="PnlScreenshot" Visibility="Collapsed" Margin="0,0,0,6">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <TextBlock Grid.Row="0" Grid.Column="0" Text="目标元素：" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,6,6"/>
+            <StackPanel Grid.Row="0" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,6">
+                <TextBlock x:Name="LblShotElementName" Text="(未指定)" FontWeight="Bold" TextWrapping="Wrap"
+                           ToolTip="随鼠标捕获/录制中点蓝框右上角剪刀按钮捕获的元素"/>
+                <TextBlock x:Name="LblShotElementSpec" Foreground="#888888" FontSize="10" TextTrimming="CharacterEllipsis"
+                           ToolTipService.ShowDuration="30000"/>
+            </StackPanel>
+
+            <TextBlock Grid.Row="1" Grid.Column="0" Text="保存目录：" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,6,6"/>
+            <TextBox Grid.Row="1" Grid.Column="1" x:Name="TxtShotDir" Margin="0,0,4,6" Padding="2"
+                     ToolTip="运行到此步时对目标元素区域截图，以 img-时间戳.png 保存到该目录"/>
+            <Button Grid.Row="1" Grid.Column="2" x:Name="BtnShotBrowse" Content="浏览…" Padding="6,2"
+                    Margin="0,0,0,6" Click="BtnShotBrowse_Click" ToolTip="选择保存目录"/>
+
+            <TextBlock Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="3" Foreground="#666666" FontSize="11"
+                       TextWrapping="Wrap" Margin="0,0,0,2"
+                       Text="执行语义：运行到此步时按目标元素定位实时截图（元素移位自动跟随），文件名 img-年月日_时分秒毫秒.png，不弹窗。"/>
+        </Grid>
+
         <Grid Grid.Row="1" x:Name="PnlTrigger" Visibility="Collapsed" Margin="0,0,0,6">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto"/>

@@ -14,6 +14,7 @@ public static class StepKinds
     public const string Delay = "delay";       // 固定延时
     public const string Timer = "timer";       // 定时触发：等到指定时刻再继续
     public const string Trigger = "trigger";   // 元素监控触发：条件满足后执行子步骤（无子步骤=纯等待点）
+    public const string Screenshot = "screenshot"; // 元素截图：按 spec 定位目标元素并对其区域截图保存
 }
 
 /// <summary>通用元素监控触发器配置（录制任务触发步骤）。</summary>
@@ -48,6 +49,9 @@ public sealed class StepNode
     public int DelayMs { get; set; } = 1000;             // Kind=delay
     public DateTime TriggerAt { get; set; } = DateTime.Now.AddHours(1); // Kind=timer
     public ElementTriggerSpec? Trigger { get; set; }     // Kind=trigger
+    public string ScreenshotSpec { get; set; } = "";     // Kind=screenshot 目标元素定位（spec:v1|…）
+    public string ScreenshotName { get; set; } = "";     // Kind=screenshot 目标元素显示名（配置时快照）
+    public string ScreenshotDir { get; set; } = "";      // Kind=screenshot 保存目录（img-时间戳.png）
     public List<StepNode> Children { get; set; } = new(); // loop/trigger 子步骤
 
     /// <summary>列表显示主文本（TreeView 行）。</summary>
@@ -60,6 +64,9 @@ public sealed class StepNode
         StepKinds.Trigger => Trigger is null
             ? "⚗ 触发器（未配置）"
             : $"⚗ 触发器：{Trigger.ElementName} 的 {Trigger.Property} {CondText(Trigger.Condition)} {(Trigger.Condition == "Changed" ? "" : Trigger.ExpectedValue ?? "")}",
+        StepKinds.Screenshot => string.IsNullOrEmpty(ScreenshotSpec)
+            ? "📷 截图（未配置）"
+            : $"📷 截图 {ScreenshotName}",
         _ => Action is null ? "(空动作)" : $"{Action.PatternName}.{Action.MethodName} {Action.ElementName}",
     };
 
@@ -69,7 +76,8 @@ public sealed class StepNode
         ? Action?.Result ?? (Action?.Parameters is { Length: > 0 } ? string.Join(", ", Action.Parameters) : "")
         : Kind == StepKinds.Trigger && Trigger is not null
             ? $"超时 {Trigger.TimeoutSec}s" + (Children.Count > 0 ? $"，子步骤 {Children.Count} 个" : "（纯等待点）")
-            : Kind == StepKinds.Loop ? $"子步骤 {Children.Count} 个" : "";
+            : Kind == StepKinds.Loop ? $"子步骤 {Children.Count} 个"
+            : Kind == StepKinds.Screenshot ? $"保存于 {ScreenshotDir}" : "";
 
     private static string CondText(string c) => c switch
     {

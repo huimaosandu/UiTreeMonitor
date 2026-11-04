@@ -158,6 +158,11 @@ public sealed class RecordingTaskRunner : IDisposable
             case StepKinds.Trigger:
                 ExecuteTrigger(node, flat, ref index, round);
                 break;
+
+            case StepKinds.Screenshot:
+                Set(RecTaskRunState.Running, node.DisplayText, index: index, round: round);
+                ExecuteScreenshot(node);
+                break;
         }
     }
 
@@ -184,6 +189,31 @@ public sealed class RecordingTaskRunner : IDisposable
             var (ok, result) = _replayer.ExecuteOne(record, element);
             AppLog.Write("TASK", $"Action step {(ok ? "OK" : "FAIL")}: {record.PatternName}.{record.MethodName} → {result}");
             if (!ok) throw new InvalidOperationException(result ?? "执行失败");
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            throw new InvalidOperationException($"步骤 [{node.DisplayText}] 失败: {ex.Message}", ex);
+        }
+    }
+
+    /// <summary>截图步骤：按 spec 重定位目标元素 → 对其包围矩形（屏幕物理像素）截图存 img-时间戳.png 到配置目录。</summary>
+    private void ExecuteScreenshot(StepNode node)
+    {
+        try
+        {
+            if (string.IsNullOrEmpty(node.ScreenshotSpec))
+                throw new InvalidOperationException("截图步骤未配置目标元素");
+            if (string.IsNullOrEmpty(node.ScreenshotDir))
+                throw new InvalidOperationException("截图步骤未配置保存目录");
+
+            var el = _elementResolver(node.ScreenshotSpec);
+            if (el is null || el.BoundingRectangle.IsEmpty)
+                throw new InvalidOperationException($"截图目标元素未找到: {node.ScreenshotName}");
+
+            var (ok, file) = ScreenCapture.CaptureRegion(el.BoundingRectangle, node.ScreenshotDir);
+            if (!ok)
+                throw new InvalidOperationException($"截图失败: {file}");
+            AppLog.Write("TASK", $"Screenshot step OK: '{node.ScreenshotName}' → {file}");
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

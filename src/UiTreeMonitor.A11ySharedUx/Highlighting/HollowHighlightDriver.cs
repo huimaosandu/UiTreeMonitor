@@ -1,4 +1,4 @@
-﻿// Copyright (c) Microsoft. All rights reserved.
+// Copyright (c) Microsoft. All rights reserved.
 // Licensed under the MIT license. See LICENSE file in the project root for full license information.
 using AccessibilityInsights.SharedUx.Enums;
 using Axe.Windows.Actions;
@@ -121,6 +121,14 @@ namespace AccessibilityInsights.SharedUx.Highlighting
         public void SetCallBackForSnapshot(Action callback)
         {
             this.Highlighter.SetCallBackForSnapshot(callback);
+        }
+
+        /// <summary>
+        /// Switch the snapshot button icon (beaker "\uF3A6" / scissors "\u2702"+Segoe UI Symbol).
+        /// </summary>
+        public void SetSnapshotIcon(string code, string? systemFontName = null)
+        {
+            this.Highlighter.SetSnapshotIcon(code, systemFontName);
         }
 
         /// <summary>

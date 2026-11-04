@@ -174,16 +174,18 @@
                                         <RowDefinition Height="Auto"/>
                                     </Grid.RowDefinitions>
                                     <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,4">
-                                        <Button x:Name="BtnAddRecTask" Content="添加录制任务…" Padding="8,2" Click="BtnAddRecTask_Click"
-                                                ToolTip="从 RecordingTasks 目录（或任意位置）选择录制任务 JSON 加入列表"/>
-                                        <TextBlock x:Name="TxtRecTaskHint" VerticalAlignment="Center" Margin="10,0,0,0"
+                                        <!-- 添加入口已移至列表右键菜单（空白处即可）：减少顶部按钮、入口贴近操作位置 -->
+                                        <TextBlock x:Name="TxtRecTaskHint" VerticalAlignment="Center" Margin="0,0,0,0"
                                                    Foreground="#666666" FontSize="11"
-                                                   Text="右键任务行：启动 / 停止 / 查看状态 / 移除；启动后按步骤树执行（循环/延时/定时/触发器生效）"/>
+                                                   Text="右键空白处：添加录制任务…；右键任务行：启动 / 停止 / 查看状态 / 移除；启动后按步骤树执行（循环/延时/定时/触发器/截图生效）"/>
                                     </StackPanel>
                                     <ListView Grid.Row="1" x:Name="RecTaskList" SelectionMode="Single"
                                               MouseRightButtonUp="RecTaskList_MouseRightButtonUp">
                                         <ListView.ContextMenu>
                                             <ContextMenu x:Name="MenuRecTask" Opened="RecTaskContextMenu_Opened">
+                                                <MenuItem Header="添加录制任务…" Click="BtnAddRecTask_Click"
+                                                          ToolTip="从 RecordingTasks 目录（或任意位置）选择录制任务 JSON 加入列表"/>
+                                                <Separator/>
                                                 <MenuItem Header="启动任务" x:Name="MenuRecTaskStart" Click="MenuRecTaskStart_Click"/>
                                                 <MenuItem Header="停止任务" x:Name="MenuRecTaskStop" Click="MenuRecTaskStop_Click"/>
                                                 <MenuItem Header="查看任务状态" Click="MenuRecTaskStatus_Click"/>
@@ -225,6 +227,11 @@
                                     </ListView.ItemContainerStyle>
                                     <ListView.ContextMenu>
                                         <ContextMenu Opened="TaskContextMenu_Opened">
+                                            <!-- 空白处右键即可添加（等同顶部"随鼠标捕获"按钮）：入口贴近列表 -->
+                                            <MenuItem Header="添加监控任务（随鼠标捕获）…" x:Name="MenuAddTaskByCapture"
+                                                      Click="MenuAddTaskByCapture_Click"
+                                                      ToolTip="悬停选中元素后点蓝框右上角烧杯，将其添加为监测目标（与顶部按钮一致）"/>
+                                            <Separator/>
                                             <MenuItem Header="启动采集" x:Name="MenuStartTask" Click="MenuStartTask_Click"/>
                                             <MenuItem Header="停止采集" x:Name="MenuStopTask" Click="MenuStopTask_Click"/>
                                             <MenuItem Header="继续采集" x:Name="MenuResumeTask" Click="MenuResumeTask_Click"/>
