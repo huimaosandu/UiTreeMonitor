@@ -145,11 +145,11 @@ public partial class RecordingPanel : UserControl
         {
             _uiaSemanticMode = true;
             AppLog.Write("RECORD", "StartAutoRecording: mode=uia (dual-channel: COM events + input semanticization)");
-            // ★ 语义模式钩子全开（左键/右键/键盘）：Pattern 语义化优先，无 Pattern 控件自动坐标回退
+            // ★ 语义模式钩子全开（左键/右键/键盘）：全部语义化处理，无语义的操作不录入（模式不混合）
             StartInputHook(opt with { MouseLeft = true, MouseRight = true, Keyboard = true });
             StartUiaListener();
-            TxtAutoHint.Text = "自动模式（UIA 语义）：在目标窗口中点击按钮、输入文字、拖动滑块、选择、切换开关等，" +
-                               "录制为可回放语义步骤（不依赖窗口位置）；不支持语义化的控件自动回退坐标记录。";
+            TxtAutoHint.Text = "自动模式（UIA 语义·纯语义录制）：点击按钮、输入文字（含回车提交）、拖动滑块、选择、开关等" +
+                               "只录制为语义步骤（Invoke/SetValue，回放不依赖坐标、不动光标）；无法语义化的控件操作不会录入（详见日志）。";
             // 监听注册异步完成（目标窗口 <1s），就绪回调 OnListenerStarted 会再次更新文案；
             // 即使监听未就绪，输入钩子通道已可录制（语义化/坐标）
             TxtStatus.Text = "● 录制中…（UIA 监听启动中；若未抓取过目标树，将鼠标移到目标窗口上即自动锁定）";
@@ -335,18 +335,16 @@ public partial class RecordingPanel : UserControl
                 return;
             }
 
-            // ★ 通道2 主动语义化（UIA 语义模式）：命中可回放 Pattern → 语义记录（回放走 Pattern，不依赖坐标）。
-            //   tkinter/Qt 等自绘框架不推送 UIA 事件，这是它们唯一的语义录制来源；
-            //   与通道1（COM 事件）同元素同方法的记录经 merge 合并，不会重复
-            if (_uiaSemanticMode && elem is not null && TryBuildSemanticRecord(input, elem, elemName, procName, ctrlType, out var semantic, out var replacePrev))
+            // ★ 模式严格二选一（设置即铁律，不混合）：
+            //   UIA 语义模式 → 只产语义记录（Pattern 方法 / coord:v1 延迟定位），绝不产 Input_* 坐标记录
+            //   鼠标键盘模式 → 只产坐标记录（SendInput 回放），绝不语义化
+            if (_uiaSemanticMode)
             {
-                AppendRecord(semantic, replacePrev, source: $"input-semantic {input.Kind}");
-                AppLog.Write("RECORD", $"OnInputAction→semantic: {semantic.PatternName}.{semantic.MethodName}" +
-                    $"({string.Join(", ", semantic.Parameters ?? Array.Empty<object?>())}) elem={elemName} type={ctrlType} pid={pid} proc={procName}");
+                HandleUiaSemanticInput(input, elem, pid, elemName, procName, ctrlType);
                 return;
             }
 
-            // 坐标回退（Input 模式主路径 / 语义模式无 Pattern 控件兜底 / 元素已销毁的点击——弹窗"确定/关闭"典型）
+            // 鼠标键盘模式：坐标记录（Input 模式主路径）
             ActionRecord record = input.Kind switch
                 {
                     InputActionKind.MouseLeftClick => new ActionRecord
@@ -397,6 +395,77 @@ public partial class RecordingPanel : UserControl
                 (record.MethodName is InputSimulator.DragMethod or InputSimulator.RightDragMethod ? $"→({input.EndX},{input.EndY})" : "") +
                 (pid == 0 ? " [element vanished → coord only]" : ""));
         });
+    }
+
+    /// <summary>
+    /// UIA 语义模式输入处理（严格纯语义，零坐标记录）：
+    /// - 左键点击：元素有 InvokePattern → Invoke；元素销毁（点击即关窗的 OK/确定按钮竞态）→
+    ///   coord:v1 延迟定位的 Invoke（回放时弹窗已被前置步骤重新打开，FromPoint 命中该按钮语义执行，光标不动）；
+    ///   元素无 InvokePattern → 不记录（探针日志注明控件无语义能力）
+    /// - 文本键/回车：焦点元素 ValuePattern 实时完整值 → SetValue(merge)；回车无 Value（按钮焦点）→ Invoke
+    /// - 左键拖动：起点元素 RangeValuePattern 终值 → SetValue(merge)；无 → 不记录
+    /// - 右键/右键拖动/其他键（Tab/方向/F 键等）：无 UIA 语义等价，不记录（日志注明）
+    /// </summary>
+    private void HandleUiaSemanticInput(InputActionRecord input, AutomationElement? elem,
+        int pid, string elemName, string procName, string ctrlType)
+    {
+        switch (input.Kind)
+        {
+            case InputActionKind.MouseLeftClick:
+                if (elem is not null && TryBuildSemanticRecord(input, elem, elemName, procName, ctrlType, out var semantic, out var replacePrev))
+                {
+                    AppendRecord(semantic, replacePrev, source: $"input-semantic {input.Kind}");
+                    AppLog.Write("RECORD", $"OnInputAction→semantic: {semantic.PatternName}.{semantic.MethodName}" +
+                        $"({string.Join(", ", semantic.Parameters ?? Array.Empty<object?>())}) elem={elemName} type={ctrlType} pid={pid} proc={procName}");
+                    return;
+                }
+                if (elem is null)
+                {
+                    // ★ 点击即关窗竞态（Qt accept()/tk destroy）：录制时元素已销毁，但点击真实发生且
+                    //   该坐标回放时会命中重新打开的弹窗按钮 → coord:v1 延迟定位，保持纯语义不动光标
+                    var coord = new ActionRecord
+                    {
+                        Timestamp = input.Timestamp,
+                        ElementName = "(窗口已关闭·坐标延迟定位)",
+                        ElementPath = $"coord:v1|{input.X},{input.Y}",
+                        PatternName = "InvokePattern",
+                        MethodName = "Invoke",
+                        Parameters = null,
+                        Success = true,
+                        Result = $"Invoke @({input.X},{input.Y})（录制时窗口瞬时关闭）",
+                    };
+                    AppendRecord(coord, replacePrevious: false, source: "input-semantic coord-deferred");
+                    AppLog.Write("RECORD", $"OnInputAction→semantic: InvokePattern.Invoke @({input.X},{input.Y}) [coord-deferred: 点击即关窗，回放按坐标语义定位]");
+                    return;
+                }
+                // 元素活着但无 InvokePattern：探针日志已注明（click-no-invoke），UIA 模式不录无语义动作
+                return;
+
+            case InputActionKind.KeyDown:
+                if (elem is not null && TryBuildSemanticRecord(input, elem, elemName, procName, ctrlType, out var keyRecord, out var keyMerge))
+                {
+                    AppendRecord(keyRecord, keyMerge, source: $"input-semantic {input.Kind}");
+                    AppLog.Write("RECORD", $"OnInputAction→semantic: {keyRecord.PatternName}.{keyRecord.MethodName}" +
+                        $"({string.Join(", ", keyRecord.Parameters ?? Array.Empty<object?>())}) elem={elemName} type={ctrlType} pid={pid} proc={procName}");
+                    return;
+                }
+                return; // 无 Value/Invoke 的按键（Tab/方向/无语义控件上的键）：UIA 模式不录
+
+            case InputActionKind.MouseLeftDrag:
+                if (elem is not null && TryBuildSemanticRecord(input, elem, elemName, procName, ctrlType, out var dragRecord, out var dragMerge))
+                {
+                    AppendRecord(dragRecord, dragMerge, source: $"input-semantic {input.Kind}");
+                    AppLog.Write("RECORD", $"OnInputAction→semantic: {dragRecord.PatternName}.{dragRecord.MethodName}" +
+                        $"({string.Join(", ", dragRecord.Parameters ?? Array.Empty<object?>())}) elem={elemName} type={ctrlType} pid={pid} proc={procName}");
+                    return;
+                }
+                return; // 无 RangeValuePattern 的拖动：探针日志已注明（drag-no-rangevalue），不录
+
+            default:
+                // 右键点击/右键拖动：右键菜单无 UIA 可回放语义，UIA 模式不录
+                AppLog.Write("RECORD", $"UIA mode: {input.Kind} @({input.X},{input.Y}) 无语义等价（右键菜单），不记录");
+                return;
+        }
     }
 
     /// <summary>
@@ -526,8 +595,11 @@ public partial class RecordingPanel : UserControl
                     LogPatternProbe(elem, elemName, ctrlType, procName, "click-no-invoke");
                     break;
 
-                case InputActionKind.KeyDown when IsTextVk(input.VkCode):
-                    // 文本键：读焦点元素当前完整值（回放 SetValue 幂等；连续按键 merge 只留最终值）
+                case InputActionKind.KeyDown:
+                {
+                    // 文本键/回车：Value 优先（文本输入、回车换行都是值变化，读实时完整值 merge）
+                    var isEnter = input.VkCode == 0x0D;
+                    if (!isEnter && !IsTextVk(input.VkCode)) break; // 其他键（Tab/方向/F 键）无语义
                     if (elem.TryGetCurrentPattern(ValuePattern.Pattern, out var vpo) && vpo is ValuePattern vp && !vp.Current.IsReadOnly)
                     {
                         var value = vp.Current.Value;
@@ -539,7 +611,17 @@ public partial class RecordingPanel : UserControl
                             return true;
                         }
                     }
+                    // 回车且焦点无 Value（按钮焦点）→ Invoke（表单提交语义）
+                    if (isEnter && elem.TryGetCurrentPattern(InvokePattern.Pattern, out _))
+                    {
+                        replacePrevious = false;
+                        record = BuildSemantic(elem, "InvokePattern", "Invoke", null,
+                            result: $"{procName} {ShortType(ctrlType)} Invoke(Enter)", elemName, input.Timestamp);
+                        return true;
+                    }
+                    LogPatternProbe(elem, elemName, ctrlType, procName, "key-no-value");
                     break;
+                }
 
                 case InputActionKind.MouseLeftDrag:
                     // 拖动：抬起时刻起点元素（滑块）的 RangeValue 已是终值（merge 合并拖动过程）
@@ -573,7 +655,7 @@ public partial class RecordingPanel : UserControl
     };
 
     /// <summary>文本类虚拟键（会产生字符输入/删除的键）：0-9、A-Z、空格、Back、OEM 标点。
-    /// 回车/Tab/方向/F 键等不语义化（行为语义由 SendInput 回放更合适）。</summary>
+    /// 回车在 KeyDown 分支单独处理（Value 优先、按钮焦点时 Invoke）；Tab/方向/F 键等无语义不录。</summary>
     private static bool IsTextVk(uint vk) =>
         vk is >= 0x30 and <= 0x5A    // 0-9、A-Z
         or 0x20 or 0x08              // Space、Back（删除也改变值，读实时值即最终值）

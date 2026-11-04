@@ -75,6 +75,17 @@ public sealed class ActionReplayer : IDisposable
                     Error = $"[事件监听] {record.MethodName}（不可回放，仅用于记录/导出）"
                 });
             }
+            // ★ coord:v1 延迟定位的语义 Invoke（UIA 模式"点击即关窗"场景）：
+            //   录制时元素已销毁只存坐标；回放时弹窗已被前置步骤重新打开，FromPoint 命中该按钮
+            //   → InvokePattern.Invoke 语义执行（光标不动）；不可语义化 → 该步失败（不真点击，保持纯语义）
+            else if (record.ElementPath is string coordPath && coordPath.StartsWith("coord:v1|", StringComparison.Ordinal))
+            {
+                progress?.Report(new PlaybackProgress
+                {
+                    CurrentIndex = i, TotalCount = total, CurrentRecord = record, IsComplete = false
+                });
+                results.Add(ReplayCoordInvoke(coordPath));
+            }
             else
             {
                 // 报告进度
@@ -151,6 +162,13 @@ public sealed class ActionReplayer : IDisposable
         if (record.PatternName.StartsWith("UIA_Event_", StringComparison.OrdinalIgnoreCase))
             return (false, $"[事件监听] {record.MethodName}（不可回放，仅用于记录/导出）");
 
+        // ★ coord:v1 延迟定位的语义 Invoke（单步回放同 Playback）
+        if (record.ElementPath is string coordPath1 && coordPath1.StartsWith("coord:v1|", StringComparison.Ordinal))
+        {
+            var r = ReplayCoordInvoke(coordPath1);
+            return (r.Success, r.DisplayText);
+        }
+
         if (element is null) throw new ArgumentNullException(nameof(element));
 
         // 找 Pattern
@@ -191,25 +209,10 @@ public sealed class ActionReplayer : IDisposable
                     return new ActionResult { Success = false, Error = $"拖动坐标无效: {string.Join(" | ", coords)}" };
                 }
 
-                // 点击：一个坐标参数
+                // 点击：一个坐标参数（鼠标键盘模式=纯 SendInput 真点击，绝不语义化——模式不混合）
                 if (coords.Count >= 1 && TryParseCoord(coords[0], out var x, out var y))
                 {
-                    // ★ 左键坐标点击语义化优先（不动光标）：
-                    //   录制时"点击即销毁弹窗"的按钮（OK/确定）抢不到元素只能坐标保底；回放时该弹窗
-                    //   已被前置步骤重新打开，FromPoint(x,y) 命中的正是当年那个按钮 → 直接 InvokePattern.Invoke，
-                    //   光标全程不动。元素无 Invoke/是自己 UI/解析失败 → 原样 SendInput 真点击（忠实回放）。
-                    if (record.MethodName == InputSimulator.LeftClickMethod)
-                    {
-                        var semantic = TrySemanticClick(x, y);
-                        if (semantic is not null)
-                        {
-                            AppLog.Write("ACTION", $"ReplayInput: LeftClick({x},{y}) → semantic Invoke '{semantic}' (cursor untouched)");
-                            return new ActionResult { Success = true, ReturnValue = $"语义 Invoke '{semantic}'（未动光标）" };
-                        }
-                    }
                     InputSimulator.MouseClick(x, y, record.MethodName == InputSimulator.RightClickMethod);
-                    if (record.MethodName == InputSimulator.LeftClickMethod)
-                        AppLog.Write("ACTION", $"ReplayInput: LeftClick({x},{y}) → SendInput real click (no InvokePattern at point)");
                     return new ActionResult { Success = true };
                 }
                 return new ActionResult { Success = false, Error = $"鼠标坐标无效: {string.Join(" | ", coords)}" };
@@ -228,6 +231,25 @@ public sealed class ActionReplayer : IDisposable
         }
     }
 
+    /// <summary>执行 coord:v1|x,y 延迟定位的语义 Invoke：FromPoint 命中可 Invoke 元素 → Invoke（光标不动）。
+    /// 坐标处无可 Invoke 元素（弹窗未打开/位置变化）→ 该步失败（不真点击，UIA 语义模式保持纯语义）。</summary>
+    private static ActionResult ReplayCoordInvoke(string coordPath)
+    {
+        var xy = coordPath["coord:v1|".Length..].Split(',');
+        if (xy.Length == 2 && int.TryParse(xy[0].Trim(), out var x) && int.TryParse(xy[1].Trim(), out var y))
+        {
+            var name = TrySemanticClick(x, y);
+            if (name is not null)
+            {
+                AppLog.Write("ACTION", $"ReplayCoordInvoke: ({x},{y}) → semantic Invoke '{name}' (cursor untouched)");
+                return new ActionResult { Success = true, ReturnValue = $"语义 Invoke '{name}' @({x},{y})（未动光标）" };
+            }
+            AppLog.Write("ACTION", $"ReplayCoordInvoke: ({x},{y}) → FAILED (no invokable element at point)");
+            return new ActionResult { Success = false, Error = $"坐标 ({x},{y}) 处无可 Invoke 元素（弹窗未打开/位置已变化）" };
+        }
+        return new ActionResult { Success = false, Error = $"coord:v1 路径无效: {coordPath}" };
+    }
+
     /// <summary>"x,y" 坐标字符串解析。</summary>
     private static bool TryParseCoord(string s, out int x, out int y)
     {
@@ -238,9 +260,8 @@ public sealed class ActionReplayer : IDisposable
             && int.TryParse(parts[1].Trim(), out y);
     }
 
-    /// <summary>左键坐标点击的语义化回放：FromPoint 命中元素支持 InvokePattern 且非本软件 UI → 直接 Invoke（光标不动）。
-    /// 返回元素名；不可语义化（无 Pattern/是自己/元素销毁/COM 失败）返回 null，调用方回退 SendInput 真点击。
-    /// COM 直连与 UiaSession 同款（回放线程已验证可用）；patternId=10000 即 UIA_InvokePatternId。</summary>
+    /// <summary>坐标处元素的语义 Invoke：FromPoint 命中元素支持 InvokePattern 且非本软件 UI → 直接 Invoke（光标不动）。
+    /// 返回元素名；不可用（无 Pattern/是自己/元素销毁/COM 失败）返回 null，由 ReplayCoordInvoke 记为该步失败。</summary>
     private static string? TrySemanticClick(int x, int y)
     {
         try
