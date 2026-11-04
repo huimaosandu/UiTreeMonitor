@@ -1,6 +1,7 @@
 // 统一日志：UI 层 / 采集任务 / 同步组协调器写同一份日志文件
 using System;
 using System.IO;
+using System.Threading;
 
 namespace UiTreeMonitor.Core;
 
@@ -19,6 +20,10 @@ public static class AppLog
     private static readonly Lazy<string> LogFileLazy = new(
         () => Path.Combine(LogDir, DateTime.Now.ToString("yyyyMMdd_HHmmss") + ".log"));
 
+    // 写入串行门闩：AppendAllText 以 FileShare.Read 打开，并发写同一路径会 sharing violation，
+    // 导致降级时竞争备用文件（一方被挤到 _2）。进程内串行化写入，降级目标才是确定的。
+    private static readonly object WriteGate = new();
+
     public static string LogDir => LogDirLazy.Value;
 
     /// <summary>本次运行的日志文件路径（启动时刻命名，每次启动新建一份）。</summary>
@@ -31,20 +36,33 @@ public static class AppLog
     /// </summary>
     public static void Write(string tag, string message)
     {
-        try
+        lock (WriteGate)
         {
-            var line = $"{DateTime.Now:HH:mm:ss.fff} [{tag}] {message}{Environment.NewLine}";
-            Directory.CreateDirectory(LogDir);
-            try { File.AppendAllText(LogFilePath, line); return; }
-            catch { /* 主文件不可写（被删/被占用）→ 降级备用文件 */ }
-            var baseName = Path.GetFileNameWithoutExtension(LogFilePath);
-            for (int i = 1; i <= 9; i++)
+            try
             {
-                try { File.AppendAllText(Path.Combine(LogDir, $"{baseName}_{i}.log"), line); return; }
-                catch { }
+                var line = $"{DateTime.Now:HH:mm:ss.fff} [{tag}] {message}{Environment.NewLine}";
+                Directory.CreateDirectory(LogDir);
+                try { File.AppendAllText(LogFilePath, line); return; }
+                catch
+                {
+                    // 主文件刚被删除且并发写入句柄尚未释放（delete-pending，毫秒级窗口）时，
+                    // 立即降级会把本行误写进备用文件——先短重试主文件，仍不可写再降级。
+                    for (int r = 0; r < 3; r++)
+                    {
+                        Thread.Sleep(5);
+                        try { File.AppendAllText(LogFilePath, line); return; }
+                        catch { }
+                    }
+                }
+                var baseName = Path.GetFileNameWithoutExtension(LogFilePath);
+                for (int i = 1; i <= 9; i++)
+                {
+                    try { File.AppendAllText(Path.Combine(LogDir, $"{baseName}_{i}.log"), line); return; }
+                    catch { }
+                }
             }
+            catch { }
         }
-        catch { }
     }
 
     private static string ResolveLogDir()
