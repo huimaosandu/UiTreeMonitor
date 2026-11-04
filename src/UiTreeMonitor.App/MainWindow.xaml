@@ -42,10 +42,11 @@
                 <ColumnDefinition Width="3*" MinWidth="400" x:Name="ColRight"/>
             </Grid.ColumnDefinitions>
 
-            <!-- 左右分界线拖拽 -->
+            <!-- 左右分界线拖拽（PreviousAndNext：调整左右两栏；严禁 PreviousAndCurrent——
+                 它会调整"左栏+splitter 自身列"，splitter 列被拖宽=中间出现空带、左栏持续缩小） -->
             <GridSplitter Grid.Column="1" HorizontalAlignment="Stretch"
                           VerticalAlignment="Stretch" Background="#CCCCCC"
-                          ResizeBehavior="PreviousAndCurrent" ResizeDirection="Columns"/>
+                          ResizeBehavior="PreviousAndNext" ResizeDirection="Columns"/>
 
             <!-- ===== 左侧：结构树 + Details（上下可拖拽，默认高度比 4:6） ===== -->
             <Grid Grid.Column="0">
@@ -168,6 +169,20 @@
 
                             <!-- 录制任务列表（脚本回放任务；右键启动/停止/查看状态） -->
                             <GroupBox Header="录制任务（脚本回放）" Grid.Row="1" Padding="6" Margin="0,0,0,8">
+                                <!-- ★ 菜单挂 GroupBox（ContextMenuService 沿可视树向上查找）：
+                                     右键列表行/列表空白处/标题区均弹同一菜单——空白处右键即可"添加录制任务" -->
+                                <GroupBox.ContextMenu>
+                                    <ContextMenu x:Name="MenuRecTask" Opened="RecTaskContextMenu_Opened">
+                                        <MenuItem Header="添加录制任务…" Click="BtnAddRecTask_Click"
+                                                  ToolTip="从 RecordingTasks 目录（或任意位置）选择录制任务 JSON 加入列表"/>
+                                        <Separator/>
+                                        <MenuItem Header="启动任务" x:Name="MenuRecTaskStart" Click="MenuRecTaskStart_Click"/>
+                                        <MenuItem Header="停止任务" x:Name="MenuRecTaskStop" Click="MenuRecTaskStop_Click"/>
+                                        <MenuItem Header="查看任务状态" Click="MenuRecTaskStatus_Click"/>
+                                        <Separator/>
+                                        <MenuItem Header="移除（仅列表）" Click="MenuRecTaskRemove_Click"/>
+                                    </ContextMenu>
+                                </GroupBox.ContextMenu>
                                 <Grid>
                                     <Grid.RowDefinitions>
                                         <RowDefinition Height="Auto"/>
@@ -179,20 +194,14 @@
                                                    Foreground="#666666" FontSize="11"
                                                    Text="右键空白处：添加录制任务…；右键任务行：启动 / 停止 / 查看状态 / 移除；启动后按步骤树执行（循环/延时/定时/触发器/截图生效）"/>
                                     </StackPanel>
-                                    <ListView Grid.Row="1" x:Name="RecTaskList" SelectionMode="Single"
+                                    <!-- Background=White 保证空白区域命中右键；行样式与监控任务列表一致（内容拉伸对齐） -->
+                                    <ListView Grid.Row="1" x:Name="RecTaskList" SelectionMode="Single" Background="White"
                                               MouseRightButtonUp="RecTaskList_MouseRightButtonUp">
-                                        <ListView.ContextMenu>
-                                            <ContextMenu x:Name="MenuRecTask" Opened="RecTaskContextMenu_Opened">
-                                                <MenuItem Header="添加录制任务…" Click="BtnAddRecTask_Click"
-                                                          ToolTip="从 RecordingTasks 目录（或任意位置）选择录制任务 JSON 加入列表"/>
-                                                <Separator/>
-                                                <MenuItem Header="启动任务" x:Name="MenuRecTaskStart" Click="MenuRecTaskStart_Click"/>
-                                                <MenuItem Header="停止任务" x:Name="MenuRecTaskStop" Click="MenuRecTaskStop_Click"/>
-                                                <MenuItem Header="查看任务状态" Click="MenuRecTaskStatus_Click"/>
-                                                <Separator/>
-                                                <MenuItem Header="移除（仅列表）" Click="MenuRecTaskRemove_Click"/>
-                                            </ContextMenu>
-                                        </ListView.ContextMenu>
+                                        <ListView.ItemContainerStyle>
+                                            <Style TargetType="ListViewItem">
+                                                <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                                            </Style>
+                                        </ListView.ItemContainerStyle>
                                         <ListView.View>
                                             <GridView>
                                                 <GridViewColumn Header="任务名" Width="150" DisplayMemberBinding="{Binding Name}"/>
@@ -213,36 +222,36 @@
                                           ResizeBehavior="PreviousAndNext" ShowsPreview="False" ResizeDirection="Rows"
                                           ToolTip="拖动调整上下两个列表的高度比例"/>
 
-                            <!-- 监控任务列表（显示实时值；右键行操作） -->
+                            <!-- 监控任务列表（显示实时值；右键行操作；菜单挂 GroupBox=空白处右键也可添加任务） -->
                             <GroupBox Header="监控任务" Grid.Row="3" Padding="8">
-                                <ListView x:Name="TaskList" SelectionMode="Extended"
+                                <GroupBox.ContextMenu>
+                                    <ContextMenu Opened="TaskContextMenu_Opened">
+                                        <!-- 空白处右键即可添加（等同顶部"随鼠标捕获"按钮）：入口贴近列表 -->
+                                        <MenuItem Header="添加监控任务（随鼠标捕获）…" x:Name="MenuAddTaskByCapture"
+                                                  Click="MenuAddTaskByCapture_Click"
+                                                  ToolTip="悬停选中元素后点蓝框右上角烧杯，将其添加为监测目标（与顶部按钮一致）"/>
+                                        <Separator/>
+                                        <MenuItem Header="启动采集" x:Name="MenuStartTask" Click="MenuStartTask_Click"/>
+                                        <MenuItem Header="停止采集" x:Name="MenuStopTask" Click="MenuStopTask_Click"/>
+                                        <MenuItem Header="继续采集" x:Name="MenuResumeTask" Click="MenuResumeTask_Click"/>
+                                        <MenuItem Header="移除任务" Click="MenuRemoveTask_Click"/>
+                                        <MenuItem Header="查看监控配置" Click="MenuViewTask_Click"/>
+                                        <Separator/>
+                                        <MenuItem Header="生成数据图" Click="MenuExportTask_Click"/>
+                                        <MenuItem Header="同步启动选中（严格同刻采样）" x:Name="MenuSyncStart" Click="MenuSyncStart_Click"/>
+                                        <MenuItem Header="合并导出数据报告（多任务同一文件夹）" x:Name="MenuMergeReport" Click="MenuMergeReport_Click"/>
+                                    </ContextMenu>
+                                </GroupBox.ContextMenu>
+                                <ListView x:Name="TaskList" SelectionMode="Extended" Background="White"
                                           MouseRightButtonUp="TaskList_MouseRightButtonUp">
                                     <ListView.ItemContainerStyle>
-                                        <!-- 同步组任务整行淡色（SyncGroupRowBrush 为 null 时透明=普通任务） -->
+                                        <!-- 同步组任务整行淡色（SyncGroupRowBrush 为 null 时透明=普通任务）；内容拉伸对齐 -->
                                         <Style TargetType="ListViewItem">
                                             <Setter Property="Background"
                                                     Value="{Binding SyncGroupRowBrush, TargetNullValue=Transparent}"/>
                                             <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
                                         </Style>
                                     </ListView.ItemContainerStyle>
-                                    <ListView.ContextMenu>
-                                        <ContextMenu Opened="TaskContextMenu_Opened">
-                                            <!-- 空白处右键即可添加（等同顶部"随鼠标捕获"按钮）：入口贴近列表 -->
-                                            <MenuItem Header="添加监控任务（随鼠标捕获）…" x:Name="MenuAddTaskByCapture"
-                                                      Click="MenuAddTaskByCapture_Click"
-                                                      ToolTip="悬停选中元素后点蓝框右上角烧杯，将其添加为监测目标（与顶部按钮一致）"/>
-                                            <Separator/>
-                                            <MenuItem Header="启动采集" x:Name="MenuStartTask" Click="MenuStartTask_Click"/>
-                                            <MenuItem Header="停止采集" x:Name="MenuStopTask" Click="MenuStopTask_Click"/>
-                                            <MenuItem Header="继续采集" x:Name="MenuResumeTask" Click="MenuResumeTask_Click"/>
-                                            <MenuItem Header="移除任务" Click="MenuRemoveTask_Click"/>
-                                            <MenuItem Header="查看监控配置" Click="MenuViewTask_Click"/>
-                                            <Separator/>
-                                            <MenuItem Header="生成数据图" Click="MenuExportTask_Click"/>
-                                            <MenuItem Header="同步启动选中（严格同刻采样）" x:Name="MenuSyncStart" Click="MenuSyncStart_Click"/>
-                                            <MenuItem Header="合并导出数据报告（多任务同一文件夹）" x:Name="MenuMergeReport" Click="MenuMergeReport_Click"/>
-                                        </ContextMenu>
-                                    </ListView.ContextMenu>
                                     <ListView.View>
                                         <GridView>
                                             <GridViewColumn Header="任务名" Width="120" DisplayMemberBinding="{Binding Name}"/>

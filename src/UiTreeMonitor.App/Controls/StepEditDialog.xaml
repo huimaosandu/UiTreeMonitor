@@ -22,9 +22,20 @@
             <TextBox x:Name="TxtLoopInterval" Text="500" Margin="0,2,0,4" Padding="2"/>
         </StackPanel>
 
+        <!-- 延时：数值 + 单位下拉（ms/s/min/h，写回时统一换算毫秒）；支持小数（如 1.5 秒） -->
         <StackPanel Grid.Row="1" x:Name="PnlDelay" Visibility="Collapsed" Margin="0,0,0,6">
-            <TextBlock Text="延时时长（毫秒）：" FontWeight="Bold"/>
-            <TextBox x:Name="TxtDelayMs" Text="1000" Margin="0,2,0,4" Padding="2"/>
+            <TextBlock Text="延时时长：" FontWeight="Bold"/>
+            <DockPanel Margin="0,2,0,4">
+                <ComboBox x:Name="CboDelayUnit" Width="76" DockPanel.Dock="Right" SelectedIndex="0">
+                    <ComboBoxItem Content="毫秒(ms)"/>
+                    <ComboBoxItem Content="秒(s)"/>
+                    <ComboBoxItem Content="分(min)"/>
+                    <ComboBoxItem Content="时(h)"/>
+                </ComboBox>
+                <TextBox x:Name="TxtDelayValue" Text="1000" Padding="2" Margin="0,0,6,0"/>
+            </DockPanel>
+            <TextBlock Text="换算为毫秒保存：1s=1000，1min=60000，1h=3600000；支持小数（如 0.5 秒）"
+                       Foreground="#888888" FontSize="10" TextWrapping="Wrap"/>
         </StackPanel>
 
         <StackPanel Grid.Row="1" x:Name="PnlTimer" Visibility="Collapsed" Margin="0,0,0,6">

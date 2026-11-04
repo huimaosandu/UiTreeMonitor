@@ -45,7 +45,17 @@ public partial class StepEditDialog : Window
                 break;
             case StepKinds.Delay:
                 PnlDelay.Visibility = Visibility.Visible;
-                TxtDelayMs.Text = node.DelayMs.ToString();
+                // 反填：从大到小选第一个"整除不丢精度"的人类单位（h→min→s→ms），小数最多 3 位去尾零
+                if (node.DelayMs >= 3_600_000 && node.DelayMs % 3_600_000 == 0)
+                { CboDelayUnit.SelectedIndex = 3; TxtDelayValue.Text = (node.DelayMs / 3_600_000).ToString(); }
+                else if (node.DelayMs >= 3_600_000)
+                { CboDelayUnit.SelectedIndex = 3; TxtDelayValue.Text = (node.DelayMs / 3_600_000.0).ToString("0.###"); }
+                else if (node.DelayMs >= 60_000)
+                { CboDelayUnit.SelectedIndex = 2; TxtDelayValue.Text = (node.DelayMs / 60_000.0).ToString("0.###"); }
+                else if (node.DelayMs >= 1_000)
+                { CboDelayUnit.SelectedIndex = 1; TxtDelayValue.Text = (node.DelayMs / 1_000.0).ToString("0.###"); }
+                else
+                { CboDelayUnit.SelectedIndex = 0; TxtDelayValue.Text = node.DelayMs.ToString(); }
                 break;
             case StepKinds.Timer:
                 PnlTimer.Visibility = Visibility.Visible;
@@ -152,8 +162,13 @@ public partial class StepEditDialog : Window
                 break;
 
             case StepKinds.Delay:
-                if (!int.TryParse(TxtDelayMs.Text, out var dms) || dms < 0) { TxtError.Text = "延时时长须为 ≥0 的整数（毫秒）"; return; }
-                _node.DelayMs = dms;
+                if (!double.TryParse(TxtDelayValue.Text.Trim(), out var dv) || dv < 0)
+                { TxtError.Text = "延时时长须为 ≥0 的数值"; return; }
+                // 按所选单位换算毫秒写回（0.### 格式反填可无损还原）
+                var unitMs = CboDelayUnit.SelectedIndex switch { 1 => 1_000.0, 2 => 60_000.0, 3 => 3_600_000.0, _ => 1.0 };
+                var totalMs = (int)Math.Round(dv * unitMs);
+                if (totalMs < 0) { TxtError.Text = "延时时长数值过大"; return; }
+                _node.DelayMs = totalMs;
                 break;
 
             case StepKinds.Timer:

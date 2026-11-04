@@ -566,6 +566,13 @@ public partial class MainWindow : Window
             StopMouseCapture();
             return;
         }
+        // 互斥：静默捕获（录制/插入触发器/插入截图）占用鼠标跟踪时不可再启动——
+        // 两路并发会重复订阅结果事件且点烧杯语义错乱（日志已见重复投递 x2/x3）
+        if (_silentCapturing)
+        {
+            TxtCaptureStatus.Text = "录制/插入捕获进行中——先停止录制或完成插入，再启动随鼠标捕获";
+            return;
+        }
 
         _capturing = true;
         _detailsLocked = false; // 开始捕获时解锁 Details 跟随刷新
@@ -576,6 +583,8 @@ public partial class MainWindow : Window
         driver.IsEnabled = true;
 
         _mouseCapture.Start();
+        // 幂等订阅（先退订再订阅）：任何路径重复进入时保证结果事件只投递一次
+        _mouseCapture.ResultProduced -= OnCaptureResult;
         _mouseCapture.ResultProduced += OnCaptureResult;
         BtnMouseCapture.Content = "停止捕获";
         TxtCaptureStatus.Text = "捕获中：悬停选中元素后，点蓝框右上角烧杯按钮将其添加为监测目标…";
@@ -615,6 +624,8 @@ public partial class MainWindow : Window
         driver.HighlighterMode = HighlighterMode.HighlighterBeakerTooltip;
         driver.SetCallBackForSnapshot(new Action(OnSnapshotAddTarget));
         driver.IsEnabled = true;
+        // 幂等订阅（先退订再订阅）：正常捕获/静默捕获交叉启停的任何路径下结果事件只投递一次
+        _mouseCapture.ResultProduced -= OnCaptureResult;
         _mouseCapture.ResultProduced += OnCaptureResult;
         _mouseCapture.Start();
         Log($"静默捕获已启动（录制模式：鼠标跟踪高亮，蓝框+烧杯=触发器入口） target={_currentTarget?.ProcessName} treeLoaded={_currentTree is not null} nodeCount={_currentTree?.NodeCount}");
@@ -647,7 +658,9 @@ public partial class MainWindow : Window
     private void OnSnapshotAddTarget()
     {
         // ★ 静默分支：烧杯=触发器目标选定（录制中随时可点；右键插入触发器也经此路径）
-        if (_silentCapturing)
+        //   _capturing（顶部按钮发起的正常捕获）优先级更高：其烧杯永远走下方"添加监控任务"路径，
+        //   避免两模式并存时点烧杯语义错乱（互斥守卫正常时不会并存，此处为防御）
+        if (_silentCapturing && !_capturing)
         {
             // ★ 截图分叉：剪刀（截图拾取模式，图标已切换）= 截图目标选定：
             //   弹目录选择 → 按当前悬停元素矩形试截一张 → 插入截图步骤（RecordingPanel 完成）
@@ -1726,7 +1739,7 @@ public partial class MainWindow : Window
         MenuSyncStart.IsEnabled = selected.Count >= 2
             && selected.All(s => !string.Equals(s.State, "Running", StringComparison.OrdinalIgnoreCase));
         MenuMergeReport.IsEnabled = selected.Count >= 2;
-        MenuAddTaskByCapture.IsEnabled = !_capturing; // 随鼠标捕获进行中不可再发起（菜单提示走状态栏）
+        MenuAddTaskByCapture.IsEnabled = !_capturing && !_silentCapturing; // 任一捕获进行中不可再发起（互斥）
     }
 
     /// <summary>同步启动选中的多个任务：先弹窗统一设置采集间隔/监控时长/数据保存方式（组内强制一致），
