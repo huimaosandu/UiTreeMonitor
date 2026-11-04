@@ -15,9 +15,45 @@
 
         <TextBlock Grid.Row="0" x:Name="TxtTitle" FontWeight="Bold" FontSize="13" Margin="0,0,0,10"/>
 
+        <!-- 循环：结束条件三选一（次数/运行时长/截至时间），时长与延时步骤同款单位下拉 -->
         <StackPanel Grid.Row="1" x:Name="PnlLoop" Visibility="Collapsed" Margin="0,0,0,6">
-            <TextBlock Text="循环次数：" FontWeight="Bold"/>
-            <TextBox x:Name="TxtLoopCount" Text="2" Margin="0,2,0,8" Padding="2"/>
+            <TextBlock Text="结束条件：" FontWeight="Bold"/>
+            <ComboBox x:Name="CboLoopEnd" Margin="0,2,0,6" SelectedIndex="0" SelectionChanged="CboLoopEnd_SelectionChanged">
+                <ComboBoxItem Content="按循环次数"/>
+                <ComboBoxItem Content="按运行时长"/>
+                <ComboBoxItem Content="按截至时间"/>
+            </ComboBox>
+
+            <!-- 次数模式 -->
+            <StackPanel x:Name="PnlLoopCount">
+                <TextBlock Text="循环次数：" FontWeight="Bold"/>
+                <TextBox x:Name="TxtLoopCount" Text="2" Margin="0,2,0,8" Padding="2"/>
+            </StackPanel>
+
+            <!-- 运行时长模式：数值 + 单位下拉（换算毫秒保存，支持小数如 1.5 分钟） -->
+            <StackPanel x:Name="PnlLoopDuration" Visibility="Collapsed">
+                <TextBlock Text="运行时长：" FontWeight="Bold"/>
+                <DockPanel Margin="0,2,0,4">
+                    <ComboBox x:Name="CboLoopDurUnit" Width="76" DockPanel.Dock="Right" SelectedIndex="1">
+                        <ComboBoxItem Content="毫秒(ms)"/>
+                        <ComboBoxItem Content="秒(s)"/>
+                        <ComboBoxItem Content="分(min)"/>
+                        <ComboBoxItem Content="时(h)"/>
+                    </ComboBox>
+                    <TextBox x:Name="TxtLoopDurValue" Text="60" Padding="2" Margin="0,0,6,0"/>
+                </DockPanel>
+                <TextBlock Text="自循环启动起累计该时长后停止（每轮开始前检查，轮间隔计入）"
+                           Foreground="#888888" FontSize="10" TextWrapping="Wrap" Margin="0,0,0,8"/>
+            </StackPanel>
+
+            <!-- 截至时间模式：支持 时:分:秒（今天已过按次日）或完整 年-月-日 时:分:秒 -->
+            <StackPanel x:Name="PnlLoopDeadline" Visibility="Collapsed">
+                <TextBlock Text="截至时间（时:分:秒，今天已过按次日；也可完整 年-月-日 时:分:秒）：" FontWeight="Bold" TextWrapping="Wrap"/>
+                <TextBox x:Name="TxtLoopDeadline" Text="18:00:00" Margin="0,2,0,4" Padding="2"/>
+                <TextBlock Text="运行到该时刻停止；启动时已过=跳过循环体（与定时步骤同语义）"
+                           Foreground="#888888" FontSize="10" TextWrapping="Wrap" Margin="0,0,0,8"/>
+            </StackPanel>
+
             <TextBlock Text="每轮间隔（毫秒，0=不间隔）：" FontWeight="Bold"/>
             <TextBox x:Name="TxtLoopInterval" Text="500" Margin="0,2,0,4" Padding="2"/>
         </StackPanel>

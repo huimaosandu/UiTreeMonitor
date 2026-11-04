@@ -805,6 +805,7 @@ public class RecordingTaskTests
         Assert.Equal(StepKinds.Loop, loop.Kind);
         Assert.Equal(5, loop.LoopCount);
         Assert.Equal(200, loop.LoopIntervalMs);
+        Assert.Equal(LoopEndModes.Count, loop.LoopEndMode);   // 旧格式无该字段 → 默认 count（向后兼容）
         Assert.Equal(2, loop.Children.Count);
         Assert.Equal(300, loop.Children[0].DelayMs);
 
@@ -864,5 +865,58 @@ public class RecordingTaskTests
         Assert.Equal("📷 截图 保存按钮", shot.DisplayText);
         Assert.Equal(@"保存于 D:\uitreemonitor\shots", shot.DetailText);
         Assert.Equal("📷 截图（未配置）", new StepNode { Kind = StepKinds.Screenshot }.DisplayText);
+    }
+
+    [Fact]
+    public void LoopEndModes_RoundTrip_And_Predicates()
+    {
+        // round-trip：duration/deadline 两新模式字段完整往返（camelCase JSON）
+        var task = new RecordingTask
+        {
+            Steps =
+            {
+                new StepNode { Kind = StepKinds.Loop, LoopEndMode = LoopEndModes.Duration, LoopDurationMs = 90_000, LoopIntervalMs = 0,
+                    Children = { new StepNode { Kind = StepKinds.Delay, DelayMs = 100 } } },
+                new StepNode { Kind = StepKinds.Loop, LoopEndMode = LoopEndModes.Deadline,
+                    LoopDeadline = new DateTime(2026, 11, 5, 18, 0, 0), LoopIntervalMs = 0 },
+            },
+        };
+        var back = RecordingTask.FromJson(task.ToJson());
+        Assert.NotNull(back);
+        Assert.Equal(LoopEndModes.Duration, back!.Steps[0].LoopEndMode);
+        Assert.Equal(90_000, back.Steps[0].LoopDurationMs);
+        Assert.Equal(LoopEndModes.Deadline, back.Steps[1].LoopEndMode);
+        Assert.Equal(new DateTime(2026, 11, 5, 18, 0, 0), back.Steps[1].LoopDeadline);
+
+        // 每轮判定：count=轮数未达；duration=时长未满；deadline=时刻未到/已过
+        var count = new StepNode { Kind = StepKinds.Loop, LoopCount = 3, LoopIntervalMs = 0 };
+        Assert.True(count.LoopHasMoreRounds(2, DateTime.Now));
+        Assert.False(count.LoopHasMoreRounds(3, DateTime.Now));
+
+        var dur = new StepNode { Kind = StepKinds.Loop, LoopEndMode = LoopEndModes.Duration, LoopDurationMs = 60_000 };
+        var started = DateTime.Now;
+        Assert.True(dur.LoopHasMoreRounds(0, started));                                  // 未满 60s
+        Assert.False(dur.LoopHasMoreRounds(0, started.AddSeconds(-61)));                  // 启动至今已 61s
+
+        var dl = new StepNode { Kind = StepKinds.Loop, LoopEndMode = LoopEndModes.Deadline,
+            LoopDeadline = DateTime.Now.AddMinutes(5) };
+        Assert.True(dl.LoopHasMoreRounds(0, DateTime.Now));
+        dl.LoopDeadline = DateTime.Now.AddSeconds(-1);
+        Assert.False(dl.LoopHasMoreRounds(0, DateTime.Now));                              // 已过=跳过循环体
+
+        // 显示文本：三模式
+        Assert.Equal("🔁 循环 ×3", count.DisplayText);
+        Assert.Equal("🔁 循环 ≤2min", new StepNode
+        { Kind = StepKinds.Loop, LoopEndMode = LoopEndModes.Duration, LoopDurationMs = 120_000, LoopIntervalMs = 0 }.DisplayText);
+        Assert.Equal("🔁 循环 至 18:00:00", new StepNode
+        { Kind = StepKinds.Loop, LoopEndMode = LoopEndModes.Deadline,
+          LoopDeadline = new DateTime(2026, 11, 5, 18, 0, 0), LoopIntervalMs = 0 }.DisplayText);
+
+        // 时长格式化：整除取大单位（90s 非整分钟 → 秒）
+        Assert.Equal("2h", StepNode.FormatDuration(7_200_000));
+        Assert.Equal("5min", StepNode.FormatDuration(300_000));
+        Assert.Equal("90s", StepNode.FormatDuration(90_000));
+        Assert.Equal("30s", StepNode.FormatDuration(30_000));
+        Assert.Equal("1500ms", StepNode.FormatDuration(1_500));
     }
 }

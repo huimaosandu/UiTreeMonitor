@@ -42,6 +42,23 @@ public partial class StepEditDialog : Window
                 PnlLoop.Visibility = Visibility.Visible;
                 TxtLoopCount.Text = node.LoopCount.ToString();
                 TxtLoopInterval.Text = node.LoopIntervalMs.ToString();
+                // 结束条件模式反填 + 对应输入区（SelectionChanged 由 SelectedIndex 赋值自动触发切换可见性）
+                CboLoopEnd.SelectedIndex = node.LoopEndMode switch
+                {
+                    LoopEndModes.Duration => 1, LoopEndModes.Deadline => 2, _ => 0,
+                };
+                // 时长反填：与延时同款 h→min→s→ms 最合适单位（0.### 小数）
+                if (node.LoopDurationMs >= 3_600_000)
+                { CboLoopDurUnit.SelectedIndex = 3; TxtLoopDurValue.Text = (node.LoopDurationMs / 3_600_000.0).ToString("0.###"); }
+                else if (node.LoopDurationMs >= 60_000)
+                { CboLoopDurUnit.SelectedIndex = 2; TxtLoopDurValue.Text = (node.LoopDurationMs / 60_000.0).ToString("0.###"); }
+                else if (node.LoopDurationMs >= 1_000)
+                { CboLoopDurUnit.SelectedIndex = 1; TxtLoopDurValue.Text = (node.LoopDurationMs / 1_000.0).ToString("0.###"); }
+                else
+                { CboLoopDurUnit.SelectedIndex = 0; TxtLoopDurValue.Text = node.LoopDurationMs.ToString(); }
+                TxtLoopDeadline.Text = node.LoopDeadline == default
+                    ? DateTime.Now.AddHours(1).ToString("HH:mm:ss")
+                    : node.LoopDeadline.ToString("HH:mm:ss");
                 break;
             case StepKinds.Delay:
                 PnlDelay.Visibility = Visibility.Visible;
@@ -148,6 +165,15 @@ public partial class StepEditDialog : Window
             TxtShotDir.Text = dlg.FolderName;
     }
 
+    /// <summary>结束条件下拉切换：显示对应输入区（次数/时长/截至时间）。</summary>
+    private void CboLoopEnd_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        // 非 Loop 步骤不会打开 PnlLoop，但构造期其他 Kind 不会触发本事件（CboLoopEnd 不在可视树不产生选择变化）
+        PnlLoopCount.Visibility = CboLoopEnd.SelectedIndex == 0 ? Visibility.Visible : Visibility.Collapsed;
+        PnlLoopDuration.Visibility = CboLoopEnd.SelectedIndex == 1 ? Visibility.Visible : Visibility.Collapsed;
+        PnlLoopDeadline.Visibility = CboLoopEnd.SelectedIndex == 2 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
     private void BtnOk_Click(object sender, RoutedEventArgs e)
     {
         TxtError.Foreground = System.Windows.Media.Brushes.Red;
@@ -155,10 +181,31 @@ public partial class StepEditDialog : Window
         switch (_node.Kind)
         {
             case StepKinds.Loop:
-                if (!int.TryParse(TxtLoopCount.Text, out var lc) || lc < 1) { TxtError.Text = "循环次数须为 ≥1 的整数"; return; }
                 if (!int.TryParse(TxtLoopInterval.Text, out var li) || li < 0) { TxtError.Text = "轮间隔须为 ≥0 的整数（毫秒）"; return; }
-                _node.LoopCount = lc;
                 _node.LoopIntervalMs = li;
+                switch (CboLoopEnd.SelectedIndex)
+                {
+                    case 1: // 运行时长（数值 × 单位 → 毫秒，支持小数）
+                        if (!double.TryParse(TxtLoopDurValue.Text.Trim(), out var dur) || dur <= 0)
+                        { TxtError.Text = "运行时长须为 >0 的数值"; return; }
+                        var durUnitMs = CboLoopDurUnit.SelectedIndex switch { 1 => 1_000.0, 2 => 60_000.0, 3 => 3_600_000.0, _ => 1.0 };
+                        var durTotal = (int)Math.Round(dur * durUnitMs);
+                        if (durTotal <= 0) { TxtError.Text = "运行时长数值过小（换算后不足 1 毫秒）"; return; }
+                        _node.LoopEndMode = LoopEndModes.Duration;
+                        _node.LoopDurationMs = durTotal;
+                        break;
+                    case 2: // 截至时间：HH:mm:ss（今天已过按次日）或完整 yyyy-MM-dd HH:mm:ss
+                        if (!TryParseDeadline(TxtLoopDeadline.Text.Trim(), out var deadline))
+                        { TxtError.Text = "截至时间格式无效：应为 时:分:秒（如 18:00:00）或 年-月-日 时:分:秒"; return; }
+                        _node.LoopEndMode = LoopEndModes.Deadline;
+                        _node.LoopDeadline = deadline;
+                        break;
+                    default: // 次数（默认）
+                        if (!int.TryParse(TxtLoopCount.Text, out var lc) || lc < 1) { TxtError.Text = "循环次数须为 ≥1 的整数"; return; }
+                        _node.LoopEndMode = LoopEndModes.Count;
+                        _node.LoopCount = lc;
+                        break;
+                }
                 break;
 
             case StepKinds.Delay:
@@ -214,5 +261,26 @@ public partial class StepEditDialog : Window
         Saved = true;
         DialogResult = true;
         Close();
+    }
+
+    /// <summary>截至时间解析：含"-"按完整 yyyy-MM-dd HH:mm:ss 原样解析；
+    /// 否则按时:分:秒 解析为今天的该时刻，已过则按次日（"明天 8 点跑完"场景）。</summary>
+    private static bool TryParseDeadline(string text, out DateTime deadline)
+    {
+        deadline = default;
+        if (string.IsNullOrWhiteSpace(text)) return false;
+        text = text.Trim();
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        if (text.Contains('-'))
+            return DateTime.TryParseExact(text, new[] { "yyyy-MM-dd HH:mm:ss", "yyyy/M/d H:mm:ss" }, inv,
+                System.Globalization.DateTimeStyles.None, out deadline);
+        if (TimeSpan.TryParseExact(text, new[] { @"hh\:mm\:ss", @"h\:mm\:ss" }, inv, out var tod))
+        {
+            var now = DateTime.Now;
+            deadline = now.Date + tod;
+            if (deadline <= now) deadline = deadline.AddDays(1); // 今天已过 → 次日同时刻
+            return true;
+        }
+        return false;
     }
 }

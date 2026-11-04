@@ -144,16 +144,25 @@ public sealed class RecordingTaskRunner : IDisposable
                 break;
 
             case StepKinds.Loop:
-                for (int i = 1; i <= node.LoopCount; i++)
+            {
+                // 三种结束条件（StepNode.LoopEndMode）：count=次数 / duration=运行时长 / deadline=截至时刻。
+                // ★ 每轮开始前判定（含第 1 轮）——截至时刻已过=跳过循环体（与定时步骤"已过立即继续"同语义）；
+                //   轮间隔计入时长/截至判定（Sleep 后再判下一轮）。
+                var start = DateTime.Now;
+                int i = 0;
+                while (node.LoopHasMoreRounds(i, start))
                 {
                     _cts.Token.ThrowIfCancellationRequested();
-                    Set(RecTaskRunState.Running, $"{node.DisplayText} 第 {i}/{node.LoopCount} 轮", index: index, round: i);
+                    i++;
+                    Set(RecTaskRunState.Running, $"{node.DisplayText} 第 {i} 轮", index: index, round: i);
                     foreach (var child in node.Children)
                         ExecuteNode(child, flat, ref index, round: i);
-                    if (i < node.LoopCount && node.LoopIntervalMs > 0)
+                    if (node.LoopIntervalMs > 0 && node.LoopHasMoreRounds(i, start))
                         Sleep(node.LoopIntervalMs);
                 }
+                AppLog.Write("TASK", $"Loop finished: {i} rounds (mode={node.LoopEndMode})");
                 break;
+            }
 
             case StepKinds.Trigger:
                 ExecuteTrigger(node, flat, ref index, round);
