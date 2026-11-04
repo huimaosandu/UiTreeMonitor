@@ -9,8 +9,9 @@
 //
 // ★ UIA 语义模式双通道（tkinter/Qt 等自绘框架不推送 UIA 事件，纯监听收不到）：
 //   通道1 被动：EventListenerCore COM 事件监听（UIA-aware 应用：原生 Win32/WPF/WinForms）
-//   通道2 主动：输入钩子 + 元素 Pattern 语义化（点击→InvokePattern.Invoke；文本键→焦点元素
-//              ValuePattern 实时值 SetValue；拖动→RangeValuePattern 终值 SetValue；不支持则坐标回退）
+//   通道2 主动：输入钩子 + 元素 Pattern 语义化（点击→InvokePattern.Invoke；文本键→防抖 pending
+//              停顿 800ms/回车/鼠标动作时读终值 SetValue(Value/RangeValue，merge)——低级钩子先于
+//              目标处理按键，KeyDown 即时读值必为旧值；拖动→RangeValuePattern 终值；回车无值类→Invoke/键盘兜底）
 //   两通道同元素同方法记录经 merge 合并（spec 定位忽略 rect 抖动），不会重复
 //
 // 回放：Pattern 记录经 ElementPath 重定位后调用 PatternActionRunner；
@@ -20,9 +21,11 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
+using System.Windows.Threading;
 using Microsoft.Win32;
 using Axe.Windows.Core.Bases;
 using UiTreeMonitor.Core;
@@ -55,6 +58,20 @@ public partial class RecordingPanel : UserControl
     private DateTime _lastAttach = DateTime.MinValue; // 上次挂载时刻（重挂防抖）
     private bool _uiaSemanticMode;      // UIA 语义模式录制中（双通道：事件监听+输入语义化）
     private readonly Dictionary<string, byte> _patternProbeLogged = new(); // 语义化失败探针日志节流（同元素只打一次 pattern 列表）
+
+    // ★ 文本键防抖终值（键盘录制核心机制）：
+    //   低级键盘钩子先于目标进程处理按键，KeyDown 时刻读值必为旧值（敲"65"读第二键时只有"6"）。
+    //   连续文本键进入 pending，800ms 停顿/回车/非文本键/鼠标动作触发 flush——此刻所有键已被目标处理，
+    //   读到的是终值，生成一条 SetValue(merge)，既解决时序又天然合并连击。
+    private DispatcherTimer? _keyDebounce;     // 防抖定时器（停顿 800ms → flush）
+    private AutomationElement? _pendingKeyElem; // 防抖中的键入目标元素（null=解析失败，flush 时重试解析链）
+    private string _pendingKeyName = "", _pendingKeyProc = "", _pendingKeyType = "";
+    private DateTime _pendingKeyAt = DateTime.MinValue; // 最近一次文本键时刻
+
+    // ★ KeyDown 焦点解析失败回退链缓存：FocusedElement 对 Qt 等自绘窗口实测返回 null（不抛异常），
+    //   回退"最近一次鼠标动作命中的元素"（键入前刚点击过输入框，命中率极高）
+    private AutomationElement? _recentClickElem;
+    private DateTime _recentClickTick = DateTime.MinValue;
 
     /// <summary>录制状态变化通知。</summary>
     public event Action<bool>? RecordingStateChanged;
@@ -138,7 +155,8 @@ public partial class RecordingPanel : UserControl
         }
         else
         {
-            // 停止录制
+            // 停止录制（先把防抖中的键入终值落盘——最后一段输入不能因停止而丢失）
+            FlushPendingKeys(reason: "stop");
             StopInputHook();
             StopUiaListenerQuiet();
             _uiaSemanticMode = false;
@@ -314,16 +332,22 @@ public partial class RecordingPanel : UserControl
         {
             if (!_isRecording) return;
 
+            // ★ 鼠标动作先落盘防抖中的键入终值（顺序保证：输入的值先记录，点击动作后追加；
+            //   典型场景：数字框键入 → 点 OK → OK 的 Invoke 记录前必须已有 SetValue(终值)）
+            if (input.Kind != InputActionKind.KeyDown) FlushPendingKeys(reason: "mouse");
+
             // ★ 元素解析全程防御（FromPoint 也不例外）：点击"关闭弹窗"类按钮时目标窗口瞬间销毁，
             //   FromPoint 对销毁中元素直接抛 ElementNotAvailable——若不捕获会吞掉整个动作
             //   （连坐标兜底都丢）。解析失败 → elem=null/pid=0 → 语义化跳过、坐标记录保底。
+            // ★ KeyDown 走回退链：FocusedElement 对 Qt 等自绘窗口实测返回 null（不抛异常）→
+            //   历史上在此静默丢弃（日志零痕迹）；依次回退：最近鼠标命中元素(15s) → 鼠标位置 FromPoint
             AutomationElement? elem = null;
             int pid = 0;
             string elemName = "", ctrlType = "", procName = "";
             try
             {
                 elem = input.Kind == InputActionKind.KeyDown
-                    ? AutomationElement.FocusedElement
+                    ? TryResolveKeyTarget()
                     : AutomationElement.FromPoint(new Point(input.X, input.Y)); // 拖动取按下点元素
             }
             catch (Exception ex)
@@ -341,6 +365,13 @@ public partial class RecordingPanel : UserControl
                 }
             }
             catch { /* 元素可能已销毁/进程已退出；已读到的部分继续用 */ }
+
+            // ★ 鼠标动作命中元素缓存（KeyDown 焦点解析失败的回退源：键入前刚点过输入框）
+            if (input.Kind != InputActionKind.KeyDown && elem is not null && pid != 0)
+            {
+                _recentClickElem = elem;
+                _recentClickTick = DateTime.Now;
+            }
 
             // ★ 自己 UI 的动作最先拦（点"停止录制"按钮本身也是一次左键点击）——必须在校验丢弃之前：
             //   若先做 hwnd 校验把 pid 清零，own 过滤失效，自己 UI 的点击会被当成"元素销毁"误录
@@ -432,9 +463,11 @@ public partial class RecordingPanel : UserControl
     /// - 左键点击：元素有 InvokePattern → Invoke；元素销毁（点击即关窗的 OK/确定按钮竞态）→
     ///   coord:v1 延迟定位的 Invoke（回放时弹窗已被前置步骤重新打开，FromPoint 命中该按钮语义执行，光标不动）；
     ///   元素无 InvokePattern → 不记录（探针日志注明控件无语义能力）
-    /// - 文本键/回车：焦点元素 ValuePattern 实时完整值 → SetValue(merge)；回车无 Value（按钮焦点）→ Invoke
+    /// - 文本键：防抖 pending（键入中不即时读值——低级钩子先于目标处理按键，即时读必为旧值），
+    ///   800ms 停顿/回车/非文本键/鼠标动作时读终值 → SetValue(merge)；Value（文本）/RangeValue（数字框）双通道
+    /// - 回车：flush pending 后即时语义化——值类 SetValue(终值) / 按钮焦点 Invoke；全无 → 键盘 Enter 兜底记录
     /// - 左键拖动：起点元素 RangeValuePattern 终值 → SetValue(merge)；无 → 不记录
-    /// - 右键/右键拖动/其他键（Tab/方向/F 键等）：无 UIA 语义等价，不记录（日志注明）
+    /// - 右键/右键拖动/其他键（Tab/方向/F 键等）：无 UIA 语义等价，不记录（Tab 先 flush 键入）
     /// </summary>
     private void HandleUiaSemanticInput(InputActionRecord input, AutomationElement? elem,
         int pid, string elemName, string procName, string ctrlType)
@@ -472,14 +505,52 @@ public partial class RecordingPanel : UserControl
                 return;
 
             case InputActionKind.KeyDown:
-                if (elem is not null && TryBuildSemanticRecord(input, elem, elemName, procName, ctrlType, out var keyRecord, out var keyMerge))
+            {
+                // ★ 键盘录制三分类（Qt/tkinter 等自绘框架的数字框/文本框唯一录入通道）：
+                //   1) 回车：即时处理——先 flush 防抖键入（前面字符已处理完，读到终值），
+                //      再按 值类 SetValue / Invoke（表单提交）语义化；全无 → 键盘动作兜底（回放真实按键，
+                //      值类 SetValue 无法触发 Qt 弹窗 accept 关闭，回车必须真实送达）
+                //   2) 文本键（数字/字母/退格/空格/标点）：进入防抖 pending，停顿 800ms/回车/
+                //      非文本键/鼠标动作时读终值 → 一条 SetValue(merge)——KeyDown 时刻按键尚未被
+                //      目标处理，读值必为旧值，这是"输入数字变成旧值 65"的根因之一
+                //   3) 其他键（Tab/方向/F 键）：无值语义，但 Tab/回车切换焦点 → flush pending 后不录
+                var isEnter = input.VkCode == 0x0D;
+                var isText = IsTextVk(input.VkCode);
+                if (isEnter)
                 {
-                    AppendRecord(keyRecord, keyMerge, source: $"input-semantic {input.Kind}");
-                    AppLog.Write("RECORD", $"OnInputAction→semantic: {keyRecord.PatternName}.{keyRecord.MethodName}" +
-                        $"({string.Join(", ", keyRecord.Parameters ?? Array.Empty<object?>())}) elem={elemName} type={ctrlType} pid={pid} proc={procName}");
+                    FlushPendingKeys(reason: "enter");
+                    if (elem is not null && TryBuildSemanticRecord(input, elem, elemName, procName, ctrlType, out var keyRecord, out var keyMerge))
+                    {
+                        AppendRecord(keyRecord, keyMerge, source: $"input-semantic {input.Kind}");
+                        AppLog.Write("RECORD", $"OnInputAction→semantic: {keyRecord.PatternName}.{keyRecord.MethodName}" +
+                            $"({string.Join(", ", keyRecord.Parameters ?? Array.Empty<object?>())}) elem={elemName} type={ctrlType} pid={pid} proc={procName}");
+                        return;
+                    }
+                    // 回车兜底：键盘动作记录（UIA 语义模式唯一允许的 Input_Keyboard 记录——回车承载
+                    // "提交"语义不可丢；回放 SendKeyCombo 真实按键）
+                    var enter = new ActionRecord
+                    {
+                        Timestamp = input.Timestamp,
+                        ElementName = elemName,
+                        PatternName = InputSimulator.KeyboardPattern,
+                        MethodName = "Enter",
+                        Parameters = null,
+                        Success = true,
+                        Result = $"{procName} {ShortType(ctrlType)} Enter(回车兜底)",
+                    };
+                    AppendRecord(enter, replacePrevious: false, source: "input-semantic key-enter-fallback");
+                    AppLog.Write("RECORD", $"OnInputAction→semantic: 键盘 Enter 兜底 elem={elemName} type={ctrlType} pid={pid} proc={procName}");
                     return;
                 }
-                return; // 无 Value/Invoke 的按键（Tab/方向/无语义控件上的键）：UIA 模式不录
+                if (isText)
+                {
+                    QueuePendingKey(elem, elemName, procName, ctrlType);
+                    return;
+                }
+                // Tab/方向/F 键等：切焦点信号 → 先落盘键入终值，本身无语义不录
+                FlushPendingKeys(reason: "non-text-key");
+                return;
+            }
 
             case InputActionKind.MouseLeftDrag:
                 if (elem is not null && TryBuildSemanticRecord(input, elem, elemName, procName, ctrlType, out var dragRecord, out var dragMerge))
@@ -652,9 +723,12 @@ public partial class RecordingPanel : UserControl
 
                 case InputActionKind.KeyDown:
                 {
-                    // 文本键/回车：Value 优先（文本输入、回车换行都是值变化，读实时完整值 merge）
-                    var isEnter = input.VkCode == 0x0D;
-                    if (!isEnter && !IsTextVk(input.VkCode)) break; // 其他键（Tab/方向/F 键）无语义
+                    // ★ 仅回车走此分支（文本键已分流到防抖 pending——KeyDown 时刻按键尚未被目标处理，
+                    //   即时读值必为旧值；回车时刻前面字符均已处理完，读到的是终值）。
+                    //   回车语义：值类控件 → SetValue 终值（Qt 数字框回车=提交编辑，值不变）；
+                    //   按钮焦点 → Invoke（表单提交）。RangeValue 是 Qt QDoubleSpinBox/QSlider 等
+                    //   数字控件的关键通道（它们没有 ValuePattern），此前缺失导致数字框回车无记录。
+                    if (input.VkCode != 0x0D) break;
                     if (elem.TryGetCurrentPattern(ValuePattern.Pattern, out var vpo) && vpo is ValuePattern vp && !vp.Current.IsReadOnly)
                     {
                         var value = vp.Current.Value;
@@ -666,8 +740,16 @@ public partial class RecordingPanel : UserControl
                             return true;
                         }
                     }
-                    // 回车且焦点无 Value（按钮焦点）→ Invoke（表单提交语义）
-                    if (isEnter && elem.TryGetCurrentPattern(InvokePattern.Pattern, out _))
+                    if (elem.TryGetCurrentPattern(RangeValuePattern.Pattern, out var rpo) && rpo is RangeValuePattern rp && !rp.Current.IsReadOnly)
+                    {
+                        var value = rp.Current.Value;
+                        replacePrevious = true;
+                        record = BuildSemantic(elem, "RangeValuePattern", "SetValue", new object?[] { value },
+                            result: $"{procName} {ShortType(ctrlType)} → {value}", elemName, input.Timestamp);
+                        return true;
+                    }
+                    // 回车且焦点无值类 Pattern（按钮焦点）→ Invoke（表单提交语义）
+                    if (elem.TryGetCurrentPattern(InvokePattern.Pattern, out _))
                     {
                         replacePrevious = false;
                         record = BuildSemantic(elem, "InvokePattern", "Invoke", null,
@@ -679,6 +761,7 @@ public partial class RecordingPanel : UserControl
                 }
 
                 case InputActionKind.MouseLeftDrag:
+                {
                     // 拖动：抬起时刻起点元素（滑块）的 RangeValue 已是终值（merge 合并拖动过程）
                     if (elem.TryGetCurrentPattern(RangeValuePattern.Pattern, out var rpo) && rpo is RangeValuePattern rp && !rp.Current.IsReadOnly)
                     {
@@ -690,6 +773,7 @@ public partial class RecordingPanel : UserControl
                     }
                     LogPatternProbe(elem, elemName, ctrlType, procName, "drag-no-rangevalue");
                     break;
+                }
             }
         }
         catch { /* pattern 查询/读值失败 → 坐标回退 */ }
@@ -779,6 +863,120 @@ public partial class RecordingPanel : UserControl
         }
         catch { /* 探针失败无碍 */ }
     }
+
+    // ==== 键盘防抖终值（文本键 → pending → 停顿/回车/鼠标动作时读终值一条 SetValue） ====
+
+    /// <summary>文本键进入防抖 pending：重置 800ms 定时器，停顿到期 flush 读终值。
+    /// elem 为 null（焦点解析失败）也 pending——flush 时重试解析链（此时目标可能已可读）。</summary>
+    private void QueuePendingKey(AutomationElement? elem, string elemName, string procName, string ctrlType)
+    {
+        _pendingKeyElem = elem;
+        _pendingKeyName = elemName; _pendingKeyProc = procName; _pendingKeyType = ctrlType;
+        _pendingKeyAt = DateTime.Now;
+        _keyDebounce ??= new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(800) };
+        _keyDebounce.Tick -= OnKeyDebounceTick;   // 幂等订阅（防重入叠加）
+        _keyDebounce.Tick += OnKeyDebounceTick;
+        _keyDebounce.Stop();
+        _keyDebounce.Start();
+        TxtStatus.Text = $"● 键入中（{elemName}）…停顿后记录终值" + (_insertAnchor is not null ? "（插入模式）" : "");
+        AppLog.Write("RECORD", $"KeyQueue: elem={elemName} type={ctrlType} pending（800ms 停顿/回车/鼠标动作时读终值）");
+    }
+
+    private void OnKeyDebounceTick(object? sender, EventArgs e) => FlushPendingKeys(reason: "debounce");
+
+    /// <summary>落盘防抖中的键入终值：此刻所有已敲字符均已被目标进程处理，读到的是最终值。
+    /// 值类 Pattern 优先 Value（文本）再 RangeValue（数字框/滑块），生成 SetValue(merge=true)——
+    /// 与拖动误捕的同元素旧值记录经 MergeKey 原位替换（拖选文本误捕的 SetValue(65) 被键入终值覆盖）。
+    /// 触发时机：800ms 停顿 / 回车 / 非文本键（Tab 切焦点）/ 任何鼠标动作 / 停止录制。</summary>
+    private void FlushPendingKeys(string reason)
+    {
+        var elem = _pendingKeyElem;
+        var name = _pendingKeyName; var proc = _pendingKeyProc; var type = _pendingKeyType;
+        if (elem is null && name == "") return; // 无 pending
+        _keyDebounce?.Stop();
+        _pendingKeyElem = null; _pendingKeyName = ""; _pendingKeyProc = ""; _pendingKeyType = "";
+        if (!_isRecording) return;
+
+        // pending 时元素解析失败（FocusedElement=null 且当时无缓存）→ 此刻重试解析链
+        if (elem is null)
+        {
+            elem = TryResolveKeyTarget();
+            if (elem is not null)
+            {
+                try
+                {
+                    name = elem.Current.Name ?? ""; type = elem.Current.ControlType?.ProgrammaticName ?? "";
+                    proc = Process.GetProcessById(elem.Current.ProcessId).ProcessName;
+                }
+                catch { }
+            }
+        }
+        if (elem is null)
+        {
+            AppLog.Write("RECORD", $"KeyFlush[{reason}]: element resolve still null → 键入值放弃（无值语义载体）");
+            return;
+        }
+
+        try
+        {
+            // 值类终值：Value 优先（文本框），RangeValue 次之（QDoubleSpinBox/QSlider 等数字控件）
+            if (elem.TryGetCurrentPattern(ValuePattern.Pattern, out var vpo) && vpo is ValuePattern vp && !vp.Current.IsReadOnly)
+            {
+                var value = vp.Current.Value;
+                if (value is not null)
+                {
+                    var rec = BuildSemantic(elem, "ValuePattern", "SetValue", new object?[] { value },
+                        result: $"{proc} {ShortType(type)} → \"{value}\"", name, _pendingKeyAt);
+                    AppendRecord(rec, replacePrevious: true, source: $"input-semantic key-flush({reason})");
+                    AppLog.Write("RECORD", $"KeyFlush[{reason}]→semantic: ValuePattern.SetValue(\"{value}\") elem={name} type={type}");
+                    return;
+                }
+            }
+            if (elem.TryGetCurrentPattern(RangeValuePattern.Pattern, out var rpo) && rpo is RangeValuePattern rp && !rp.Current.IsReadOnly)
+            {
+                var value = rp.Current.Value;
+                var rec = BuildSemantic(elem, "RangeValuePattern", "SetValue", new object?[] { value },
+                    result: $"{proc} {ShortType(type)} → {value}", name, _pendingKeyAt);
+                AppendRecord(rec, replacePrevious: true, source: $"input-semantic key-flush({reason})");
+                AppLog.Write("RECORD", $"KeyFlush[{reason}]→semantic: RangeValuePattern.SetValue({value}) elem={name} type={type}");
+                return;
+            }
+            // 无值类 Pattern（纯文本展示区等）：键入无语义载体 → 探针日志注明
+            LogPatternProbe(elem, name, type, proc, "key-no-value");
+        }
+        catch (Exception ex)
+        {
+            // 元素已销毁（弹窗被关）：键入值随窗口消失，无从落盘
+            AppLog.Write("RECORD", $"KeyFlush[{reason}]: element gone ({ex.GetType().Name}: {ex.Message}) → 键入值放弃");
+        }
+    }
+
+    /// <summary>KeyDown 焦点元素解析链：FocusedElement → 最近鼠标命中元素(15s) → 鼠标位置 FromPoint。
+    /// ★ Qt/tkinter 等自绘窗口 FocusedElement 实测返回 null（不抛异常）——正是键盘输入整体丢失的根因：
+    ///   历史代码 elem=null 时静默 return，日志零痕迹。键入场景鼠标通常刚点过输入框/仍停在其上，回退命中率高。</summary>
+    private AutomationElement? TryResolveKeyTarget()
+    {
+        AutomationElement? elem = null;
+        try { elem = AutomationElement.FocusedElement; } catch { /* 焦点窗口销毁等，走回退 */ }
+        if (elem is not null) return elem;
+
+        if (_recentClickElem is not null && (DateTime.Now - _recentClickTick).TotalSeconds < 15)
+        {
+            try { _ = _recentClickElem.Current.ProcessId; return _recentClickElem; }
+            catch { _recentClickElem = null; } // 元素已销毁，继续回退
+        }
+        try
+        {
+            GetCursorPos(out var pt);
+            var byCursor = AutomationElement.FromPoint(new Point(pt.X, pt.Y));
+            AppLog.Write("RECORD", "KeyDown: FocusedElement null → 回退 FromPoint(鼠标位置)");
+            return byCursor;
+        }
+        catch { return null; }
+    }
+
+    [DllImport("user32.dll")] private static extern bool GetCursorPos(out WinPoint pt);
+    [StructLayout(LayoutKind.Sequential)] private struct WinPoint { public int X, Y; }
 
     private static string TruncLog(string s, int max) => s.Length <= max ? s : s[..max] + "…";
 
