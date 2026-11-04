@@ -298,7 +298,9 @@ public sealed class EventListenerCore : IDisposable
         }
     }
 
-    /// <summary>解析挂载元素：①hwnd ②悬停 ElementContext 爬顶层窗口 ③桌面根兜底。返回 null 仅当 COM 初始化异常。</summary>
+    /// <summary>解析挂载元素：①hwnd ②悬停 ElementContext 爬顶层窗口 ②b pid 找进程顶层窗口 ③桌面根兜底。
+    /// 返回 null 仅当 COM 初始化异常。②b 是关键降级档：MouseCapture 轮询 120ms 就替换悬停 POI 的 ec，
+    /// TryAttach 传来的 ecId 到注册时经常已失效——此时退到桌面根会注册 5s+洪水，按 pid 找顶层窗口与 hwnd 档同快。</summary>
     private IUIAutomationElement? ResolveMountElement(IUIAutomation uia, out string mountDesc)
     {
         // ① 目标窗口句柄（抓过树的目标）
@@ -338,12 +340,32 @@ public sealed class EventListenerCore : IDisposable
                 }
                 else
                 {
-                    AppLog.Write("RECORD", $"  hover ElementContext {ecId} unavailable (replaced/disposed) → desktop fallback");
+                    AppLog.Write("RECORD", $"  hover ElementContext {ecId} unavailable (replaced/disposed) → try pid window");
                 }
             }
             catch (Exception ex)
             {
-                AppLog.Write("RECORD", $"  resolve hover element failed ({ecId}) → desktop fallback: {ex.Message}");
+                AppLog.Write("RECORD", $"  resolve hover element failed ({ecId}) → try pid window: {ex.Message}");
+            }
+        }
+
+        // ②b 有目标 pid → 桌面根 Children 中找该进程顶层窗口（注册与 hwnd 档同快；避免桌面根 5s+洪水）
+        if (_targetProcessId != 0)
+        {
+            try
+            {
+                var cond = uia.CreatePropertyCondition(30002, _targetProcessId); // UIA_ProcessIdPropertyId
+                var win = uia.GetRootElement().FindFirst((TreeScope)5, cond);    // 5=Children（仅顶层窗口层）
+                if (win is not null)
+                {
+                    mountDesc = $"pid {_targetProcessId} top window \"{SafeName(uia, win)}\" → Subtree";
+                    return win;
+                }
+                AppLog.Write("RECORD", $"  no top-level window for pid {_targetProcessId} → desktop fallback");
+            }
+            catch (Exception ex)
+            {
+                AppLog.Write("RECORD", $"  find process window (pid={_targetProcessId}) failed → desktop fallback: {ex.Message}");
             }
         }
 

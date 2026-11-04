@@ -25,7 +25,9 @@ public sealed record InputActionRecord(
     int X, int Y,          // 鼠标动作起点（点击点 / 拖动按下点）
     int EndX, int EndY,    // 拖动终点（仅 Drag 类有效）
     uint VkCode,           // 键盘虚拟键码（VK_*）
-    bool Ctrl, bool Shift, bool Alt);
+    bool Ctrl, bool Shift, bool Alt,
+    IntPtr Hwnd = default); // 鼠标动作时刻的目标顶层窗口句柄（钩子线程 WindowFromPoint 本地快照，微秒级）；
+                            // 用于事后校验 FromPoint 结果是否被"点击销毁弹窗→坐标落到其后窗口"竞态污染
 
 /// <summary>录制捕获选项（设置持久化，MainWindow 注入到 RecordingPanel）。
 /// Mode: "uia"=UIA 语义事件模式（默认，可回放 Invoke/SetValue/Select 等）；"input"=鼠标键盘动作模式（坐标+左右键/拖动/按键）。</summary>
@@ -98,6 +100,7 @@ public sealed class InputHookCore : IDisposable
     [DllImport("user32.dll")] private static extern bool PostThreadMessage(uint idThread, uint msg, IntPtr wParam, IntPtr lParam);
     [DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
     [DllImport("user32.dll")] private static extern int GetMessage(out MSG msg, IntPtr hWnd, uint wMsgFilterMin, uint wMsgFilterMax);
+    [DllImport("user32.dll")] private static extern IntPtr WindowFromPoint(POINT pt);
 
     // ★ 委托必须以字段持有：SetWindowsHookEx 后委托被 GC 回收 → 回调失效/崩溃
     private readonly HookProc _mouseProc;
@@ -182,7 +185,10 @@ public sealed class InputHookCore : IDisposable
         return CallNextHookEx(_mouseHook, nCode, wParam, lParam);
     }
 
-    /// <summary>按下→抬起完成：按位移判定点击或拖动并产出记录。</summary>
+    /// <summary>按下→抬起完成：按位移判定点击或拖动并产出记录。
+    /// ★ WM_LBUTTONUP 时刻（目标进程尚未处理点击）立即 WindowFromPoint 快照顶层窗口句柄：
+    ///   本地 user32 调用微秒级不违反钩子时限；此后目标处理点击（如 accept() 销毁弹窗），
+    ///   订阅方晚到的 FromPoint 可能落到其后窗口——以该快照为准校验。</summary>
     private void RaiseMouseAction(int upX, int upY)
     {
         _downValid = false;
@@ -196,8 +202,10 @@ public sealed class InputHookCore : IDisposable
             (true, false) => InputActionKind.MouseRightClick,
             (true, true) => InputActionKind.MouseRightDrag,
         };
+        IntPtr hwnd = IntPtr.Zero;
+        try { hwnd = WindowFromPoint(new POINT { X = _downX, Y = _downY }); } catch { /* 极端情况无句柄照常记录 */ }
         Raise(new InputActionRecord(
-            DateTime.Now, kind, _downX, _downY, upX, upY, 0, false, false, false));
+            DateTime.Now, kind, _downX, _downY, upX, upY, 0, false, false, false, hwnd));
     }
 
     private IntPtr KeyboardProc(int nCode, IntPtr wParam, IntPtr lParam)

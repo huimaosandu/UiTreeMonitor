@@ -7,6 +7,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -15,6 +16,7 @@ using System.Windows.Threading;
 using AccessibilityInsights.SharedUx.Enums;
 using AccessibilityInsights.SharedUx.Highlighting;
 using Axe.Windows.Actions;
+using Axe.Windows.Core.Bases;
 using UiTreeMonitor.Core.Filters;
 using UiTreeMonitor.Core.Models;
 using UiTreeMonitor.Core.Sampler;
@@ -1074,7 +1076,9 @@ public partial class MainWindow : Window
 
     /// <summary>解析录制 spec（EventListenerCore.BuildSpec 产出）并在目标窗口树中评分重定位元素。
     /// 评分：AutomationId 精确(50) > ControlType(20) + Name(20)；矩形相近仅近似加分(15)；
-    /// 阈值 40 = 至少 AutoId+Type 或 Type+Name 组合命中。遍历上限 3000 节点防大窗口卡顿。</summary>
+    /// 阈值 40 = 至少 AutoId+Type 或 Type+Name 组合命中。遍历上限 3000 节点防大窗口卡顿。
+    /// ★ 主窗口树未命中 → 扩展到目标进程的其他可见顶层窗口（QDialog/Toplevel 弹窗是独立
+    ///   顶层窗口，不在主窗口子树内；录制弹窗内元素的 spec 只能在弹窗树里找到）。</summary>
     private Axe.Windows.Core.Bases.A11yElement? ResolveBySpec(string spec)
     {
         try
@@ -1100,11 +1104,11 @@ public partial class MainWindow : Window
                 Log("ResolveBySpec: 无目标窗口（先抓取/悬停目标后再回放）");
                 return null;
             }
-
+    
             using var session = Core.Uia.UiaSession.Create();
             var root = session.GetRootFromHandle(_currentTarget.Handle);
             if (root is null) return null;
-
+    
             // 期望矩形（未移动窗口时的强佐证；移动后失效不惩罚）
             int[]? rect = null;
             if (rectStr.Length > 0)
@@ -1113,54 +1117,90 @@ public partial class MainWindow : Window
                 if (p.Length == 4 && int.TryParse(p[0], out var l) && int.TryParse(p[1], out var t))
                     rect = new[] { l, t };
             }
-
-            var best = (Score: 0, El: null as Axe.Windows.Core.Bases.A11yElement);
+    
             const int threshold = 40;
-            const int maxNodes = 3000;
-            var visited = 0;
-
-            var stack = new Stack<Axe.Windows.Core.Bases.A11yElement>();
-            stack.Push(root);
-            while (stack.Count > 0 && visited < maxNodes)
+    
+            // 在指定根元素的子树内评分查找（主窗口与弹窗窗口共用同一套评分）
+            A11yElement? FindInRoot(A11yElement rootEl, string rootTag)
             {
-                var el = stack.Pop();
-                visited++;
-                int score = 0;
-                try
+                var best = (Score: 0, El: null as A11yElement);
+                const int maxNodes = 3000;
+                var visited = 0;
+    
+                var stack = new Stack<A11yElement>();
+                stack.Push(rootEl);
+                while (stack.Count > 0 && visited < maxNodes)
                 {
-                    string elAutoId = el.AutomationId ?? "", elName = el.Name ?? "", elType = Core.Sampler.TreeSampler.ControlTypeName(el.ControlTypeId), elClass = el.ClassName ?? "";
-                    if (autoId.Length > 0 && elAutoId == autoId) score += 50;
-                    if (type.Length > 0 && elType == type) score += 20;
-                    if (name.Length > 0 && elName == name) score += 20;
-                    else if (name.Length > 0 && elName.Length > 0) score -= 10; // 名字不同仅轻惩罚（动态名元素）
-                    if (cls.Length > 0 && elClass == cls) score += 5;
-                    if (rect is not null && el.BoundingRectangle is { Width: > 0 } r
-                        && Math.Abs(r.Left - rect[0]) <= 40 && Math.Abs(r.Top - rect[1]) <= 40)
-                        score += 15;
-
-                    if (score > best.Score) best = (score, el);
-                    if (score >= 50 + 20 + 20) break; // 满分提前结束
-                }
-                catch { /* 元素已销毁，跳过 */ }
-
-                try
-                {
-                    var child = session.GetFirstChild(el);
-                    while (child is not null)
+                    var el = stack.Pop();
+                    visited++;
+                    int score = 0;
+                    try
                     {
-                        stack.Push(child);
-                        child = session.GetNextSibling(child);
+                        string elAutoId = el.AutomationId ?? "", elName = el.Name ?? "", elType = Core.Sampler.TreeSampler.ControlTypeName(el.ControlTypeId), elClass = el.ClassName ?? "";
+                        if (autoId.Length > 0 && elAutoId == autoId) score += 50;
+                        if (type.Length > 0 && elType == type) score += 20;
+                        if (name.Length > 0 && elName == name) score += 20;
+                        else if (name.Length > 0 && elName.Length > 0) score -= 10; // 名字不同仅轻惩罚（动态名元素）
+                        if (cls.Length > 0 && elClass == cls) score += 5;
+                        if (rect is not null && el.BoundingRectangle is { Width: > 0 } r
+                            && Math.Abs(r.Left - rect[0]) <= 40 && Math.Abs(r.Top - rect[1]) <= 40)
+                            score += 15;
+    
+                        if (score > best.Score) best = (score, el);
+                        if (score >= 50 + 20 + 20) break; // 满分提前结束
                     }
+                    catch { /* 元素已销毁，跳过 */ }
+    
+                    try
+                    {
+                        var child = session.GetFirstChild(el);
+                        while (child is not null)
+                        {
+                            stack.Push(child);
+                            child = session.GetNextSibling(child);
+                        }
+                    }
+                    catch { /* 子树遍历失败 */ }
                 }
-                catch { /* 子树遍历失败 */ }
+    
+                if (best.El is not null && best.Score >= threshold)
+                {
+                    Log($"ResolveBySpec: hit score={best.Score} (visited={visited}, {rootTag}) elem='{best.El.Name}' → 回放目标");
+                    return best.El;
+                }
+                return null;
             }
-
-            if (best.El is not null && best.Score >= threshold)
+    
+            var hit = FindInRoot(root, $"main hwnd {_currentTarget.Handle}");
+            if (hit is not null) return hit;
+    
+            // ★ 扩展：目标进程的其他可见顶层窗口（弹窗/工具窗；QDialog 是独立顶层窗口）
+            var targetPid = (uint)_currentTarget.ProcessId;
+            if (targetPid > 0)
             {
-                Log($"ResolveBySpec: hit score={best.Score} (visited={visited}) elem='{best.El.Name}' → 回放目标");
-                return best.El;
+                var popups = new List<IntPtr>();
+                EnumWindows((h, _) =>
+                {
+                    GetWindowThreadProcessId(h, out var p);
+                    if (p == targetPid && h != _currentTarget.Handle && IsWindowVisible(h)) popups.Add(h);
+                    return true;
+                }, IntPtr.Zero);
+                foreach (var h in popups)
+                {
+                    try
+                    {
+                        var popupRoot = session.GetRootFromHandle(h);
+                        if (popupRoot is null) continue;
+                        var popupHit = FindInRoot(popupRoot, $"popup hwnd {h}");
+                        if (popupHit is not null) return popupHit;
+                    }
+                    catch { /* 弹窗可能已关闭 */ }
+                }
+                if (popups.Count > 0)
+                    Log($"ResolveBySpec: no match in main tree; tried {popups.Count} sibling top-level window(s) of pid {targetPid}");
             }
-            Log($"ResolveBySpec: no match (best={best.Score} < {threshold}, visited={visited}, spec autoId='{autoId}' name='{name}' type='{type}')");
+    
+            Log($"ResolveBySpec: no match (spec autoId='{autoId}' name='{name}' type='{type}')");
             return null;
         }
         catch (Exception ex)
@@ -1169,6 +1209,11 @@ public partial class MainWindow : Window
             return null;
         }
     }
+    
+    [DllImport("user32.dll")] private static extern bool EnumWindows(EnumWindowsProc cb, IntPtr lp);
+    [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
+    [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hwnd);
+    private delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr lp);
 
     /// <summary>初始化 UIA 桌面元素上下文（ListenAction 的前置条件）。</summary>
     /// <remarks>

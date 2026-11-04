@@ -284,46 +284,70 @@ public partial class RecordingPanel : UserControl
         Dispatcher.BeginInvoke(() =>
         {
             if (!_isRecording) return;
+
+            // ★ 元素解析全程防御（FromPoint 也不例外）：点击"关闭弹窗"类按钮时目标窗口瞬间销毁，
+            //   FromPoint 对销毁中元素直接抛 ElementNotAvailable——若不捕获会吞掉整个动作
+            //   （连坐标兜底都丢）。解析失败 → elem=null/pid=0 → 语义化跳过、坐标记录保底。
+            AutomationElement? elem = null;
+            int pid = 0;
+            string elemName = "", ctrlType = "", procName = "";
             try
             {
-                var elem = input.Kind == InputActionKind.KeyDown
+                elem = input.Kind == InputActionKind.KeyDown
                     ? AutomationElement.FocusedElement
                     : AutomationElement.FromPoint(new Point(input.X, input.Y)); // 拖动取按下点元素
-
-                int pid = 0;
-                string elemName = "", ctrlType = "", procName = "";
-                try
+            }
+            catch (Exception ex)
+            {
+                AppLog.Write("RECORD", $"Input {input.Kind}: element resolve failed (window closed by click?) → 坐标保底: {ex.Message}");
+            }
+            try
+            {
+                if (elem is not null)
                 {
-                    if (elem is not null)
-                    {
-                        pid = elem.Current.ProcessId;
-                        elemName = elem.Current.Name ?? "";
-                        ctrlType = elem.Current.ControlType?.ProgrammaticName ?? "";
-                        procName = Process.GetProcessById(pid).ProcessName;
-                    }
+                    pid = elem.Current.ProcessId;
+                    elemName = elem.Current.Name ?? "";
+                    ctrlType = elem.Current.ControlType?.ProgrammaticName ?? "";
+                    procName = Process.GetProcessById(pid).ProcessName;
                 }
-                catch { /* 元素可能已销毁/进程已退出 */ }
+            }
+            catch { /* 元素可能已销毁/进程已退出；已读到的部分继续用 */ }
 
-                // 自己窗口上的动作不录（点"停止录制"按钮本身也是一次左键点击）
-                if (pid == Environment.ProcessId)
+            // ★ 竞态校验：点击"确定/关闭弹窗"类按钮时目标窗口被瞬间销毁，晚到的 FromPoint 会落到
+            //   其后的窗口（曾把弹窗 OK 的 Invoke 记到主界面无关 Text 上）。钩子线程在 WM_LBUTTONUP
+            //   时刻快照了真实目标顶层窗口句柄（input.Hwnd）——FromPoint 结果的顶层窗口不一致 → 元素不可信，丢弃改坐标保底
+            if (elem is not null && input.Hwnd != IntPtr.Zero && pid != 0)
+            {
+                var topHwnd = TopLevelHwndOf(elem);
+                if (topHwnd != input.Hwnd)
                 {
-                    AppLog.Write("RECORD", $"Input {input.Kind} on own UI → filtered");
-                    return;
+                    AppLog.Write("RECORD", $"Input {input.Kind}: FromPoint window {topHwnd} ≠ click-time window {input.Hwnd}" +
+                        $" (clicked window vanished, elem='{elemName}' is BEHIND it) → 丢弃元素，坐标保底");
+                    elem = null;
+                    pid = 0; elemName = ""; ctrlType = ""; procName = "";
                 }
+            }
 
-                // ★ 通道2 主动语义化（UIA 语义模式）：命中可回放 Pattern → 语义记录（回放走 Pattern，不依赖坐标）。
-                //   tkinter/Qt 等自绘框架不推送 UIA 事件，这是它们唯一的语义录制来源；
-                //   与通道1（COM 事件）同元素同方法的记录经 merge 合并，不会重复
-                if (_uiaSemanticMode && TryBuildSemanticRecord(input, elem, elemName, procName, ctrlType, out var semantic, out var replacePrev))
-                {
-                    AppendRecord(semantic, replacePrev, source: $"input-semantic {input.Kind}");
-                    AppLog.Write("RECORD", $"OnInputAction→semantic: {semantic.PatternName}.{semantic.MethodName}" +
-                        $"({string.Join(", ", semantic.Parameters ?? Array.Empty<object?>())}) elem={elemName} type={ctrlType} pid={pid} proc={procName}");
-                    return;
-                }
+            // 自己窗口上的动作不录（点"停止录制"按钮本身也是一次左键点击；元素销毁 pid=0 时不算自己）
+            if (pid != 0 && pid == Environment.ProcessId)
+            {
+                AppLog.Write("RECORD", $"Input {input.Kind} on own UI → filtered");
+                return;
+            }
 
-                // 坐标回退（Input 模式主路径 / 语义模式无 Pattern 控件兜底）
-                ActionRecord record = input.Kind switch
+            // ★ 通道2 主动语义化（UIA 语义模式）：命中可回放 Pattern → 语义记录（回放走 Pattern，不依赖坐标）。
+            //   tkinter/Qt 等自绘框架不推送 UIA 事件，这是它们唯一的语义录制来源；
+            //   与通道1（COM 事件）同元素同方法的记录经 merge 合并，不会重复
+            if (_uiaSemanticMode && elem is not null && TryBuildSemanticRecord(input, elem, elemName, procName, ctrlType, out var semantic, out var replacePrev))
+            {
+                AppendRecord(semantic, replacePrev, source: $"input-semantic {input.Kind}");
+                AppLog.Write("RECORD", $"OnInputAction→semantic: {semantic.PatternName}.{semantic.MethodName}" +
+                    $"({string.Join(", ", semantic.Parameters ?? Array.Empty<object?>())}) elem={elemName} type={ctrlType} pid={pid} proc={procName}");
+                return;
+            }
+
+            // 坐标回退（Input 模式主路径 / 语义模式无 Pattern 控件兜底 / 元素已销毁的点击——弹窗"确定/关闭"典型）
+            ActionRecord record = input.Kind switch
                 {
                     InputActionKind.MouseLeftClick => new ActionRecord
                     {
@@ -368,14 +392,10 @@ public partial class RecordingPanel : UserControl
                     },
                 };
 
-                AppendRecord(record, replacePrevious: false, source: "input-coord");
-                AppLog.Write("RECORD", $"OnInputAction #{_script.Records.Count}: {record.MethodName} elem={elemName} type={ctrlType} pid={pid} proc={procName} at=({input.X},{input.Y})" +
-                    (record.MethodName is InputSimulator.DragMethod or InputSimulator.RightDragMethod ? $"→({input.EndX},{input.EndY})" : ""));
-            }
-            catch (Exception ex)
-            {
-                AppLog.Write("RECORD", $"OnInputAction → exception (ignored): {ex.Message}");
-            }
+            AppendRecord(record, replacePrevious: false, source: "input-coord");
+            AppLog.Write("RECORD", $"OnInputAction #{_script.Records.Count}: {record.MethodName} elem={elemName} type={ctrlType} pid={pid} proc={procName} at=({input.X},{input.Y})" +
+                (record.MethodName is InputSimulator.DragMethod or InputSimulator.RightDragMethod ? $"→({input.EndX},{input.EndY})" : "") +
+                (pid == 0 ? " [element vanished → coord only]" : ""));
         });
     }
 
@@ -581,6 +601,24 @@ public partial class RecordingPanel : UserControl
     }
 
     private static string? Esc(string? s) => string.IsNullOrEmpty(s) ? "" : Uri.EscapeDataString(s);
+
+    /// <summary>沿控件视图爬到顶层窗口元素并读其 NativeWindowHandle（与钩子快照的 WindowFromPoint 结果同源可比）。
+    /// 读取失败返回 IntPtr.Zero（调用方视为无法校验、不拦截）。</summary>
+    private static IntPtr TopLevelHwndOf(AutomationElement e)
+    {
+        try
+        {
+            var cur = e;
+            for (int i = 0; i < 16; i++)
+            {
+                var parent = TreeWalker.ControlViewWalker.GetParent(cur);
+                if (parent is null) break;
+                cur = parent;
+            }
+            return cur.Current.NativeWindowHandle;
+        }
+        catch { return IntPtr.Zero; }
+    }
 
     /// <summary>语义化失败探针：同元素（pid+name）只打一次其支持的 Pattern 列表（诊断 tk/Qt 控件能力用）。</summary>
     private void LogPatternProbe(AutomationElement elem, string elemName, string ctrlType, string procName, string tag)
