@@ -2,6 +2,18 @@
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              Margin="8">
+    <UserControl.Resources>
+        <!-- 必须先于 TreeView 的 StaticResource 引用定义（定义在 TreeView.Resources 内会因解析顺序找不到） -->
+        <HierarchicalDataTemplate x:Key="StepTemplate" ItemsSource="{Binding Children}">
+            <StackPanel Orientation="Horizontal">
+                <TextBlock Text="⏸ " Foreground="#CC0000" FontWeight="Bold"
+                           Visibility="{Binding DisabledMark}"/>
+                <TextBlock Text="{Binding DisplayText}" VerticalAlignment="Center"/>
+                <TextBlock Text="  " />
+                <TextBlock Text="{Binding Detail}" Foreground="#888888" FontSize="11" VerticalAlignment="Center"/>
+            </StackPanel>
+        </HierarchicalDataTemplate>
+    </UserControl.Resources>
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
@@ -98,17 +110,6 @@
                     <MenuItem Header="删除" Click="MenuDeleteStep_Click"/>
                 </ContextMenu>
             </TreeView.ContextMenu>
-            <TreeView.Resources>
-                <HierarchicalDataTemplate x:Key="StepTemplate" ItemsSource="{Binding Children}">
-                    <StackPanel Orientation="Horizontal">
-                        <TextBlock x:Name="DisabledMark" Text="⏸ " Foreground="#CC0000" FontWeight="Bold"
-                                   Visibility="{Binding DisabledMark}"/>
-                        <TextBlock Text="{Binding DisplayText}" VerticalAlignment="Center"/>
-                        <TextBlock Text="  " />
-                        <TextBlock Text="{Binding Detail}" Foreground="#888888" FontSize="11" VerticalAlignment="Center"/>
-                    </StackPanel>
-                </HierarchicalDataTemplate>
-            </TreeView.Resources>
         </TreeView>
 
         <!-- 状态栏 -->
