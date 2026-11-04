@@ -37,27 +37,29 @@
         <Grid Grid.Row="1">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="2*" MinWidth="300" x:Name="ColLeft"/>
-                <ColumnDefinition Width="Auto"/>   <!-- GridSplitter -->
+                <!-- ★ splitter 列固定宽（Auto 列拖动时反复重算会漂移：相邻星号列被持续缩小、与 splitter 间出现空隙） -->
+                <ColumnDefinition Width="4"/>
                 <ColumnDefinition Width="3*" MinWidth="400" x:Name="ColRight"/>
             </Grid.ColumnDefinitions>
 
             <!-- 左右分界线拖拽 -->
-            <GridSplitter Grid.Column="1" Width="4" HorizontalAlignment="Center"
+            <GridSplitter Grid.Column="1" HorizontalAlignment="Stretch"
                           VerticalAlignment="Stretch" Background="#CCCCCC"
-                          ResizeBehavior="PreviousAndCurrent"/>
+                          ResizeBehavior="PreviousAndCurrent" ResizeDirection="Columns"/>
 
             <!-- ===== 左侧：结构树 + Details（上下可拖拽，默认高度比 4:6） ===== -->
             <Grid Grid.Column="0">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="4*" MinHeight="150" x:Name="RowTree"/>
-                    <RowDefinition Height="Auto"/>    <!-- GridSplitter -->
+                    <!-- ★ splitter 行固定高（同 splitter 列 Auto 漂移 bug） -->
+                    <RowDefinition Height="4"/>
                     <RowDefinition Height="6*" MinHeight="200" x:Name="RowDetails"/>
                 </Grid.RowDefinitions>
 
                 <!-- 上下分界线拖拽 -->
-                <GridSplitter Grid.Row="1" Height="4" HorizontalAlignment="Stretch"
-                              VerticalAlignment="Center" Background="#CCCCCC"
-                              ResizeBehavior="PreviousAndNext"/>
+                <GridSplitter Grid.Row="1" HorizontalAlignment="Stretch"
+                              VerticalAlignment="Stretch" Background="#CCCCCC"
+                              ResizeBehavior="PreviousAndNext" ResizeDirection="Rows"/>
 
                 <!-- 上半：结构树 -->
                 <Border Grid.Row="0" BorderBrush="#DDDDDD" BorderThickness="0,0,0,1" Padding="6">
@@ -148,7 +150,7 @@
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="*" MinHeight="120"/>
-                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="5"/>
                                 <RowDefinition Height="*" MinHeight="120"/>
                             </Grid.RowDefinitions>
 
@@ -203,10 +205,10 @@
                                 </Grid>
                             </GroupBox>
 
-                            <!-- 录制任务与监控任务默认等高：拖动中间分割线调整两者比例 -->
-                            <GridSplitter Grid.Row="2" Height="5" HorizontalAlignment="Stretch"
-                                          VerticalAlignment="Center" Background="#CCCCCC"
-                                          ResizeBehavior="PreviousAndNext" ShowsPreview="False"
+                            <!-- 录制任务与监控任务默认等高：拖动中间分割线调整两者比例（行固定高防 splitter 漂移） -->
+                            <GridSplitter Grid.Row="2" HorizontalAlignment="Stretch"
+                                          VerticalAlignment="Stretch" Background="#CCCCCC"
+                                          ResizeBehavior="PreviousAndNext" ShowsPreview="False" ResizeDirection="Rows"
                                           ToolTip="拖动调整上下两个列表的高度比例"/>
 
                             <!-- 监控任务列表（显示实时值；右键行操作） -->
