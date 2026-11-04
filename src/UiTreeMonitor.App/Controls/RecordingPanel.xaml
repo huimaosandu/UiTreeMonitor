@@ -6,6 +6,16 @@
         <!-- 必须先于 TreeView 的 StaticResource 引用定义（定义在 TreeView.Resources 内会因解析顺序找不到） -->
         <HierarchicalDataTemplate x:Key="StepTemplate" ItemsSource="{Binding Children}">
             <StackPanel Orientation="Horizontal">
+                <StackPanel.Style>
+                    <Style TargetType="StackPanel">
+                        <Style.Triggers>
+                            <!-- Shift 范围多选行：淡蓝背景 -->
+                            <DataTrigger Binding="{Binding IsMultiSelected}" Value="True">
+                                <Setter Property="Background" Value="#3399D1FF"/>
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </StackPanel.Style>
                 <TextBlock Text="⏸ " Foreground="#CC0000" FontWeight="Bold"
                            Visibility="{Binding DisabledMark}"/>
                 <TextBlock Text="{Binding DisplayText}" VerticalAlignment="Center"/>
@@ -79,10 +89,13 @@
                    Foreground="#B8860B" FontSize="11" Margin="0,0,0,4" TextWrapping="Wrap"
                    Text="自动模式（默认 UIA 事件）：在目标窗口中点击按钮、输入文字、选择、拖动滑块等操作将录制为可回放的语义步骤；可在设置中切换为鼠标键盘动作模式。"/>
 
-        <!-- 步骤树（录制动作 + 右键插入循环/延时/定时/触发器；循环与触发器可多层嵌套） -->
+        <!-- 步骤树（录制动作 + 右键插入循环/延时/定时/触发器；循环与触发器可多层嵌套；
+             Shift+点击=范围多选，Tab=把选中步骤移入上方循环/触发器容器） -->
         <TreeView Grid.Row="3" x:Name="TvSteps" VirtualizingPanel.IsVirtualizing="False"
                   ItemTemplate="{StaticResource StepTemplate}"
                   SelectedItemChanged="TvSteps_SelectedItemChanged"
+                  PreviewMouseLeftButtonDown="TvSteps_PreviewMouseLeftButtonDown"
+                  PreviewKeyDown="TvSteps_PreviewKeyDown"
                   MouseRightButtonUp="TvSteps_MouseRightButtonUp">
             <TreeView.ItemContainerStyle>
                 <Style TargetType="TreeViewItem">
@@ -93,12 +106,12 @@
             <TreeView.ContextMenu>
                 <ContextMenu x:Name="MenuSteps">
                     <MenuItem Header="插入循环体（嵌套）" Click="MenuInsertLoop_Click"
-                              ToolTip="在选中步骤之后插入；选中循环/触发器时插入到其内部末尾"/>
+                              ToolTip="插入到选中步骤上方（未选中=根级末尾）；Shift 多选行后按 Tab 可把步骤移入"/>
                     <MenuItem Header="插入延时" Click="MenuInsertDelay_Click"/>
                     <MenuItem Header="插入定时器" Click="MenuInsertTimer_Click"
                               ToolTip="运行到此步时等待到指定年月日时分秒再继续"/>
                     <MenuItem Header="插入触发器（⚗ 元素监控）" Click="MenuInsertTrigger_Click"
-                              ToolTip="监控目标元素属性，条件满足后执行其子步骤（无子步骤=纯等待点）"/>
+                              ToolTip="启动随鼠标捕获：把鼠标移到目标元素上，点蓝框右上角烧杯按钮后弹编辑（录制中也可直接点烧杯）"/>
                     <Separator/>
                     <MenuItem Header="编辑…" Click="MenuEditStep_Click"/>
                     <MenuItem Header="上移" Click="MenuMoveUp_Click"/>

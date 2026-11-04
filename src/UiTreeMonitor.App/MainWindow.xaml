@@ -140,16 +140,16 @@
                 </Border>
             </Grid>
 
-            <!-- ===== 右侧：任务管理 + 采样历史 ===== -->
+            <!-- ===== 右侧：任务管理 + 录制回放 ===== -->
             <Grid Grid.Column="2">
-                <TabControl x:Name="MainTabs" Margin="8" SelectionChanged="MainTabs_SelectionChanged">
+                <TabControl x:Name="MainTabs" Margin="8">
                     <TabItem Header="任务管理">
                         <Grid Margin="4">
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*" MinHeight="120"/>
                                 <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="*"/>
+                                <RowDefinition Height="*" MinHeight="120"/>
                             </Grid.RowDefinitions>
 
                             <!-- 提示 + 操作按钮 -->
@@ -178,7 +178,7 @@
                                                    Foreground="#666666" FontSize="11"
                                                    Text="右键任务行：启动 / 停止 / 查看状态 / 移除；启动后按步骤树执行（循环/延时/定时/触发器生效）"/>
                                     </StackPanel>
-                                    <ListView Grid.Row="1" x:Name="RecTaskList" Height="110" SelectionMode="Single"
+                                    <ListView Grid.Row="1" x:Name="RecTaskList" SelectionMode="Single"
                                               MouseRightButtonUp="RecTaskList_MouseRightButtonUp">
                                         <ListView.ContextMenu>
                                             <ContextMenu x:Name="MenuRecTask" Opened="RecTaskContextMenu_Opened">
@@ -203,9 +203,15 @@
                                 </Grid>
                             </GroupBox>
 
+                            <!-- 录制任务与监控任务默认等高：拖动中间分割线调整两者比例 -->
+                            <GridSplitter Grid.Row="2" Height="5" HorizontalAlignment="Stretch"
+                                          VerticalAlignment="Center" Background="#CCCCCC"
+                                          ResizeBehavior="PreviousAndNext" ShowsPreview="False"
+                                          ToolTip="拖动调整上下两个列表的高度比例"/>
+
                             <!-- 监控任务列表（显示实时值；右键行操作） -->
                             <GroupBox Header="监控任务" Grid.Row="3" Padding="8">
-                                <ListView x:Name="TaskList" SelectionMode="Extended" SelectionChanged="TaskList_SelectionChanged"
+                                <ListView x:Name="TaskList" SelectionMode="Extended"
                                           MouseRightButtonUp="TaskList_MouseRightButtonUp">
                                     <ListView.ItemContainerStyle>
                                         <!-- 同步组任务整行淡色（SyncGroupRowBrush 为 null 时透明=普通任务） -->
@@ -253,25 +259,6 @@
                                     </ListView.View>
                                 </ListView>
                             </GroupBox>
-                        </Grid>
-                    </TabItem>
-
-                    <TabItem Header="采样历史" x:Name="TabHistory">
-                        <Grid Margin="4">
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="*"/>
-                                <RowDefinition Height="Auto"/>
-                            </Grid.RowDefinitions>
-                            <DataGrid x:Name="HistoryGrid" AutoGenerateColumns="False" IsReadOnly="True" Grid.Row="0">
-                                <DataGrid.Columns>
-                                    <DataGridTextColumn Header="时间戳" Binding="{Binding Timestamp}" Width="170"/>
-                                    <DataGridTextColumn Header="节点ID" Binding="{Binding NodeId}" Width="60"/>
-                                    <DataGridTextColumn Header="节点路径" Binding="{Binding NodePath}" Width="*"/>
-                                    <DataGridTextColumn Header="属性" Binding="{Binding Property}" Width="110"/>
-                                    <DataGridTextColumn Header="值" Binding="{Binding Value}" Width="140"/>
-                                </DataGrid.Columns>
-                            </DataGrid>
-                            <TextBlock x:Name="TxtHistoryStatus" Grid.Row="1" Margin="2,4" Foreground="#666666"/>
                         </Grid>
                     </TabItem>
 

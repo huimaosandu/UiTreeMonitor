@@ -47,12 +47,14 @@
                 <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
 
+            <!-- 目标元素：由蓝框烧杯捕获（随鼠标捕获/录制中点烧杯），此处只读展示 -->
             <TextBlock Grid.Row="0" Grid.Column="0" Text="目标元素：" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,6,6"/>
-            <ComboBox Grid.Row="0" Grid.Column="1" x:Name="CboElement" Margin="0,0,4,6"
-                      ToolTip="从脚本已录制步骤的元素中选择，或用点选捕获"/>
-            <Button Grid.Row="0" Grid.Column="2" x:Name="BtnPick" Content="🎯 点选元素" Padding="6,2"
-                    Margin="0,0,0,6" Click="BtnPick_Click"
-                    ToolTip="点击后 3 秒内把鼠标移到目标元素上（悬停高亮框处），自动捕获其定位信息"/>
+            <StackPanel Grid.Row="0" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,6">
+                <TextBlock x:Name="LblElementName" Text="(未指定)" FontWeight="Bold" TextWrapping="Wrap"
+                           ToolTip="录制/随鼠标捕获时点蓝框右上角烧杯按钮捕获的元素"/>
+                <TextBlock x:Name="LblElementSpec" Foreground="#888888" FontSize="10" TextTrimming="CharacterEllipsis"
+                           ToolTipService.ShowDuration="30000"/>
+            </StackPanel>
 
             <TextBlock Grid.Row="1" Grid.Column="0" Text="监控属性：" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,6,6"/>
             <ComboBox Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" x:Name="CboProperty" Margin="0,0,0,6">
@@ -78,7 +80,7 @@
             <TextBox Grid.Row="3" Grid.Column="1" x:Name="TxtExpected" Margin="0,0,4,6" Padding="2"
                      ToolTip="条件为'发生变化'时可留空"/>
             <Button Grid.Row="3" Grid.Column="2" x:Name="BtnReadCurrent" Content="读取当前值" Padding="6,2"
-                    Margin="0,0,0,6" Click="BtnReadCurrent_Click" ToolTip="按当前元素定位读取一次监控属性值"/>
+                    Margin="0,0,0,6" Click="BtnReadCurrent_Click" ToolTip="按目标元素定位实时读取一次监控属性值"/>
 
             <TextBlock Grid.Row="4" Grid.Column="0" Text="超时（秒）：" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,6,6"/>
             <TextBox Grid.Row="4" Grid.Column="1" x:Name="TxtTimeout" Text="60" Margin="0,0,4,6" Padding="2"

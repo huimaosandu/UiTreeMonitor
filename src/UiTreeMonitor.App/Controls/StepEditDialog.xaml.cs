@@ -1,11 +1,7 @@
 // 步骤编辑弹窗：按 Kind 显示循环/延时/定时/触发器配置区，写回 StepNode
+// 触发器目标元素由蓝框烧杯捕获（随鼠标捕获/录制中悬停点烧杯），弹窗只读展示 + 实时读值验证
 using System;
-using System.Collections.Generic;
-using System.Linq;
 using System.Windows;
-using System.Windows.Automation;
-using System.Windows.Input;
-using System.Windows.Threading;
 using UiTreeMonitor.Core.Models;
 
 namespace UiTreeMonitor.App.Controls;
@@ -13,26 +9,22 @@ namespace UiTreeMonitor.App.Controls;
 /// <summary>步骤节点编辑弹窗（循环体/延时/定时器/元素触发器）。</summary>
 public partial class StepEditDialog : Window
 {
-    [System.Runtime.InteropServices.DllImport("user32.dll")]
-    private static extern bool GetCursorPos(out Win32Point pt);
-
-    private struct Win32Point { public int X; public int Y; }
-
-
     private readonly StepNode _node;
-    private readonly List<(string Name, string Spec)> _candidates;
-    private AutomationElement? _pickedElement; // 最近一次点选捕获的元素（读取当前值用）
-    private string _pickedSpec = "";
-    private DispatcherTimer? _pickTimer;
-    private int _pickCountdown;
+    private readonly string _elementSpec;              // 烧杯捕获的目标元素 spec（spec:v1|…）
+    private readonly string _elementName;              // 目标元素显示名
+    private readonly Func<string, string?>? _readProperty; // 属性名 → 实时值（"读取当前值"用）
 
     public bool Saved { get; private set; }
 
-    public StepEditDialog(StepNode node, IEnumerable<(string Name, string Spec)> elementCandidates)
+    /// <summary>触发器节点须传入烧杯捕获的元素定位；循环/延时/定时元素参数可传空。</summary>
+    public StepEditDialog(StepNode node, string elementSpec = "", string elementName = "",
+        Func<string, string?>? readProperty = null)
     {
         InitializeComponent();
         _node = node;
-        _candidates = elementCandidates?.Distinct().ToList() ?? new List<(string, string)>();
+        _elementSpec = elementSpec;
+        _elementName = elementName;
+        _readProperty = readProperty;
 
         TxtTitle.Text = node.Kind switch
         {
@@ -62,116 +54,65 @@ public partial class StepEditDialog : Window
                 break;
             case StepKinds.Trigger:
                 PnlTrigger.Visibility = Visibility.Visible;
-                foreach (var (name, spec) in _candidates)
-                    CboElement.Items.Add(new ElementCandidateItem(name, spec));
-                var t = node.Trigger ?? new ElementTriggerSpec();
-                if (!string.IsNullOrEmpty(t.ElementSpec))
-                {
-                    CboElement.Text = t.ElementName;
-                    _pickedSpec = t.ElementSpec;
-                }
-                CboProperty.SelectedIndex = t.Property switch
+                var t = node.Trigger;
+                // 目标元素：新建=烧杯刚捕获的元素；编辑=已保存的触发器配置
+                var spec = t is not null && !string.IsNullOrEmpty(t.ElementSpec) ? t.ElementSpec : _elementSpec;
+                var name = t is not null && !string.IsNullOrEmpty(t.ElementName) ? t.ElementName : _elementName;
+                LblElementName.Text = string.IsNullOrEmpty(name) ? "(未指定)" : name;
+                LblElementSpec.Text = spec;
+                _elementSpecUsed = spec;
+                CboProperty.SelectedIndex = (t?.Property ?? "Value") switch
                 {
                     "Name" => 1, "RangeValue" => 2, "ToggleState" => 3, "ExpandCollapseState" => 4, "IsEnabled" => 5, _ => 0,
                 };
-                CboCondition.SelectedIndex = t.Condition switch
+                CboCondition.SelectedIndex = (t?.Condition ?? "Equals") switch
                 {
                     "NotEquals" => 1, "Contains" => 2, "Changed" => 3, "Greater" => 4, "Less" => 5, _ => 0,
                 };
-                TxtExpected.Text = t.ExpectedValue ?? "";
-                TxtTimeout.Text = t.TimeoutSec.ToString();
+                TxtExpected.Text = t?.ExpectedValue ?? "";
+                TxtTimeout.Text = (t?.TimeoutSec ?? 60).ToString();
                 break;
         }
     }
 
-    private sealed record ElementCandidateItem(string Name, string Spec)
-    {
-        public override string ToString() => Name.Length > 0 ? Name : Spec;
-    }
+    /// <summary>实际使用的元素 spec（编辑已有触发器时优先其保存值）。</summary>
+    private string _elementSpecUsed = "";
 
-    private string CurrentSpec =>
-        (CboElement.SelectedItem as ElementCandidateItem)?.Spec ?? _pickedSpec;
-
-    /// <summary>🎯 点选元素：点击后 3 秒倒计时，用户把鼠标移到目标（悬停高亮处），到点 FromPoint 捕获。</summary>
-    private void BtnPick_Click(object sender, RoutedEventArgs e)
-    {
-        BtnPick.IsEnabled = false;
-        _pickCountdown = 3;
-        TxtError.Text = "";
-        _pickTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
-        _pickTimer.Tick += (s, _) =>
-        {
-            if (_pickCountdown > 0)
-            {
-                TxtError.Foreground = System.Windows.Media.Brushes.DarkOrange;
-                TxtError.Text = $"{_pickCountdown} 秒后捕获鼠标位置元素…请把鼠标移到目标上（本窗口自动失效保护自己）";
-                _pickCountdown--;
-                return;
-            }
-            _pickTimer.Stop();
-            try
-            {
-                GetCursorPos(out var pos); // Win32：非托管依赖，无需 WinForms
-                var el = AutomationElement.FromPoint(new Point(pos.X, pos.Y));
-                int pid;
-                try { pid = el.Current.ProcessId; }
-                catch { TxtError.Text = "元素读取失败（窗口可能已关闭）"; return; }
-                if (pid == Environment.ProcessId)
-                {
-                    TxtError.Text = "捕获到本软件自己的界面，请把鼠标移到目标应用元素上重试";
-                    return;
-                }
-                _pickedElement = el;
-                _pickedSpec = RecordingPanel.BuildSpecPublic(el);
-                var name = "";
-                try { name = el.Current.Name ?? ""; } catch { }
-                CboElement.Text = string.IsNullOrEmpty(name) ? $"pid {pid} 元素" : name;
-                TxtError.Foreground = System.Windows.Media.Brushes.Green;
-                TxtError.Text = $"已捕获元素：{CboElement.Text}（可点'读取当前值'验证）";
-            }
-            catch (Exception ex)
-            {
-                TxtError.Text = $"捕获失败: {ex.Message}";
-            }
-            finally
-            {
-                BtnPick.IsEnabled = true;
-                TxtError.Foreground = System.Windows.Media.Brushes.Red;
-            }
-        };
-        _pickTimer.Start();
-    }
-
-    /// <summary>读取当前值：优先用刚点选捕获的元素实时读取，验证定位与条件配置。</summary>
+    /// <summary>读取当前值：按烧杯捕获的元素定位实时读取，验证定位与条件配置。</summary>
     private void BtnReadCurrent_Click(object sender, RoutedEventArgs e)
     {
-        if (_pickedElement is null)
+        if (_readProperty is null)
         {
-            TxtError.Text = "请先'点选元素'（当前值从捕获的元素实时读取）";
+            TxtError.Text = "无可用的元素解析通道（开始录制或随鼠标捕获后再试）";
             return;
         }
         try
         {
-            var prop = ((System.Windows.Controls.ComboBoxItem)CboProperty.SelectedItem).Content.ToString();
-            string? value = prop switch
+            var prop = SelectedPropertyName;
+            var value = _readProperty(prop);
+            if (value is null)
             {
-                var p when p!.StartsWith("Name") => _pickedElement.Current.Name,
-                var p when p!.StartsWith("Value") => (_pickedElement.GetCurrentPattern(ValuePattern.Pattern) as ValuePattern)?.Current.Value,
-                var p when p!.StartsWith("RangeValue") => (_pickedElement.GetCurrentPattern(RangeValuePattern.Pattern) as RangeValuePattern)?.Current.Value.ToString(),
-                var p when p!.StartsWith("ToggleState") => (_pickedElement.GetCurrentPattern(TogglePattern.Pattern) as TogglePattern)?.Current.ToggleState.ToString(),
-                var p when p!.StartsWith("ExpandCollapseState") => (_pickedElement.GetCurrentPattern(ExpandCollapsePattern.Pattern) as ExpandCollapsePattern)?.Current.ExpandCollapseState.ToString(),
-                var p when p!.StartsWith("IsEnabled") => _pickedElement.Current.IsEnabled.ToString(),
-                _ => null,
-            };
-            TxtExpected.Text = value ?? "";
+                // 元素未找到（可能已关闭/移位）或该属性无值——区分由调用方闭包折叠，此处统一提示
+                TxtError.Foreground = System.Windows.Media.Brushes.DarkOrange;
+                TxtError.Text = "未读到值：元素未找到（可能已关闭/移位）或该属性无值";
+                return;
+            }
+            TxtExpected.Text = value;
             TxtError.Foreground = System.Windows.Media.Brushes.Green;
-            TxtError.Text = $"当前值已填入期望值：{value ?? "(null)"}";
+            TxtError.Text = $"当前值已填入期望值：{value}";
         }
         catch (Exception ex)
         {
+            TxtError.Foreground = System.Windows.Media.Brushes.Red;
             TxtError.Text = $"读取失败: {ex.Message}";
         }
     }
+
+    /// <summary>监控属性下拉短名（Value/Name/RangeValue/ToggleState/ExpandCollapseState/IsEnabled）。</summary>
+    private string SelectedPropertyName => CboProperty.SelectedIndex switch
+    {
+        1 => "Name", 2 => "RangeValue", 3 => "ToggleState", 4 => "ExpandCollapseState", 5 => "IsEnabled", _ => "Value",
+    };
 
     private void BtnOk_Click(object sender, RoutedEventArgs e)
     {
@@ -197,25 +138,22 @@ public partial class StepEditDialog : Window
                 break;
 
             case StepKinds.Trigger:
-                var spec = CurrentSpec;
-                if (string.IsNullOrEmpty(spec)) { TxtError.Text = "请选择或点选目标元素"; return; }
+                if (string.IsNullOrEmpty(_elementSpecUsed)) { TxtError.Text = "目标元素未捕获（录制/捕获中点蓝框烧杯按钮）"; return; }
                 if (!int.TryParse(TxtTimeout.Text, out var to) || to < 0) { TxtError.Text = "超时须为 ≥0 的整数（秒）"; return; }
                 var cond = CboCondition.SelectedIndex switch
                 {
                     1 => "NotEquals", 2 => "Contains", 3 => "Changed", 4 => "Greater", 5 => "Less", _ => "Equals",
                 };
-                var propName = CboProperty.SelectedIndex switch
-                {
-                    1 => "Name", 2 => "RangeValue", 3 => "ToggleState", 4 => "ExpandCollapseState", 5 => "IsEnabled", _ => "Value",
-                };
+                var propName = SelectedPropertyName;
                 var expected = TxtExpected.Text;
                 if (cond is "Equals" or "NotEquals" or "Contains" or "Greater" or "Less" && string.IsNullOrEmpty(expected)
                     && propName is not "ToggleState" and not "ExpandCollapseState" and not "IsEnabled")
                 { TxtError.Text = "该条件需要填写期望值"; return; }
                 _node.Trigger = new ElementTriggerSpec
                 {
-                    ElementSpec = spec,
-                    ElementName = string.IsNullOrEmpty(CboElement.Text) ? "(元素)" : CboElement.Text,
+                    ElementSpec = _elementSpecUsed,
+                    ElementName = string.IsNullOrEmpty(_elementName) && string.IsNullOrEmpty(LblElementName.Text)
+                        ? "(元素)" : (string.IsNullOrEmpty(_elementName) ? LblElementName.Text : _elementName),
                     Property = propName,
                     Condition = cond,
                     ExpectedValue = expected,

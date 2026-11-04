@@ -126,7 +126,10 @@ public static class PatternActionRunner
         var result = new object?[Math.Min(paramInfos.Length, userParams.Length)];
         for (int i = 0; i < result.Length; i++)
         {
-            var val = userParams[i];
+            // ★ JSON round-trip 陷阱：录制任务从 JSON 加载后 object?[] 元素全是 System.Text.Json.JsonElement
+            //   （如 RangeValuePattern.SetValue 的 55 → JsonElement），Convert.ChangeType 不认 → 反射 Invoke 失败。
+            //   先解包为原生 .NET 值再转换。
+            var val = userParams[i] is System.Text.Json.JsonElement je ? UnwrapJsonElement(je) : userParams[i];
             if (val is null) result[i] = paramInfos[i].HasDefaultValue ? paramInfos[i].DefaultValue : null;
             else
             {
@@ -136,6 +139,19 @@ public static class PatternActionRunner
         }
         return result;
     }
+
+    /// <summary>JsonElement → 原生 .NET 值（数字统一 long/int/double，再经 ChangeType 落到目标类型）。</summary>
+    private static object? UnwrapJsonElement(System.Text.Json.JsonElement je) => je.ValueKind switch
+    {
+        System.Text.Json.JsonValueKind.Number => je.TryGetInt64(out var l)
+            ? (l >= int.MinValue && l <= int.MaxValue ? (object)(int)l : l)
+            : je.GetDouble(),
+        System.Text.Json.JsonValueKind.String => je.GetString(),
+        System.Text.Json.JsonValueKind.True => true,
+        System.Text.Json.JsonValueKind.False => false,
+        System.Text.Json.JsonValueKind.Null => null,
+        _ => je.ToString(),
+    };
 
     private static object? GetDefaultForType(Type t)
     {

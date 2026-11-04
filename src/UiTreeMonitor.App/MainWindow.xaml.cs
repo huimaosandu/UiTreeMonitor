@@ -145,7 +145,6 @@ public partial class MainWindow : Window
     private bool _silentCapturing; // 静默捕获模式（录制用：鼠标跟踪+树高亮+Details刷新，无捕获框/烧杯）
     private MouseCaptureResult? _lastHoverResult; // 当前悬停选中的元素（烧杯按钮回调用）
     private TreeNodeViewModel? _selectedNode; // 当前树选中节点（Details 面板联动）
-    private readonly DispatcherTimer? _historyTimer; // 采样历史页激活期间自动刷新
     private object? _rightClickedItem; // 右键点击的属性/Pattern 项（ContextMenu 回调用）
     private bool _detailsLocked; // 烧杯按钮点击后锁定 Details 不再刷新
     // Details 面板当前显示元素的定位约束（右键添加监控时作目标元素，两条路径都会更新：
@@ -347,6 +346,14 @@ public partial class MainWindow : Window
             _settings.RecordMode,
             _settings.RecordMouseLeft, _settings.RecordMouseRight,
             _settings.RecordKeyboard);
+        // ★ 注入触发器目标捕获通道（右键"插入触发器"用）：启动/停止随鼠标捕获（蓝框+烧杯）
+        RecordingPanel.StartTriggerCapture = () =>
+        {
+            if (_capturing) return false;      // 正常"随鼠标捕获"占用中（其烧杯走添加监控路径）
+            if (!_silentCapturing) StartSilentCapture();
+            return true;
+        };
+        RecordingPanel.StopTriggerCapture = StopSilentCapture;
         RecordingPanel.RecordingStateChanged += (recording) =>
         {
             var isAuto = ((System.Windows.Controls.RadioButton)RecordingPanel.RbModeAuto).IsChecked == true;
@@ -368,9 +375,6 @@ public partial class MainWindow : Window
         _drainTimer.Tick += (_, _) => DrainCaptureQueue();
         _drainTimer.Start();
 
-        // 采样历史页：激活期间自动刷新（选中任务的记录实时追加可见）
-        _historyTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
-        _historyTimer.Tick += (_, _) => RefreshHistory();
         Closed += (_, _) =>
         {
             _mouseCapture.Stop();
@@ -557,15 +561,21 @@ public partial class MainWindow : Window
         TxtCaptureStatus.Text = "";
     }
 
-    /// <summary>启动静默捕获（录制模式用：鼠标跟踪+树高亮+Details刷新，无捕获框/烧杯）。</summary>
+    /// <summary>启动静默捕获（录制模式/触发器目标捕获用：鼠标跟踪+树高亮+Details刷新，蓝框带烧杯按钮）。</summary>
     private void StartSilentCapture()
     {
         if (_capturing || _silentCapturing) return;
         _silentCapturing = true;
         _detailsLocked = false;
+        // ★ 静默模式同样显示烧杯（原为无烧杯的 HighlighterTooltip）：录制中/插入触发器时
+        //   点蓝框右上角烧杯 = 以当前悬停元素为目标创建触发器（OnSnapshotAddTarget 静默分支）
+        var driver = HollowHighlightDriver.GetDefaultInstance();
+        driver.HighlighterMode = HighlighterMode.HighlighterBeakerTooltip;
+        driver.SetCallBackForSnapshot(new Action(OnSnapshotAddTarget));
+        driver.IsEnabled = true;
         _mouseCapture.ResultProduced += OnCaptureResult;
         _mouseCapture.Start();
-        Log($"静默捕获已启动（录制模式：鼠标跟踪高亮，无捕获框） target={_currentTarget?.ProcessName} treeLoaded={_currentTree is not null} nodeCount={_currentTree?.NodeCount}");
+        Log($"静默捕获已启动（录制模式：鼠标跟踪高亮，蓝框+烧杯=触发器入口） target={_currentTarget?.ProcessName} treeLoaded={_currentTree is not null} nodeCount={_currentTree?.NodeCount}");
     }
 
     /// <summary>停止静默捕获。</summary>
@@ -584,10 +594,39 @@ public partial class MainWindow : Window
 
     /// <summary>
     /// 烧杯按钮点击回调（原版 Win32SnapshotButton.Clicked，经 SetCallBackForSnapshot 接线，
-    /// 在 UI 线程触发）：把当前悬停元素填入右侧"新建监控任务"表单作为监测目标，并退出随鼠标捕获。
+    /// 在 UI 线程触发）：
+    /// · 静默捕获（录制中/插入触发器的目标捕获）：以当前悬停元素为目标弹触发器编辑（录制不中断）；
+    /// · 正常随鼠标捕获：把当前悬停元素填入"新建监控任务"对话框作为监测目标，并退出捕获。
     /// </summary>
     private void OnSnapshotAddTarget()
     {
+        // ★ 静默分支：烧杯=触发器目标选定（录制中随时可点；右键插入触发器也经此路径）
+        if (_silentCapturing)
+        {
+            var r = _lastHoverResult;
+            _detailsLocked = true; // 锁定 Details（弹窗期间不跟随刷新）
+            if (r is null || !r.IsValid)
+            {
+                TxtStatus.Text = "未选中有效元素，未创建触发器";
+                return;
+            }
+            // 弹窗期间暂停悬停处理（蓝框不跟随到弹窗上），关闭后恢复——静默捕获不停（录制可继续）
+            _mouseCapture.ResultProduced -= OnCaptureResult;
+            try { HollowHighlightDriver.GetDefaultInstance().Clear(); } catch { /* 忽略 */ }
+            try
+            {
+                var spec = BuildSpecFromCapture(r);
+                var name = string.IsNullOrEmpty(r.Name) ? $"{r.ControlType}（pid {r.ProcessId}）" : r.Name!;
+                Log($"[TRIGGER-PICK] beaker on '{name}' → spec={Trunc(spec, 80)}");
+                RecordingPanel.OnTriggerElementCaptured(spec, name);
+            }
+            finally
+            {
+                _mouseCapture.ResultProduced += OnCaptureResult;
+            }
+            return;
+        }
+
         var result = _lastHoverResult;
         StopMouseCapture(); // 点击后退出随鼠标捕获
         _detailsLocked = true; // ★ 锁定 Details 不再刷新，用户可右键操作
@@ -618,6 +657,20 @@ public partial class MainWindow : Window
             extractors: dlg.Extractors);
     }
 
+    /// <summary>从鼠标捕获结果构建 spec（与 EventListenerCore/RecordingPanel 的 BuildSpec 同格式，
+    /// 回放经 ResolveBySpec 重定位通用）。返回后接录制定位链路，无需 A11yElement 实时引用。</summary>
+    private static string BuildSpecFromCapture(MouseCaptureResult r)
+    {
+        var b = r.BoundingRectangle;
+        var rect = b is { } rect2 && rect2.Width > 0 && rect2.Height > 0
+            ? $"{rect2.Left},{rect2.Top},{rect2.Right},{rect2.Bottom}" : "";
+        return $"spec:v1|autoId={Uri.EscapeDataString(r.AutomationId ?? "")}" +
+               $"|name={Uri.EscapeDataString(r.Name ?? "")}|type={r.ControlType}" +
+               $"|class={Uri.EscapeDataString(r.ClassName ?? "")}|rect={rect}";
+    }
+
+    private static string Trunc(string s, int max) => s.Length <= max ? s : s[..max] + "…";
+
     private void OnCaptureResult(MouseCaptureResult result)
     {
         _captureQueue.Enqueue(result);
@@ -645,20 +698,8 @@ public partial class MainWindow : Window
                 if (!_silentCapturing) driver.Clear();
                 continue;
             }
-            // ★ 录制模式（静默捕获）：显示蓝框+文字提示（视觉反馈），但隐藏烧杯按钮
-            //   HighlighterMode.HighlighterTooltip = 蓝框 + Glimpse文字，无烧杯
-            //   HighlighterMode.HighlighterBeakerTooltip = 蓝框 + 烧杯 + 文字（正常捕获模式）
-            if (_silentCapturing)
-            {
-                var prevMode = driver.HighlighterMode;
-                driver.HighlighterMode = AccessibilityInsights.SharedUx.Enums.HighlighterMode.HighlighterTooltip;
-                driver.SetElement(el);
-                driver.HighlighterMode = prevMode; // 恢复原模式（下次非静默时使用）
-            }
-            else
-            {
-                driver.SetElement(el); // 正常模式：蓝框+烧杯+文字
-            }
+            // ★ 静默/正常捕获统一：蓝框+烧杯+文字（静默模式的烧杯=触发器入口，OnSnapshotAddTarget 分叉处理）
+            driver.SetElement(el);
             _lastHoverResult = result; // 供烧杯按钮回调（OnSnapshotAddTarget）取当前悬停元素
 
             // ★ 自动录制补挂：录制开始时可能无目标（监听器以自由模式启动或未启动），
@@ -1904,7 +1945,8 @@ public partial class MainWindow : Window
         if (TaskList.SelectedItem is not TaskListItem item) return;
 
         // 有采样数据时先询问是否导出报告（移除后内存记录即销毁，只剩实时落盘的 CSV）
-        var records = GetHistory(item.Config.Id);
+        var host = _scheduler.GetHost(item.Config.Id);
+        var records = host is not null ? host.Records.ToList() : new List<SampleRecord>();
         if (records.Count > 0)
         {
             var answer = MessageBox.Show(this,
@@ -2188,58 +2230,6 @@ public partial class MainWindow : Window
         _settings.Save(SettingsFilePath);
         var modeText = _settings.RecordMode == "input" ? "鼠标键盘动作（坐标回放）" : "UIA 事件（语义回放）";
         TxtStatus.Text = $"设置已保存：截取字符 = {_settings.ExtractMarker}；录制模式 = {modeText}（下次开始录制生效）";
-    }
-
-    private void TaskList_SelectionChanged(object sender, SelectionChangedEventArgs e)
-        => RefreshHistory();
-
-    /// <summary>切换右侧页签：进入「采样历史」立即刷新并启动自动刷新；切走则停止。</summary>
-    private void MainTabs_SelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (ReferenceEquals(MainTabs.SelectedItem, TabHistory))
-        {
-            RefreshHistory();
-            _historyTimer?.Start();
-        }
-        else
-        {
-            _historyTimer?.Stop();
-        }
-    }
-
-    /// <summary>刷新采样历史页：显示当前选中任务的全部采样记录（无选中/无记录时给出提示）。
-    /// 仅在任务或记录数变化时重绑（避免周期重设导致滚动/选中丢失），重绑后滚动到最新一条。</summary>
-    private void RefreshHistory()
-    {
-        if (TaskList.SelectedItem is not TaskListItem item)
-        {
-            HistoryGrid.ItemsSource = null;
-            _historyTaskId = Guid.Empty;
-            _historyCount = -1;
-            TxtHistoryStatus.Text = "请先在「任务管理」页选中一个任务，此处显示其采样记录";
-            return;
-        }
-        var records = GetHistory(item.Config.Id);
-        if (item.Config.Id != _historyTaskId || records.Count != _historyCount)
-        {
-            _historyTaskId = item.Config.Id;
-            _historyCount = records.Count;
-            HistoryGrid.ItemsSource = records;
-            if (records.Count > 0) HistoryGrid.ScrollIntoView(records[^1]); // 跟随最新记录
-        }
-        TxtHistoryStatus.Text = records.Count == 0
-            ? $"任务 [{item.Name}]：暂无采样记录（启动采集后此处实时显示）"
-            : $"任务 [{item.Name}]：{records.Count} 条记录（最新：{records[^1].Timestamp:HH:mm:ss.fff}）";
-    }
-
-    private Guid _historyTaskId = Guid.Empty; // 上次刷新的任务（变化时重绑）
-    private int _historyCount = -1; // 上次刷新的记录数（变化时重绑）
-
-    private List<SampleRecord> GetHistory(Guid? taskId = null)
-    {
-        if (taskId is Guid id && _scheduler.GetHost(id) is { } h)
-            return h.Records.ToList();
-        return new List<SampleRecord>();
     }
 
     private void LoadSavedTasks()

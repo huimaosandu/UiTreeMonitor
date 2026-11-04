@@ -41,6 +41,8 @@ public partial class RecordingPanel : UserControl
     private bool _isAutoMode;           // true=自动(输入钩子+可选UIA事件), false=手动(Actions执行)
     private int _stepIndex = -1;
     private StepVm? _selectedVm;        // 步骤树当前选中节点（右键操作目标）
+    private StepVm? _anchorVm;          // Shift 范围多选锚点（上次单选项）
+    private bool _triggerPickSolo;      // 触发器捕获由右键插入发起（非录制中）：完成/取消后停止静默捕获
     private RecordingTaskRunner? _playRunner; // 面板内"全部回放"的执行器（可停止）
     private EventListenerCore? _autoListener; // UIA 事件监听器（设置开启时）
     private InputHookCore? _inputHook;        // 低级输入钩子（默认：鼠标左右键+键盘）
@@ -68,6 +70,12 @@ public partial class RecordingPanel : UserControl
 
     /// <summary>获取录制捕获选项（MainWindow 注入：设置持久化的鼠标/键盘/UIA 开关）。</summary>
     public Func<CaptureOptions>? GetCaptureOptions { get; set; }
+
+    /// <summary>启动触发器目标捕获（MainWindow 注入：开始随鼠标捕获显示蓝框烧杯；false=正常捕获占用无法启动）。</summary>
+    public Func<bool>? StartTriggerCapture { get; set; }
+
+    /// <summary>停止触发器目标捕获（MainWindow 注入：停静默捕获——右键插入且未录制时用）。</summary>
+    public Action? StopTriggerCapture { get; set; }
 
     public RecordingPanel()
     {
@@ -694,9 +702,6 @@ public partial class RecordingPanel : UserControl
         catch { return "spec:v1|"; }
     }
 
-    /// <summary>BuildSpec 对外入口（StepEditDialog 点选元素生成 spec 用）。</summary>
-    internal static string BuildSpecPublic(AutomationElement elem) => BuildSpec(elem);
-
     private static string? Esc(string? s) => string.IsNullOrEmpty(s) ? "" : Uri.EscapeDataString(s);
 
     /// <summary>取元素所属顶层窗口句柄：沿控件视图向上，返回第一个非零 NativeWindowHandle。
@@ -1110,8 +1115,8 @@ public partial class RecordingPanel : UserControl
 
     // ==== 步骤树（TreeView 绑定 + 右键编辑） ====
 
-    /// <summary>步骤树行 ViewModel（绑定 DisplayText/Detail/DisabledMark/Children）。</summary>
-    public sealed class StepVm
+    /// <summary>步骤树行 ViewModel（绑定 DisplayText/Detail/DisabledMark/Children；IsMultiSelected=Shift 范围多选高亮）。</summary>
+    public sealed class StepVm : System.ComponentModel.INotifyPropertyChanged
     {
         public required StepNode Node { get; init; }
         public List<StepVm> Children { get; init; } = new();
@@ -1119,6 +1124,16 @@ public partial class RecordingPanel : UserControl
         public string Detail => Node.DetailText;
         public string DisabledMark => Node.IsEnabled ? "Collapsed" : "Visible";
         public StepVm? Parent { get; init; }
+
+        private bool _isMultiSelected;
+        /// <summary>Shift 范围多选标记（背景淡蓝；Tab 批量移入容器作用于多选集）。</summary>
+        public bool IsMultiSelected
+        {
+            get => _isMultiSelected;
+            set { if (_isMultiSelected != value) { _isMultiSelected = value; PropertyChanged?.Invoke(this, new(nameof(IsMultiSelected))); } }
+        }
+
+        public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged;
     }
 
     private void RefreshTree()
@@ -1139,11 +1154,76 @@ public partial class RecordingPanel : UserControl
         _selectedVm = e.NewValue as StepVm;
         if (_selectedVm is not null)
         {
+            _anchorVm = _selectedVm; // Shift 范围多选的锚点跟随最近一次单选
+            ClearMultiSelect();
             var n = _selectedVm.Node;
             TxtStatus.Text = n.Kind == StepKinds.Action && n.Action is not null
                 ? $"[{n.Action.PatternName}.{n.Action.MethodName}] 路径={n.Action.ElementPath}"
                 : $"{n.DisplayText} {n.DetailText}";
         }
+    }
+
+    // ==== Shift 范围多选 + Tab 批量移入容器 ====
+
+    /// <summary>Shift+点击：从锚点（上次单选）到点击行的可见范围全部标记多选（阻止默认单选跳变）。</summary>
+    private void TvSteps_PreviewMouseLeftButtonDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        if (System.Windows.Input.Keyboard.Modifiers != System.Windows.Input.ModifierKeys.Shift) return;
+        var vm = VmFromPoint(e.GetPosition(TvSteps));
+        if (vm is null) return;
+        e.Handled = true; // 阻止 TreeView 默认单选改变（保持多选集）
+        SelectRange(_anchorVm ?? _selectedVm, vm);
+    }
+
+    /// <summary>Tab：把多选（或单选）步骤批量移入上方最近的循环/触发器容器。</summary>
+    private void TvSteps_PreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        if (e.Key != System.Windows.Input.Key.Tab) return;
+        var targets = MultiOrSingleNodes();
+        if (targets.Count == 0) return;
+        e.Handled = true;
+        MoveNodesIntoContainer(targets);
+    }
+
+    /// <summary>命中坐标处的行 ViewModel（沿可视树向上找 TreeViewItem.Header）。</summary>
+    private StepVm? VmFromPoint(Point p)
+    {
+        var dep = TvSteps.InputHitTest(p) as DependencyObject;
+        while (dep is not null && !ReferenceEquals(dep, TvSteps))
+        {
+            if (dep is TreeViewItem tvi && tvi.Header is StepVm vm) return vm;
+            dep = System.Windows.Media.VisualTreeHelper.GetParent(dep);
+        }
+        return null;
+    }
+
+    /// <summary>标记锚点→目标之间的全部行为多选（可见顺序扁平化取范围）。</summary>
+    private void SelectRange(StepVm? anchor, StepVm target)
+    {
+        var flat = FlattenVms(TvSteps.ItemsSource as List<StepVm>);
+        int a = flat.IndexOf(anchor ?? target);
+        int b = flat.IndexOf(target);
+        if (a < 0 || b < 0) return;
+        for (int i = 0; i < flat.Count; i++)
+            flat[i].IsMultiSelected = i >= Math.Min(a, b) && i <= Math.Max(a, b);
+    }
+
+    private void ClearMultiSelect()
+    {
+        foreach (var vm in FlattenVms(TvSteps.ItemsSource as List<StepVm>))
+            vm.IsMultiSelected = false;
+    }
+
+    /// <summary>可见顺序扁平化全部行 VM（含子级，用于范围多选与多选收集）。</summary>
+    private static List<StepVm> FlattenVms(List<StepVm>? roots)
+    {
+        var list = new List<StepVm>();
+        void Walk(List<StepVm> vms)
+        {
+            foreach (var vm in vms) { list.Add(vm); Walk(vm.Children); }
+        }
+        if (roots is not null) Walk(roots);
+        return list;
     }
 
     private void TvSteps_MouseRightButtonUp(object sender, System.Windows.Input.MouseButtonEventArgs e)
@@ -1153,22 +1233,15 @@ public partial class RecordingPanel : UserControl
 
     private void SelectVmByNode(StepNode node) { /* 选中展开由 RefreshTree 后 ItemsSource 重建，保持简单 */ }
 
-    // ---- 右键菜单：插入控制节点（选中节点之后；选中容器→插入其内部末尾） ----
+    // ---- 右键菜单：插入控制节点（插入到选中步骤上方；未选中→根级末尾） ----
 
     private (List<StepNode> List, int Index) ResolveInsertPosition()
     {
-        if (_selectedVm is null || _selectedVm.Node.Kind is StepKinds.Loop or StepKinds.Trigger)
-        {
-            // 未选中/选中容器：容器→内部末尾；未选中→根级末尾（录制中新动作会续在其后）
-            if (_selectedVm is not null)
-            {
-                return (_selectedVm.Node.Children, _selectedVm.Node.Children.Count);
-            }
-            return (_steps, _steps.Count);
-        }
-        // 普通节点：其父列表中它之后
+        if (_selectedVm is null)
+            return (_steps, _steps.Count); // 未选中：根级末尾（录制中新动作会续在其后）
+        // 选中任意节点（含容器）：插到它父列表中它的上方（同级之前）
         var parentList = FindParentList(_selectedVm.Node, _steps, out var idx);
-        return parentList is not null ? (parentList, idx + 1) : (_steps, _steps.Count);
+        return parentList is not null ? (parentList, idx) : (_steps, _steps.Count);
     }
 
     private static List<StepNode>? FindParentList(StepNode node, List<StepNode> list, out int index)
@@ -1191,7 +1264,7 @@ public partial class RecordingPanel : UserControl
             node.TriggerAt = DateTime.Now.AddHours(1); // 默认 1 小时后
         list.Insert(index, node);
 
-        // 新控制节点立即弹编辑（触发器必须配置元素；循环/延时/定时可改默认值）
+        // 新控制节点立即弹编辑（循环/延时/定时可改默认值；取消=放弃插入）
         if (EditNodeDialog(node))
         {
             RefreshTree();
@@ -1206,28 +1279,63 @@ public partial class RecordingPanel : UserControl
 
     private bool EditNodeDialog(StepNode node)
     {
-        var candidates = CollectElementCandidates(_steps);
-        var dlg = new StepEditDialog(node, candidates) { Owner = Window.GetWindow(this) };
+        // 触发器：目标元素来自已保存配置（重配置元素=删除后重新插入捕获）；读值经 ResolveElement 实时解析
+        string spec = node.Trigger?.ElementSpec ?? "";
+        string name = node.Trigger?.ElementName ?? "";
+        var dlg = new StepEditDialog(node, spec, name,
+            prop => RecordingTaskRunner.TryReadProperty(ResolveElement, spec, prop, out var v) ? v : null)
+        { Owner = Window.GetWindow(this) };
         return dlg.ShowDialog() == true;
     }
 
-    /// <summary>收集树内全部动作步骤的元素（触发器配置下拉候选）。</summary>
-    private static List<(string, string)> CollectElementCandidates(IEnumerable<StepNode> nodes)
+    /// <summary>烧杯捕获完成（MainWindow OnSnapshotAddTarget 调用，UI 线程）：
+    /// 以捕获的悬停元素为目标弹触发器编辑，确认后按"上方插入"规则加入步骤树。</summary>
+    internal void OnTriggerElementCaptured(string spec, string elementName)
     {
-        var result = new List<(string, string)>();
-        foreach (var n in nodes)
+        try
         {
-            if (n.Kind == StepKinds.Action && n.Action is not null && !string.IsNullOrEmpty(n.Action.ElementPath))
-                result.Add((n.Action.ElementName, n.Action.ElementPath));
-            result.AddRange(CollectElementCandidates(n.Children));
+            var node = new StepNode { Kind = StepKinds.Trigger };
+            var dlg = new StepEditDialog(node, spec, elementName,
+                prop => RecordingTaskRunner.TryReadProperty(ResolveElement, spec, prop, out var v) ? v : null)
+            { Owner = Window.GetWindow(this) };
+
+            if (dlg.ShowDialog() == true)
+            {
+                var (list, index) = ResolveInsertPosition();
+                list.Insert(index, node);
+                RefreshTree();
+                RefreshUI();
+                TxtStatus.Text = $"已插入触发器：{node.DisplayText}（共 {_steps.Count} 个顶层步骤）";
+            }
+            else
+                TxtStatus.Text = "已取消触发器插入";
         }
-        return result;
+        finally
+        {
+            // 右键插入发起的捕获（非录制中）：完成后停止静默捕获；录制中点烧杯则录制继续不受影响
+            if (_triggerPickSolo)
+            {
+                _triggerPickSolo = false;
+                StopTriggerCapture?.Invoke();
+            }
+        }
     }
 
     private void MenuInsertLoop_Click(object sender, RoutedEventArgs e) => InsertNode(StepKinds.Loop);
     private void MenuInsertDelay_Click(object sender, RoutedEventArgs e) => InsertNode(StepKinds.Delay);
     private void MenuInsertTimer_Click(object sender, RoutedEventArgs e) => InsertNode(StepKinds.Timer);
-    private void MenuInsertTrigger_Click(object sender, RoutedEventArgs e) => InsertNode(StepKinds.Trigger);
+
+    /// <summary>插入触发器：不立即弹窗——启动随鼠标捕获（蓝框+烧杯），用户点烧杯选定元素后再弹编辑。</summary>
+    private void MenuInsertTrigger_Click(object sender, RoutedEventArgs e)
+    {
+        if (StartTriggerCapture?.Invoke() != true)
+        {
+            TxtStatus.Text = "无法启动捕获（正常\"随鼠标捕获\"进行中？先停止它再插入触发器）";
+            return;
+        }
+        _triggerPickSolo = !_isRecording; // 录制中静默捕获本就在跑（用完不停）；未录制则为插入而启动（完成即停）
+        TxtStatus.Text = "⚗ 触发器：把鼠标移到要监控的元素上，点蓝框右上角 🧪 烧杯按钮选定目标…";
+    }
 
     private void MenuEditStep_Click(object sender, RoutedEventArgs e)
     {
@@ -1264,26 +1372,53 @@ public partial class RecordingPanel : UserControl
         RefreshTree();
     }
 
-    /// <summary>把选中步骤移入其上方最近的循环/触发器容器（跨层级组织步骤的轻量方式）。</summary>
-    private void MenuMoveIntoContainer_Click(object sender, RoutedEventArgs e)
+    /// <summary>把选中（或多选）步骤移入各自上方最近的循环/触发器容器（右键与 Tab 键共用；保持原有顺序）。</summary>
+    private void MenuMoveIntoContainer_Click(object sender, RoutedEventArgs e) => MoveNodesIntoContainer(MultiOrSingleNodes());
+
+    /// <summary>参与批量操作的目标节点：Shift 多选优先，否则当前单选。</summary>
+    private List<StepNode> MultiOrSingleNodes()
     {
-        if (_selectedVm is null) return;
-        var list = FindParentList(_selectedVm.Node, _steps, out var idx);
-        if (list is null) return;
-        // 向上找最近的容器节点
-        for (int i = idx - 1; i >= 0; i--)
+        var multi = FlattenVms(TvSteps.ItemsSource as List<StepVm>)
+            .Where(vm => vm.IsMultiSelected)
+            .Select(vm => vm.Node)
+            .ToList();
+        if (multi.Count > 0) return multi;
+        return _selectedVm is not null ? new List<StepNode> { _selectedVm.Node } : new List<StepNode>();
+    }
+
+    /// <summary>逐个把节点移入其父列表上方最近的循环/触发器容器（按列表顺序处理保持进入容器的先后）。</summary>
+    private void MoveNodesIntoContainer(List<StepNode> nodes)
+    {
+        if (nodes.Count == 0) return;
+        int moved = 0, blocked = 0;
+        foreach (var node in nodes)
         {
-            if (list[i].Kind is StepKinds.Loop or StepKinds.Trigger)
+            var list = FindParentList(node, _steps, out var idx);
+            if (list is null) { blocked++; continue; }
+            for (int i = idx - 1; i >= 0; i--)
             {
-                var node = list[idx];
-                list.RemoveAt(idx);
-                list[i].Children.Add(node);
-                RefreshTree();
-                TxtStatus.Text = $"已移入 {list[i].DisplayText}";
-                return;
+                if (list[i].Kind is StepKinds.Loop or StepKinds.Trigger && !IsDescendantOrSelf(list[i], node))
+                {
+                    list.RemoveAt(idx);
+                    list[i].Children.Add(node);
+                    moved++;
+                    break;
+                }
             }
         }
-        TxtStatus.Text = "上方没有循环/触发器容器";
+        RefreshTree();
+        TxtStatus.Text = moved > 0
+            ? $"已把 {moved} 个步骤移入上方容器{(blocked > 0 ? $"（{blocked} 个无上方容器/不可移）" : "")}（Tab=移入，多选生效）"
+            : "上方没有循环/触发器容器";
+    }
+
+    /// <summary>candidate 是否为 node 自身或其子孙（防把容器移进自己的子树）。</summary>
+    private static bool IsDescendantOrSelf(StepNode candidate, StepNode node)
+    {
+        if (ReferenceEquals(candidate, node)) return true;
+        foreach (var c in node.Children)
+            if (IsDescendantOrSelf(candidate, c)) return true;
+        return false;
     }
 
     private void MenuToggleEnabled_Click(object sender, RoutedEventArgs e)

@@ -241,19 +241,26 @@ public sealed class RecordingTaskRunner : IDisposable
 
     /// <summary>读取触发器目标元素的监控属性（找不到/读取失败 → IsAvailable=false，继续轮询）。</summary>
     private (bool IsAvailable, string? Value) ReadElementProperty(ElementTriggerSpec t)
+        => TryReadProperty(_elementResolver, t.ElementSpec, t.Property, out var v) ? (true, v) : (false, null);
+
+    /// <summary>按 spec 解析元素并读取监控属性（触发器编辑弹窗"读取当前值"复用）。
+    /// 返回 false=元素未找到/解析器为空；true 时 value 可能为 null（属性无值）。</summary>
+    public static bool TryReadProperty(Func<string, A11yElement?>? resolver, string spec, string property, out string? value)
     {
+        value = null;
         try
         {
-            var el = _elementResolver(t.ElementSpec);
-            if (el is null) return (false, null);
-            return t.Property switch
+            var el = resolver?.Invoke(spec);
+            if (el is null) return false;
+            value = property switch
             {
-                "Name" => (true, el.Name),
-                "IsEnabled" => (true, el.IsEnabled ? "True" : "False"),
-                _ => (true, PatternValue(el, t.Property)),
+                "Name" => el.Name,
+                "IsEnabled" => el.IsEnabled ? "True" : "False",
+                _ => PatternValue(el, property),
             };
+            return true;
         }
-        catch { return (false, null); }
+        catch { return false; }
     }
 
     /// <summary>从元素 Patterns 中取属性值（"Value"→ValuePattern.Value 等便捷名，或 "Pattern.Prop" 全名）。</summary>
