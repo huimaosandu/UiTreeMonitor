@@ -177,6 +177,145 @@ public partial class MainWindow : Window
     // ========== 日志（AppLog：源码运行写工程根\logs，发布版写 exe\logs；UI层 + 采集层统一写入同一文件） ==========
     private static void Log(string msg) => UiTreeMonitor.Core.AppLog.Write("UI", msg);
 
+    // ========== 录制任务（脚本回放任务列表；步骤树含循环/延时/定时/触发器） ==========
+
+    /// <summary>录制任务列表行（绑定 RecTaskList；Runner 为空=未启动）。</summary>
+    public sealed class RecTaskEntry
+    {
+        public required string Name { get; init; }
+        public required Core.Models.RecordingTask Task { get; init; }
+        public string SourceFile { get; init; } = "";
+        public Core.Tasks.RecordingTaskRunner? Runner { get; set; }
+        public string StateText { get; set; } = "未启动";
+        public string CurrentStep { get; set; } = "";
+        public string Progress { get; set; } = "-";
+        public int StepCount { get; init; }
+        public string StartedText { get; set; } = "";
+    }
+
+    private readonly System.Collections.ObjectModel.ObservableCollection<RecTaskEntry> _recTaskEntries = new();
+    private DispatcherTimer? _recTaskTimer;
+
+    private void InitRecordingTaskList()
+    {
+        RecTaskList.ItemsSource = _recTaskEntries;
+        _recTaskTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
+        _recTaskTimer.Tick += (_, _) => RefreshRecTaskStates();
+        _recTaskTimer.Start();
+    }
+
+    private void RefreshRecTaskStates()
+    {
+        foreach (var entry in _recTaskEntries)
+        {
+            if (entry.Runner is null) continue;
+            var s = entry.Runner.Snapshot;
+            entry.StateText = s.State switch
+            {
+                Core.Tasks.RecTaskRunState.Running => "运行中",
+                Core.Tasks.RecTaskRunState.WaitingTimer => "等定时",
+                Core.Tasks.RecTaskRunState.WaitingTrigger => "等触发",
+                Core.Tasks.RecTaskRunState.Completed => "已完成",
+                Core.Tasks.RecTaskRunState.Failed => "失败",
+                Core.Tasks.RecTaskRunState.Cancelled => "已停止",
+                _ => entry.StateText,
+            };
+            entry.CurrentStep = s.CurrentStep;
+            entry.Progress = $"{s.CurrentIndex + 1}/{s.TotalSteps}";
+            if (s.StartedAt != default && entry.StartedText == "") entry.StartedText = s.StartedAt.ToString("HH:mm:ss");
+        }
+        RecTaskList.Items.Refresh();
+    }
+
+    private void BtnAddRecTask_Click(object sender, RoutedEventArgs e)
+    {
+        var dir = System.IO.Path.Combine(AppContext.BaseDirectory, "RecordingTasks");
+        System.IO.Directory.CreateDirectory(dir);
+        var dlg = new Microsoft.Win32.OpenFileDialog
+        {
+            Filter = "录制任务 JSON|*.json",
+            InitialDirectory = dir,
+        };
+        if (dlg.ShowDialog() != true) return;
+        try
+        {
+            var task = Core.Models.RecordingTask.FromJson(System.IO.File.ReadAllText(dlg.FileName));
+            if (task is null || task.Steps.Count == 0)
+            { MessageBox.Show(this, "无效的录制任务文件（无步骤）", "添加失败"); return; }
+            if (_recTaskEntries.Any(x => x.Task.Id == task.Id || x.Name == task.Name))
+            { MessageBox.Show(this, $"任务 '{task.Name}' 已在列表中", "添加失败"); return; }
+            _recTaskEntries.Add(new RecTaskEntry { Name = task.Name, Task = task, SourceFile = dlg.FileName, StepCount = task.Steps.Count });
+            TxtStatus.Text = $"已添加录制任务 '{task.Name}'（{task.Steps.Count} 个顶层步骤）— 右键启动";
+        }
+        catch (Exception ex) { MessageBox.Show(this, $"读取任务失败: {ex.Message}", "添加失败"); }
+    }
+
+    private void RecTaskList_MouseRightButtonUp(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        // ListView 右键不自动选中：命中测试选中所在行，菜单项按 SelectedItem/选中行工作
+        var item = ItemsControl.ContainerFromElement(RecTaskList, e.OriginalSource as DependencyObject) as ListViewItem;
+        if (item is not null) item.IsSelected = true;
+    }
+
+    private void RecTaskContextMenu_Opened(object sender, RoutedEventArgs e)
+    {
+        var running = RecTaskList.SelectedItem is RecTaskEntry sel && sel.Runner is not null
+            && sel.Runner.Snapshot.State is Core.Tasks.RecTaskRunState.Running
+                or Core.Tasks.RecTaskRunState.WaitingTimer
+                or Core.Tasks.RecTaskRunState.WaitingTrigger;
+        MenuRecTaskStart.IsEnabled = !running;
+        MenuRecTaskStop.IsEnabled = running;
+    }
+
+    private void MenuRecTaskStart_Click(object sender, RoutedEventArgs e)
+    {
+        if (RecTaskList.SelectedItem is not RecTaskEntry entry) return;
+        if (entry.Runner is not null)
+        {
+            TxtStatus.Text = $"任务 '{entry.Name}' 已在运行";
+            return;
+        }
+        // 元素解析复用录制面板注入的 resolver（spec → A11yElement，回放线程 STA 调用）
+        var resolver = RecordingPanel.ResolveElement ?? (_ => (Axe.Windows.Core.Bases.A11yElement?)null);
+        var runner = new Core.Tasks.RecordingTaskRunner(entry.Task, resolver);
+        runner.StateChanged += snap => Dispatcher.BeginInvoke(RefreshRecTaskStates);
+        entry.Runner = runner;
+        entry.StartedText = "";
+        entry.StateText = "运行中";
+        runner.Start();
+        TxtStatus.Text = $"▶ 录制任务 '{entry.Name}' 已启动";
+        Log($"RecTask started: '{entry.Name}' ({entry.StepCount} steps)");
+    }
+
+    private void MenuRecTaskStop_Click(object sender, RoutedEventArgs e)
+    {
+        if (RecTaskList.SelectedItem is not RecTaskEntry entry || entry.Runner is null) return;
+        entry.Runner.Stop();
+        TxtStatus.Text = $"■ 录制任务 '{entry.Name}' 停止中…";
+    }
+
+    private void MenuRecTaskStatus_Click(object sender, RoutedEventArgs e)
+    {
+        if (RecTaskList.SelectedItem is not RecTaskEntry entry) return;
+        var s = entry.Runner?.Snapshot;
+        var text = s is null
+            ? $"任务：{entry.Name}\n状态：未启动\n步骤数：{entry.StepCount}\n来源：{entry.SourceFile}"
+            : $"任务：{entry.Name}\n状态：{s.State}\n当前步骤：{s.CurrentStep}\n进度：{s.CurrentIndex + 1}/{s.TotalSteps}" +
+              $"\n循环轮次：{s.LoopRound}\n开始：{s.StartedAt:HH:mm:ss}" +
+              (s.EndedAt is not null ? $"\n结束：{s.EndedAt.Value:HH:mm:ss}" : "") +
+              (s.LastError is not null ? $"\n错误：{s.LastError}" : "");
+        MessageBox.Show(this, text, "录制任务状态");
+    }
+
+    private void MenuRecTaskRemove_Click(object sender, RoutedEventArgs e)
+    {
+        if (RecTaskList.SelectedItem is not RecTaskEntry entry) return;
+        entry.Runner?.Stop();
+        entry.Runner?.Dispose();
+        _recTaskEntries.Remove(entry);
+        TxtStatus.Text = $"已从列表移除录制任务 '{entry.Name}'（JSON 文件保留）";
+    }
+
     public MainWindow()
     {
         InitializeComponent();
@@ -223,6 +362,7 @@ public partial class MainWindow : Window
 
         RefreshWindows();
         LoadSavedTasks();
+        InitRecordingTaskList(); // 任务管理 tab：录制任务列表 + 500ms 状态刷新
 
         _drainTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(100) };
         _drainTimer.Tick += (_, _) => DrainCaptureQueue();
@@ -237,6 +377,11 @@ public partial class MainWindow : Window
             HollowHighlightDriver.ClearAllHighlighters(); // 原版退出时清理全部高亮器
             _scheduler.Dispose();
             _saver.Dispose(); // 退出前写出全部剩余采样数据
+            // 录制任务：停止全部运行中的回放
+            foreach (var entry in _recTaskEntries)
+            {
+                try { entry.Runner?.Stop(); entry.Runner?.Dispose(); } catch { }
+            }
             // 兜底：个别环境存在残留前台线程（COM RPC 等）会悬挂进程，
             // 上述清理已同步完成后强制退出，确保点击叉号后进程一定结束
             Application.Current.Shutdown();

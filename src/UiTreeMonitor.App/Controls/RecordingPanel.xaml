@@ -11,19 +11,19 @@
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <!-- 标题 + 录制模式 + 录制控制 -->
+        <!-- 标题 + 录制模式（自动在前） + 录制控制 -->
         <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
             <TextBlock Text="操作录制与回放" FontWeight="Bold" FontSize="13" VerticalAlignment="Center"/>
 
-            <!-- 录制模式切换 -->
+            <!-- 录制模式切换（★录制中也可切换：手动=只录 Actions 对话框操作；自动=事件/输入捕获，按设置的录制模式） -->
             <Border BorderBrush="#CCCCCC" BorderThickness="1" CornerRadius="3" Margin="12,0,0,0" Padding="2">
                 <StackPanel Orientation="Horizontal">
+                    <RadioButton x:Name="RbModeAuto" Content="自动" GroupName="RecordMode" IsChecked="True"
+                                 ToolTip="自动模式：按设置的录制模式（UIA 语义 / 鼠标键盘）自动捕获操作；录制中可随时切换"
+                                 VerticalAlignment="Center" FontSize="11"/>
                     <RadioButton x:Name="RbModeManual" Content="手动" GroupName="RecordMode"
                                  ToolTip="手动模式：执行 Actions 对话框中的操作时记录"
-                                 Margin="4,0,8,0" VerticalAlignment="Center" FontSize="11"/>
-                    <RadioButton x:Name="RbModeAuto" Content="自动" GroupName="RecordMode" IsChecked="True"
-                                 ToolTip="自动模式：默认监测 UIA 事件（按钮点击/输入文字/选择/滑块拖动等，语义回放）；可在设置中切换为鼠标键盘动作模式（坐标回放）"
-                                 VerticalAlignment="Center" FontSize="11"/>
+                                 Margin="8,0,4,0" VerticalAlignment="Center" FontSize="11"/>
                 </StackPanel>
             </Border>
 
@@ -33,13 +33,13 @@
                     Click="BtnClearRecord_Click" IsEnabled="False" ToolTip="清空已录制的操作"/>
         </StackPanel>
 
-        <!-- 回放控制 -->
+        <!-- 回放控制 + 录制任务管理 -->
         <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,8">
             <TextBlock Text="回放:" VerticalAlignment="Center" Margin="0,0,6,0"/>
             <Button x:Name="BtnPlayAll" Content="▶ 全部回放" Padding="8,3"
-                    Click="BtnPlayAll_Click" IsEnabled="False" ToolTip="按顺序回放所有已录制操作"/>
+                    Click="BtnPlayAll_Click" IsEnabled="False" ToolTip="按树形步骤回放（循环/延时/定时/触发器生效）"/>
             <Button x:Name="BtnStep" Content="单步→" Margin="4,0,0,0" Padding="8,3"
-                    Click="BtnStep_Click" IsEnabled="False" ToolTip="执行下一条操作"/>
+                    Click="BtnStep_Click" IsEnabled="False" ToolTip="执行下一个步骤（仅根级顺序，控制节点按展开语义）"/>
             <TextBlock Text="速度:" VerticalAlignment="Center" Margin="12,0,4,0"/>
             <ComboBox x:Name="CboSpeed" Width="70" SelectedIndex="1">
                 <ComboBoxItem Content="0.5x"/>
@@ -47,33 +47,69 @@
                 <ComboBoxItem Content="2x"/>
                 <ComboBoxItem Content="5x"/>
             </ComboBox>
+
+            <Separator Margin="8,0"/>
+            <TextBlock Text="录制任务:" VerticalAlignment="Center" Margin="0,0,6,0"/>
+            <Button x:Name="BtnCreateTask" Content="保存为新任务" Padding="8,3" Click="BtnCreateTask_Click"
+                    IsEnabled="False" ToolTip="把当前录制步骤保存为录制任务（输入名称，JSON 存于程序目录 RecordingTasks\）"/>
+            <Button x:Name="BtnOpenTask" Content="打开任务" Margin="4,0,0,0" Padding="8,3" Click="BtnOpenTask_Click"
+                    ToolTip="打开已保存的录制任务继续编辑（步骤树、右键插入控制节点）"/>
+            <Button x:Name="BtnSaveTask" Content="保存任务" Margin="4,0,0,0" Padding="8,3" Click="BtnSaveTask_Click"
+                    IsEnabled="False" ToolTip="保存当前打开任务的修改"/>
             <Button x:Name="BtnExport" Content="导出JSON" Margin="12,0,0,0" Padding="8,3"
                     Click="BtnExport_Click" IsEnabled="False" ToolTip="导出脚本为 JSON 文件"/>
             <Button x:Name="BtnImport" Content="导入JSON" Margin="4,0,0,0" Padding="8,3"
                     Click="BtnImport_Click" ToolTip="从 JSON 文件导入脚本"/>
         </StackPanel>
 
-        <!-- 自动模式提示（仅自动模式显示，开始录制后按录制模式动态更新文案） -->
+        <!-- 自动模式提示（按录制模式动态更新文案；显示当前任务名） -->
         <TextBlock Grid.Row="2" x:Name="TxtAutoHint" Visibility="Visible"
                    Foreground="#B8860B" FontSize="11" Margin="0,0,0,4" TextWrapping="Wrap"
                    Text="自动模式（默认 UIA 事件）：在目标窗口中点击按钮、输入文字、选择、拖动滑块等操作将录制为可回放的语义步骤；可在设置中切换为鼠标键盘动作模式。"/>
 
-        <!-- 已录制操作列表 -->
-        <DataGrid Grid.Row="3" x:Name="DgRecords"
-                  AutoGenerateColumns="False" IsReadOnly="True"
-                  CanUserAddRows="False" CanUserDeleteRows="False"
-                  HeadersVisibility="Column" GridLinesVisibility="Horizontal"
-                  SelectionMode="Single"
-                  SelectionChanged="DgRecords_SelectionChanged">
-            <DataGrid.Columns>
-                <DataGridTextColumn Header="#" Binding="{Binding Id}" Width="40"/>
-                <DataGridTextColumn Header="时间" Binding="{Binding Timestamp, StringFormat='HH:mm:ss'}" Width="70"/>
-                <DataGridTextColumn Header="元素路径" Binding="{Binding ElementPath}" Width="120"/>
-                <DataGridTextColumn Header="Pattern/事件" Binding="{Binding PatternName}" Width="110"/>
-                <DataGridTextColumn Header="方法/事件" Binding="{Binding MethodName}" Width="100"/>
-                <DataGridTextColumn Header="结果" Binding="{Binding DisplayText}" Width="*"/>
-            </DataGrid.Columns>
-        </DataGrid>
+        <!-- 步骤树（录制动作 + 右键插入循环/延时/定时/触发器；循环与触发器可多层嵌套） -->
+        <TreeView Grid.Row="3" x:Name="TvSteps" VirtualizingPanel.IsVirtualizing="False"
+                  ItemTemplate="{StaticResource StepTemplate}"
+                  SelectedItemChanged="TvSteps_SelectedItemChanged"
+                  MouseRightButtonUp="TvSteps_MouseRightButtonUp">
+            <TreeView.ItemContainerStyle>
+                <Style TargetType="TreeViewItem">
+                    <Setter Property="IsExpanded" Value="True"/>
+                    <Setter Property="Padding" Value="1"/>
+                </Style>
+            </TreeView.ItemContainerStyle>
+            <TreeView.ContextMenu>
+                <ContextMenu x:Name="MenuSteps">
+                    <MenuItem Header="插入循环体（嵌套）" Click="MenuInsertLoop_Click"
+                              ToolTip="在选中步骤之后插入；选中循环/触发器时插入到其内部末尾"/>
+                    <MenuItem Header="插入延时" Click="MenuInsertDelay_Click"/>
+                    <MenuItem Header="插入定时器" Click="MenuInsertTimer_Click"
+                              ToolTip="运行到此步时等待到指定年月日时分秒再继续"/>
+                    <MenuItem Header="插入触发器（⚗ 元素监控）" Click="MenuInsertTrigger_Click"
+                              ToolTip="监控目标元素属性，条件满足后执行其子步骤（无子步骤=纯等待点）"/>
+                    <Separator/>
+                    <MenuItem Header="编辑…" Click="MenuEditStep_Click"/>
+                    <MenuItem Header="上移" Click="MenuMoveUp_Click"/>
+                    <MenuItem Header="下移" Click="MenuMoveDown_Click"/>
+                    <MenuItem Header="移入上方循环/触发器" Click="MenuMoveIntoContainer_Click"
+                              ToolTip="把选中步骤移动到其上方最近的循环/触发器容器内"/>
+                    <Separator/>
+                    <MenuItem Header="启用/禁用" Click="MenuToggleEnabled_Click"/>
+                    <MenuItem Header="删除" Click="MenuDeleteStep_Click"/>
+                </ContextMenu>
+            </TreeView.ContextMenu>
+            <TreeView.Resources>
+                <HierarchicalDataTemplate x:Key="StepTemplate" ItemsSource="{Binding Children}">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock x:Name="DisabledMark" Text="⏸ " Foreground="#CC0000" FontWeight="Bold"
+                                   Visibility="{Binding DisabledMark}"/>
+                        <TextBlock Text="{Binding DisplayText}" VerticalAlignment="Center"/>
+                        <TextBlock Text="  " />
+                        <TextBlock Text="{Binding Detail}" Foreground="#888888" FontSize="11" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </HierarchicalDataTemplate>
+            </TreeView.Resources>
+        </TreeView>
 
         <!-- 状态栏 -->
         <StackPanel Grid.Row="4" Orientation="Horizontal">

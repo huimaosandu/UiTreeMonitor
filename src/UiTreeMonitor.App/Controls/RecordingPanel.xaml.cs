@@ -34,10 +34,14 @@ namespace UiTreeMonitor.App.Controls;
 
 public partial class RecordingPanel : UserControl
 {
-    private ActionScript _script = new();
+    private ActionScript _script = new();          // 旧格式兼容（导出 JSON 用；树形 _steps 为主数据）
+    private readonly List<StepNode> _steps = new(); // ★ 步骤树（action/loop/delay/timer/trigger，可嵌套）
+    private RecordingTask? _currentTask;            // 当前打开的录制任务（保存任务按钮用）
     private bool _isRecording;
     private bool _isAutoMode;           // true=自动(输入钩子+可选UIA事件), false=手动(Actions执行)
     private int _stepIndex = -1;
+    private StepVm? _selectedVm;        // 步骤树当前选中节点（右键操作目标）
+    private RecordingTaskRunner? _playRunner; // 面板内"全部回放"的执行器（可停止）
     private EventListenerCore? _autoListener; // UIA 事件监听器（设置开启时）
     private InputHookCore? _inputHook;        // 低级输入钩子（默认：鼠标左右键+键盘）
     private int _listenerPid;           // 当前监听器锁定/瞄准的进程（0=自由模式：全桌面+排除自己）
@@ -77,8 +81,9 @@ public partial class RecordingPanel : UserControl
     {
         if (!_isRecording || _isAutoMode) return; // 自动模式不使用此入口
         _script.Records.Add(record);
-        RefreshList();
-        TxtStatus.Text = $"已录制 {_script.Records.Count} 条操作（手动模式）";
+        _steps.Add(new StepNode { Kind = StepKinds.Action, Action = record });
+        RefreshTree();
+        TxtStatus.Text = $"已录制 {_steps.Count} 条操作（手动模式）";
     }
 
     // ==== 录制控制 ====
@@ -91,7 +96,10 @@ public partial class RecordingPanel : UserControl
         {
             // 开始录制
             _script = new ActionScript { CreatedAt = DateTime.Now };
+            _steps.Clear();
+            _currentTask = null; // 新录制会话脱离已打开任务（保存为新任务）
             _stepIndex = -1;
+            RefreshTree();
 
             // ★ 先统一设置 _isRecording=true（确保 RecordingStateChanged 传递 true → 启动静默捕获）
             // 无论手动/自动模式，静默捕获（鼠标跟踪+树高亮）都是必需的
@@ -119,7 +127,7 @@ public partial class RecordingPanel : UserControl
             _isRecording = false;
             BtnToggleRecord.Content = "● 开始录制";
             BtnToggleRecord.Foreground = System.Windows.Media.Brushes.Black;
-            TxtStatus.Text = $"录制停止，共 {_script.Records.Count} 条操作" +
+            TxtStatus.Text = $"录制停止，共 {_steps.Count} 条操作" +
                              (_isAutoMode ? "（自动模式）" : "（手动模式）");
         }
 
@@ -392,7 +400,7 @@ public partial class RecordingPanel : UserControl
                 };
 
             AppendRecord(record, replacePrevious: false, source: "input-coord");
-            AppLog.Write("RECORD", $"OnInputAction #{_script.Records.Count}: {record.MethodName} elem={elemName} type={ctrlType} pid={pid} proc={procName} at=({input.X},{input.Y})" +
+            AppLog.Write("RECORD", $"OnInputAction #{_steps.Count}: {record.MethodName} elem={elemName} type={ctrlType} pid={pid} proc={procName} at=({input.X},{input.Y})" +
                 (record.MethodName is InputSimulator.DragMethod or InputSimulator.RightDragMethod ? $"→({input.EndX},{input.EndY})" : "") +
                 (pid == 0 ? " [element vanished → coord only]" : ""));
         });
@@ -529,35 +537,38 @@ public partial class RecordingPanel : UserControl
 
             // ★ 双通道合流：与输入语义化记录共用 merge（同元素同 Pattern 同方法只留一条）
             AppendRecord(record, uiaEvent.ReplacePrevious, source: $"uia {uiaEvent.EventName}",
-                statusText: $"● 已捕获 {_script.Records.Count} 个动作: {detail} ({uiaEvent.ElementName})");
+                statusText: $"● 已捕获 {_steps.Count} 个动作: {detail} ({uiaEvent.ElementName})");
         });
     }
 
     /// <summary>统一追加记录（UIA 事件/输入语义化/坐标回退共用）：
-    /// replacePrevious=true 时若上一条同元素（spec 忽略 rect 抖动）同 Pattern 同方法 → 原位替换（值类合并去抖）。</summary>
+    /// replacePrevious=true 时若上一条同元素（spec 忽略 rect 抖动）同 Pattern 同方法 → 原位替换（值类合并去抖）。
+    /// ★ 树形步骤为 UI 主数据（_steps）；_script.Records 同步维护（旧格式导出/计数兼容）。</summary>
     private void AppendRecord(ActionRecord record, bool replacePrevious, string source, string? statusText = null)
     {
-        if (replacePrevious && _script.Records.Count > 0)
+        var merged = false;
+        if (replacePrevious && _steps.Count > 0 && _steps[^1] is { Kind: StepKinds.Action } lastNode
+            && lastNode.Action is not null && MergeKey(lastNode.Action) == MergeKey(record))
         {
-            var last = _script.Records[^1];
-            if (MergeKey(last) == MergeKey(record))
-            {
-                _script.Records[^1] = record;
-                RefreshList();
-                TxtStatus.Text = statusText ?? $"● 已捕获 {_script.Records.Count} 个动作: {record.MethodName}({string.Join(", ", record.Parameters ?? Array.Empty<object?>())})";
-                AppLog.Write("RECORD", $"AppendRecord merge[{source}]: {record.PatternName}.{record.MethodName}" +
-                    $"({string.Join(", ", record.Parameters ?? Array.Empty<object?>())}) elem={record.ElementName}");
-                return;
-            }
+            lastNode.Action = record;
+            _script.Records[^1] = record;
+            merged = true;
+        }
+        else
+        {
+            _steps.Add(new StepNode { Kind = StepKinds.Action, Action = record });
+            _script.Records.Add(record);
         }
 
-        _script.Records.Add(record);
-        RefreshList();
+        RefreshTree();
         var detail = record.Parameters is { Length: > 0 }
             ? $"{record.MethodName}({string.Join(", ", record.Parameters)})"
             : record.MethodName;
-        TxtStatus.Text = statusText ?? $"● 已捕获 {_script.Records.Count} 个动作: {detail}" +
+        TxtStatus.Text = statusText ?? $"● 已捕获 {_steps.Count} 个动作: {detail}" +
                          (record.ElementName != "" ? $" ({record.ElementName})" : "");
+        if (merged)
+            AppLog.Write("RECORD", $"AppendRecord merge[{source}]: {record.PatternName}.{record.MethodName}" +
+                $"({string.Join(", ", record.Parameters ?? Array.Empty<object?>())}) elem={record.ElementName}");
     }
 
     /// <summary>merge 判定键：spec 去掉 rect 段（双通道对同一元素读 rect 时机不同会差 1~2px）+ Pattern.方法。</summary>
@@ -683,6 +694,9 @@ public partial class RecordingPanel : UserControl
         catch { return "spec:v1|"; }
     }
 
+    /// <summary>BuildSpec 对外入口（StepEditDialog 点选元素生成 spec 用）。</summary>
+    internal static string BuildSpecPublic(AutomationElement elem) => BuildSpec(elem);
+
     private static string? Esc(string? s) => string.IsNullOrEmpty(s) ? "" : Uri.EscapeDataString(s);
 
     /// <summary>取元素所属顶层窗口句柄：沿控件视图向上，返回第一个非零 NativeWindowHandle。
@@ -737,100 +751,116 @@ public partial class RecordingPanel : UserControl
         _patternProbeLogged.Clear();
 
         _script.Records.Clear();
+        _steps.Clear();
+        _currentTask = null;
         _stepIndex = -1;
         _isRecording = false;
         TxtAutoHint.Visibility = Visibility.Collapsed;
-        RefreshList();
+        RefreshTree();
         TxtStatus.Text = "已清空";
         BtnToggleRecord.Content = "● 开始录制";
         BtnToggleRecord.Foreground = System.Windows.Media.Brushes.Black;
         RefreshUI();
     }
 
-    // ==== 模式切换 ====
+    // ==== 模式切换（★录制中也可切换：手动=停自动通道只录 Actions 对话框；自动=重启事件/输入捕获） ====
 
     private void RbModeManual_Checked(object sender, RoutedEventArgs e)
     {
-        // ★ 录制中忽略模式切换（RadioButton 已禁用，但防御性检查）
-        if (_isRecording) return;
         _isAutoMode = false;
         TxtAutoHint.Visibility = Visibility.Collapsed;
+        if (_isRecording)
+        {
+            StopInputHook();
+            StopUiaListenerQuiet();
+            _uiaSemanticMode = false;
+            TxtStatus.Text = "● 已切换为手动模式录制…执行 Actions 将自动记录（自动捕获已停止）";
+            AppLog.Write("RECORD", "Mode switched to MANUAL while recording (auto channels stopped)");
+        }
     }
 
     private void RbModeAuto_Checked(object sender, RoutedEventArgs e)
     {
-        // ★ 录制中忽略模式切换（RadioButton 已禁用，但防御性检查）
-        if (_isRecording) return;
         _isAutoMode = true;
         TxtAutoHint.Visibility = Visibility.Visible;
+        if (_isRecording)
+        {
+            TxtStatus.Text = "● 已切换为自动模式录制…（自动捕获通道重启中）";
+            AppLog.Write("RECORD", "Mode switched to AUTO while recording (auto channels restarting)");
+            StartAutoRecording();
+        }
     }
 
-    // ==== 回放控制 ====
+    // ==== 回放控制（★树形步骤执行：循环/延时/定时/触发器由 RecordingTaskRunner 驱动） ====
 
     private void BtnPlayAll_Click(object sender, RoutedEventArgs e)
     {
-        if (_script.Records.Count == 0) return;
-        var speed = GetSpeedMultiplier();
+        // 再点一次 = 停止回放（触发器/定时器等待中可中断）
+        if (_playRunner is not null)
+        {
+            _playRunner.Stop();
+            return;
+        }
+        if (_steps.Count == 0) return;
 
-        BtnPlayAll.IsEnabled = false;
+        var task = _currentTask != null
+            ? new RecordingTask { Name = $"{_currentTask.Name}（面板回放）", Steps = _steps, Mode = _currentTask.Mode }
+            : new RecordingTask { Name = "面板回放", Steps = _steps, Mode = _uiaSemanticMode ? "uia" : "input" };
+
+        BtnPlayAll.Content = "■ 停止回放";
         BtnStep.IsEnabled = false;
         TxtStatus.Text = "▶ 回放中…";
 
-        try
+        _playRunner = new RecordingTaskRunner(task, ResolveElement ?? (_ => null));
+        _playRunner.StateChanged += snap => Dispatcher.BeginInvoke(() =>
         {
-            using var replayer = new ActionReplayer();
-            var results = replayer.Playback(_script,
-                ResolveElement ?? (_ => null),
-                speed,
-                default,
-                new Progress<PlaybackProgress>(p =>
-                {
-                    if (!p.IsComplete)
-                        Dispatcher.Invoke(() => TxtStatus.Text =
-                            $"▶ 回放中… ({p.CurrentIndex + 1}/{p.TotalCount}) {p.CurrentRecord.MethodName}()");
-                    else
-                        Dispatcher.Invoke(() =>
-                        {
-                            TxtStatus.Text = $"✓ 回放完成 ({p.TotalCount} 条)";
-                            BtnPlayAll.IsEnabled = true;
-                            BtnStep.IsEnabled = true;
-                        });
-                }));
-
-            for (int i = 0; i < Math.Min(results.Count, _script.Records.Count); i++)
+            var stateText = snap.State switch
             {
-                _script.Records[i] = _script.Records[i] with
+                RecTaskRunState.WaitingTrigger => "⏳ 等待触发条件",
+                RecTaskRunState.WaitingTimer => "⏰ 等待定时时刻",
+                _ => "▶",
+            };
+            TxtStatus.Text = $"{stateText} 回放中 ({snap.CurrentIndex + 1}/{snap.TotalSteps})：{snap.CurrentStep}" +
+                (snap.LoopRound > 0 ? $" [第 {snap.LoopRound} 轮]" : "");
+            if (snap.State is RecTaskRunState.Completed or RecTaskRunState.Failed or RecTaskRunState.Cancelled)
+            {
+                TxtStatus.Text = snap.State switch
                 {
-                    Success = results[i].Success,
-                    Result = results[i].DisplayText
+                    RecTaskRunState.Completed => $"✓ 回放完成（{snap.TotalSteps} 步）",
+                    RecTaskRunState.Cancelled => "■ 回放已停止",
+                    _ => $"✗ 回放失败：{snap.LastError}",
                 };
+                _playRunner.Dispose();
+                _playRunner = null;
+                BtnPlayAll.Content = "▶ 全部回放";
+                BtnStep.IsEnabled = !_isRecording;
+                RefreshTree(); // 回写结果显示
             }
-            RefreshList();
-        }
-        catch (Exception ex)
-        {
-            TxtStatus.Text = $"✗ 回放失败: {ex.Message}";
-            BtnPlayAll.IsEnabled = true;
-            BtnStep.IsEnabled = true;
-        }
+        });
+        _playRunner.Start();
     }
 
     private void BtnStep_Click(object sender, RoutedEventArgs e)
     {
-        if (_script.Records.Count == 0 || ResolveElement is null) return;
+        if (_steps.Count == 0 || ResolveElement is null) return;
 
         _stepIndex++;
-        if (_stepIndex >= _script.Records.Count)
+        if (_stepIndex >= _steps.Count)
         {
             _stepIndex = -1;
             TxtStatus.Text = "单步回放已到达末尾，重新开始";
             return;
         }
 
-        var record = _script.Records[_stepIndex];
-        DgRecords.SelectedIndex = _stepIndex;
-        DgRecords.ScrollIntoView(DgRecords.SelectedItem);
-        TxtStatus.Text = $"→ 单步 [{_stepIndex + 1}/{_script.Records.Count}] {record.MethodName}()...";
+        var node = _steps[_stepIndex];
+        SelectVmByNode(node);
+        if (node.Kind != StepKinds.Action)
+        {
+            TxtStatus.Text = $"→ [{_stepIndex + 1}] {node.DisplayText}：控制节点请在'全部回放'中执行";
+            return;
+        }
+        var record = node.Action!;
+        TxtStatus.Text = $"→ 单步 [{_stepIndex + 1}/{_steps.Count}] {record.MethodName}()...";
 
         try
         {
@@ -841,13 +871,13 @@ public partial class RecordingPanel : UserControl
                 || (record.ElementPath?.StartsWith("coord:v1|", StringComparison.Ordinal) ?? false)
                 || record.PatternName.StartsWith("UIA_Event_", StringComparison.OrdinalIgnoreCase);
             var targetElem = isInput ? null
-                : ResolveElement(record.ElementPath)
+                : ResolveElement(record.ElementPath ?? "")
                   ?? throw new Exception($"元素路径 [{record.ElementPath}] 未找到");
             var (ok, result) = replayer.ExecuteOne(record, targetElem);
 
-            _script.Records[_stepIndex] = record with { Success = ok, Result = result };
-            RefreshList();
-            DgRecords.SelectedIndex = _stepIndex;
+            node.Action = record with { Success = ok, Result = result };
+            RefreshTree();
+            SelectVmByNode(_steps[_stepIndex]);
             TxtStatus.Text = ok
                 ? $"→ [{_stepIndex + 1}] {record.MethodName}() ✓"
                 : $"→ [{_stepIndex + 1}] {record.MethodName}() ✗ {result}";
@@ -858,11 +888,113 @@ public partial class RecordingPanel : UserControl
         }
     }
 
-    // ==== 导入/导出 ====
+    // ==== 录制任务（JSON 存于程序目录 RecordingTasks\） ====
+
+    private static string TaskDir
+    {
+        get
+        {
+            var dir = System.IO.Path.Combine(AppContext.BaseDirectory, "RecordingTasks");
+            System.IO.Directory.CreateDirectory(dir);
+            return dir;
+        }
+    }
+
+    private static string SafeFileName(string name)
+    {
+        foreach (var c in System.IO.Path.GetInvalidFileNameChars()) name = name.Replace(c, '_');
+        return name.Trim();
+    }
+
+    /// <summary>保存为新任务：输入名称 → 步骤树快照存 JSON。</summary>
+    private void BtnCreateTask_Click(object sender, RoutedEventArgs e)
+    {
+        if (_steps.Count == 0) return;
+        var name = PromptDialog.Show("创建录制任务", "任务名称：", _currentTask?.Name ?? $"录制任务_{DateTime.Now:yyyyMMdd_HHmmss}");
+        if (string.IsNullOrWhiteSpace(name)) return;
+
+        var task = new RecordingTask
+        {
+            Name = name.Trim(),
+            Mode = _uiaSemanticMode ? "uia" : "input",
+            Steps = CloneSteps(_steps),
+        };
+        try
+        {
+            var file = System.IO.Path.Combine(TaskDir, SafeFileName(task.Name) + ".json");
+            System.IO.File.WriteAllText(file, task.ToJson());
+            _currentTask = task;
+            RefreshUI();
+            RefreshTree();
+            TxtStatus.Text = $"✓ 已创建录制任务 '{task.Name}' → {file}";
+            AppLog.Write("RECORD", $"RecordingTask created: '{task.Name}' ({_steps.Count} steps) → {file}");
+        }
+        catch (Exception ex)
+        {
+            TxtStatus.Text = $"✗ 创建任务失败: {ex.Message}";
+        }
+    }
+
+    /// <summary>打开任务：载入 JSON → 继续编辑（右键插控制节点/上移下移/删除）。</summary>
+    private void BtnOpenTask_Click(object sender, RoutedEventArgs e)
+    {
+        var dlg = new OpenFileDialog
+        {
+            Filter = "录制任务 JSON|*.json",
+            InitialDirectory = TaskDir,
+        };
+        if (dlg.ShowDialog() != true) return;
+        try
+        {
+            var json = System.IO.File.ReadAllText(dlg.FileName);
+            var task = RecordingTask.FromJson(json);
+            if (task is null || task.Steps.Count == 0)
+            { TxtStatus.Text = "打开失败：无效的录制任务文件"; return; }
+
+            _currentTask = task;
+            _steps.Clear();
+            _steps.AddRange(task.Steps);
+            _stepIndex = -1;
+            RefreshTree();
+            RefreshUI();
+            TxtStatus.Text = $"已打开任务 '{task.Name}'（{task.Steps.Count} 个顶层步骤）— 可右键编辑，回放按树形语义执行";
+            AppLog.Write("RECORD", $"RecordingTask opened: '{task.Name}' ({task.Steps.Count} top steps)");
+        }
+        catch (Exception ex) { TxtStatus.Text = $"打开任务失败: {ex.Message}"; }
+    }
+
+    /// <summary>保存当前任务的修改（未打开任务时等同另存）。</summary>
+    private void BtnSaveTask_Click(object sender, RoutedEventArgs e)
+    {
+        if (_steps.Count == 0) return;
+        RecordingTask task;
+        string file;
+        if (_currentTask is not null)
+        {
+            task = _currentTask;
+            task.Steps = CloneSteps(_steps);
+            task.UpdatedAt = DateTime.Now;
+            file = System.IO.Path.Combine(TaskDir, SafeFileName(task.Name) + ".json");
+        }
+        else
+        {
+            BtnCreateTask_Click(sender, e);
+            return;
+        }
+        try
+        {
+            System.IO.File.WriteAllText(file, task.ToJson());
+            RefreshTree();
+            TxtStatus.Text = $"✓ 任务 '{task.Name}' 已保存 → {file}";
+        }
+        catch (Exception ex) { TxtStatus.Text = $"✗ 保存失败: {ex.Message}"; }
+    }
+
+    // ==== 导入/导出（旧平铺格式兼容） ====
 
     private void BtnExport_Click(object sender, RoutedEventArgs e)
     {
-        if (_script.Records.Count == 0) return;
+        if (_steps.Count == 0) return;
         var dlg = new SaveFileDialog
         {
             Filter = "JSON 脚本|*.json",
@@ -871,8 +1003,14 @@ public partial class RecordingPanel : UserControl
         if (dlg.ShowDialog() != true) return;
         try
         {
+            // 旧格式导出：树形展平为动作序列（控制节点不进旧格式；完整版用"保存为新任务"）
+            _script = new ActionScript
+            {
+                CreatedAt = DateTime.Now,
+                Records = FlattenActions(_steps).ToList(),
+            };
             System.IO.File.WriteAllText(dlg.FileName, _script.ToJson());
-            TxtStatus.Text = $"已导出: {dlg.FileName}";
+            TxtStatus.Text = $"已导出 { _script.Records.Count} 条动作（旧平铺格式；控制节点请用任务保存）: {dlg.FileName}";
         }
         catch (Exception ex) { TxtStatus.Text = $"导出失败: {ex.Message}"; }
     }
@@ -884,13 +1022,30 @@ public partial class RecordingPanel : UserControl
         try
         {
             var json = System.IO.File.ReadAllText(dlg.FileName);
+            // 新任务格式优先
+            var task = RecordingTask.FromJson(json);
+            if (task is not null && task.Steps.Count > 0)
+            {
+                _currentTask = task;
+                _steps.Clear();
+                _steps.AddRange(task.Steps);
+                _stepIndex = -1;
+                RefreshTree();
+                RefreshUI();
+                TxtStatus.Text = $"已导入任务 '{task.Name}'（{task.Steps.Count} 个顶层步骤）";
+                return;
+            }
             var imported = ActionScript.FromJson(json);
             if (imported is null || imported.Records.Count == 0)
             { TxtStatus.Text = "导入失败：无效的脚本文件"; return; }
 
             _script = imported;
+            _currentTask = null;
+            _steps.Clear();
+            foreach (var r in imported.Records)
+                _steps.Add(new StepNode { Kind = StepKinds.Action, Action = r });
             _stepIndex = -1;
-            RefreshList();
+            RefreshTree();
             TxtStatus.Text = $"已导入 {imported.Records.Count} 条操作（来自 {dlg.FileName}）";
             RefreshUI();
         }
@@ -898,6 +1053,38 @@ public partial class RecordingPanel : UserControl
     }
 
     // ==== 内部辅助 ====
+
+    private static IEnumerable<ActionRecord> FlattenActions(IEnumerable<StepNode> nodes)
+    {
+        foreach (var n in nodes)
+        {
+            if (n.Kind == StepKinds.Action && n.Action is not null) yield return n.Action;
+            foreach (var a in FlattenActions(n.Children)) yield return a;
+        }
+    }
+
+    /// <summary>深拷贝步骤树（保存任务时快照，回放不污染编辑中的树）。</summary>
+    private static List<StepNode> CloneSteps(IEnumerable<StepNode> nodes)
+    {
+        var result = new List<StepNode>();
+        foreach (var n in nodes)
+        {
+            result.Add(new StepNode
+            {
+                Id = n.Id,
+                Kind = n.Kind,
+                IsEnabled = n.IsEnabled,
+                Action = n.Action,
+                LoopCount = n.LoopCount,
+                LoopIntervalMs = n.LoopIntervalMs,
+                DelayMs = n.DelayMs,
+                TriggerAt = n.TriggerAt,
+                Trigger = n.Trigger,
+                Children = CloneSteps(n.Children),
+            });
+        }
+        return result;
+    }
 
     private double GetSpeedMultiplier() => CboSpeed.SelectedIndex switch
     {
@@ -910,42 +1097,247 @@ public partial class RecordingPanel : UserControl
 
     private void RefreshUI()
     {
-        var hasRecords = _script.Records.Count > 0;
+        var hasRecords = _steps.Count > 0;
         BtnClearRecord.IsEnabled = hasRecords;
         BtnPlayAll.IsEnabled = hasRecords && !_isRecording;
-        BtnStep.IsEnabled = hasRecords && !_isRecording;
+        BtnPlayAll.Content = _playRunner is not null ? "■ 停止回放" : "▶ 全部回放";
+        BtnStep.IsEnabled = hasRecords && !_isRecording && _playRunner is null;
         BtnExport.IsEnabled = hasRecords;
-
-        // ★ 录制中禁用模式切换（RadioButton），防止录制过程中切换模式导致状态混乱
-        RbModeManual.IsEnabled = !_isRecording;
-        RbModeAuto.IsEnabled = !_isRecording;
+        BtnCreateTask.IsEnabled = hasRecords;
+        BtnSaveTask.IsEnabled = _currentTask is not null;
+        // ★ 录制中允许切换模式（RbMode 事件处理热切换），不再禁用 RadioButton
     }
 
-    private void RefreshList()
+    // ==== 步骤树（TreeView 绑定 + 右键编辑） ====
+
+    /// <summary>步骤树行 ViewModel（绑定 DisplayText/Detail/DisabledMark/Children）。</summary>
+    public sealed class StepVm
     {
-        // ★ 扁平化匿名类型：将 ActionRecord 属性展开到根级别，匹配 XAML Binding 路径
-        // 旧代码：new { Id, r } → Binding="{Binding r.Timestamp}" 无法解析（WPF 不支持子属性路径对匿名类型的反射）
-        DgRecords.ItemsSource = _script.Records.Select((r, i) => new
-        {
-            Id = i + 1,
-            r.Timestamp,
-            r.ElementPath,
-            r.ElementName,
-            r.PatternName,
-            r.MethodName,
-            r.DisplayText,
-            Record = r // 保留完整引用供 SelectionChanged 使用
-        }).ToList();
+        public required StepNode Node { get; init; }
+        public List<StepVm> Children { get; init; } = new();
+        public string DisplayText => Node.DisplayText;
+        public string Detail => Node.DetailText;
+        public string DisabledMark => Node.IsEnabled ? "Collapsed" : "Visible";
+        public StepVm? Parent { get; init; }
     }
 
-    private void DgRecords_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    private void RefreshTree()
     {
-        if (DgRecords.SelectedItem is not null)
+        TvSteps.ItemsSource = BuildVmList(_steps, null);
+    }
+
+    private static List<StepVm> BuildVmList(List<StepNode> nodes, StepVm? parent)
+    {
+        var list = new List<StepVm>();
+        foreach (var n in nodes)
+            list.Add(new StepVm { Node = n, Parent = parent, Children = BuildVmList(n.Children, null) });
+        return list;
+    }
+
+    private void TvSteps_SelectedItemChanged(object sender, RoutedPropertyChangedEventArgs<object> e)
+    {
+        _selectedVm = e.NewValue as StepVm;
+        if (_selectedVm is not null)
         {
-            dynamic? item = DgRecords.SelectedItem;
-            // ★ 适配新的扁平化数据结构（Record 属性保存完整 ActionRecord 引用）
-            if (item?.Record is ActionRecord rec)
-                TxtStatus.Text = $"[{rec.PatternName}.{rec.MethodName}] 路径={rec.ElementPath} 参数={rec.Parameters?.Length ?? 0}个";
+            var n = _selectedVm.Node;
+            TxtStatus.Text = n.Kind == StepKinds.Action && n.Action is not null
+                ? $"[{n.Action.PatternName}.{n.Action.MethodName}] 路径={n.Action.ElementPath}"
+                : $"{n.DisplayText} {n.DetailText}";
         }
+    }
+
+    private void TvSteps_MouseRightButtonUp(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        // TreeView 右键默认不改变选中：保持 _selectedVm（未选中时操作目标=根级末尾）
+    }
+
+    private void SelectVmByNode(StepNode node) { /* 选中展开由 RefreshTree 后 ItemsSource 重建，保持简单 */ }
+
+    // ---- 右键菜单：插入控制节点（选中节点之后；选中容器→插入其内部末尾） ----
+
+    private (List<StepNode> List, int Index) ResolveInsertPosition()
+    {
+        if (_selectedVm is null || _selectedVm.Node.Kind is StepKinds.Loop or StepKinds.Trigger)
+        {
+            // 未选中/选中容器：容器→内部末尾；未选中→根级末尾（录制中新动作会续在其后）
+            if (_selectedVm is not null)
+            {
+                return (_selectedVm.Node.Children, _selectedVm.Node.Children.Count);
+            }
+            return (_steps, _steps.Count);
+        }
+        // 普通节点：其父列表中它之后
+        var parentList = FindParentList(_selectedVm.Node, _steps, out var idx);
+        return parentList is not null ? (parentList, idx + 1) : (_steps, _steps.Count);
+    }
+
+    private static List<StepNode>? FindParentList(StepNode node, List<StepNode> list, out int index)
+    {
+        for (int i = 0; i < list.Count; i++)
+        {
+            if (ReferenceEquals(list[i], node)) { index = i; return list; }
+            var sub = FindParentList(node, list[i].Children, out index);
+            if (sub is not null) return sub;
+        }
+        index = -1;
+        return null;
+    }
+
+    private void InsertNode(string kind)
+    {
+        var (list, index) = ResolveInsertPosition();
+        var node = new StepNode { Kind = kind };
+        if (kind == StepKinds.Timer)
+            node.TriggerAt = DateTime.Now.AddHours(1); // 默认 1 小时后
+        list.Insert(index, node);
+
+        // 新控制节点立即弹编辑（触发器必须配置元素；循环/延时/定时可改默认值）
+        if (EditNodeDialog(node))
+        {
+            RefreshTree();
+            RefreshUI();
+            TxtStatus.Text = $"已插入 {node.DisplayText}（共 {_steps.Count} 个顶层步骤）";
+        }
+        else
+        {
+            list.RemoveAt(index); // 取消编辑=放弃插入
+        }
+    }
+
+    private bool EditNodeDialog(StepNode node)
+    {
+        var candidates = CollectElementCandidates(_steps);
+        var dlg = new StepEditDialog(node, candidates) { Owner = Window.GetWindow(this) };
+        return dlg.ShowDialog() == true;
+    }
+
+    /// <summary>收集树内全部动作步骤的元素（触发器配置下拉候选）。</summary>
+    private static List<(string, string)> CollectElementCandidates(IEnumerable<StepNode> nodes)
+    {
+        var result = new List<(string, string)>();
+        foreach (var n in nodes)
+        {
+            if (n.Kind == StepKinds.Action && n.Action is not null && !string.IsNullOrEmpty(n.Action.ElementPath))
+                result.Add((n.Action.ElementName, n.Action.ElementPath));
+            result.AddRange(CollectElementCandidates(n.Children));
+        }
+        return result;
+    }
+
+    private void MenuInsertLoop_Click(object sender, RoutedEventArgs e) => InsertNode(StepKinds.Loop);
+    private void MenuInsertDelay_Click(object sender, RoutedEventArgs e) => InsertNode(StepKinds.Delay);
+    private void MenuInsertTimer_Click(object sender, RoutedEventArgs e) => InsertNode(StepKinds.Timer);
+    private void MenuInsertTrigger_Click(object sender, RoutedEventArgs e) => InsertNode(StepKinds.Trigger);
+
+    private void MenuEditStep_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selectedVm is null) return;
+        var node = _selectedVm.Node;
+        if (node.Kind == StepKinds.Action) { TxtStatus.Text = "动作步骤由录制产生，无编辑项"; return; }
+        if (EditNodeDialog(node)) { RefreshTree(); TxtStatus.Text = $"已更新 {node.DisplayText}"; }
+    }
+
+    private void MenuDeleteStep_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selectedVm is null) return;
+        var list = FindParentList(_selectedVm.Node, _steps, out var idx);
+        if (list is null) return;
+        var desc = _selectedVm.Node.DisplayText;
+        list.RemoveAt(idx);
+        _selectedVm = null;
+        RefreshTree();
+        RefreshUI();
+        TxtStatus.Text = $"已删除 {desc}";
+    }
+
+    private void MenuMoveUp_Click(object sender, RoutedEventArgs e) => MoveSelected(-1);
+    private void MenuMoveDown_Click(object sender, RoutedEventArgs e) => MoveSelected(1);
+
+    private void MoveSelected(int delta)
+    {
+        if (_selectedVm is null) return;
+        var list = FindParentList(_selectedVm.Node, _steps, out var idx);
+        if (list is null) return;
+        var target = idx + delta;
+        if (target < 0 || target >= list.Count) return;
+        (list[idx], list[target]) = (list[target], list[idx]);
+        RefreshTree();
+    }
+
+    /// <summary>把选中步骤移入其上方最近的循环/触发器容器（跨层级组织步骤的轻量方式）。</summary>
+    private void MenuMoveIntoContainer_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selectedVm is null) return;
+        var list = FindParentList(_selectedVm.Node, _steps, out var idx);
+        if (list is null) return;
+        // 向上找最近的容器节点
+        for (int i = idx - 1; i >= 0; i--)
+        {
+            if (list[i].Kind is StepKinds.Loop or StepKinds.Trigger)
+            {
+                var node = list[idx];
+                list.RemoveAt(idx);
+                list[i].Children.Add(node);
+                RefreshTree();
+                TxtStatus.Text = $"已移入 {list[i].DisplayText}";
+                return;
+            }
+        }
+        TxtStatus.Text = "上方没有循环/触发器容器";
+    }
+
+    private void MenuToggleEnabled_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selectedVm is null) return;
+        _selectedVm.Node.IsEnabled = !_selectedVm.Node.IsEnabled;
+        RefreshTree();
+        TxtStatus.Text = _selectedVm.Node.IsEnabled
+            ? $"已启用 {_selectedVm.Node.DisplayText}"
+            : $"已禁用（⏸）{_selectedVm.Node.DisplayText} — 回放时跳过";
+    }
+}
+
+/// <summary>简易文本输入弹窗（任务命名等；代码构造，无需 XAML）。</summary>
+public static class PromptDialog
+{
+    public static string? Show(string title, string label, string defaultValue = "")
+    {
+        var input = new TextBox { Text = defaultValue, Padding = new Thickness(4) };
+        string? result = null;
+        var win = new Window
+        {
+            Title = title,
+            Width = 380,
+            SizeToContent = SizeToContent.Height,
+            WindowStartupLocation = WindowStartupLocation.CenterScreen,
+            ResizeMode = ResizeMode.NoResize,
+            WindowStyle = WindowStyle.ToolWindow,
+            ShowInTaskbar = false,
+            Content = new StackPanel { Margin = new Thickness(12), Children =
+            {
+                new TextBlock { Text = label, FontWeight = FontWeights.Bold, Margin = new Thickness(0, 0, 0, 6) },
+                input,
+                new StackPanel
+                {
+                    Orientation = Orientation.Horizontal,
+                    HorizontalAlignment = HorizontalAlignment.Right,
+                    Margin = new Thickness(0, 10, 0, 0),
+                    Children =
+                    {
+                        new System.Windows.Controls.Button { Content = "确定", Width = 70, Padding = new Thickness(0, 4, 0, 4), IsDefault = true },
+                        new System.Windows.Controls.Button { Content = "取消", Width = 70, Padding = new Thickness(0, 4, 0, 4), Margin = new Thickness(8, 0, 0, 0), IsCancel = true },
+                    },
+                },
+            }},
+        };
+        // 简易事件接线（代码构造按钮无 Click 处理器）：Enter=确定 Esc=取消 + 按钮行为
+        var okBtn = ((StackPanel)win.Content).Children.OfType<StackPanel>().First()
+            .Children.OfType<System.Windows.Controls.Button>().First(b => b.Content is "确定");
+        var cancelBtn = ((StackPanel)win.Content).Children.OfType<StackPanel>().First()
+            .Children.OfType<System.Windows.Controls.Button>().First(b => b.Content is "取消");
+        okBtn.Click += (_, _) => { result = input.Text; win.Close(); };
+        cancelBtn.Click += (_, _) => win.Close();
+        win.ShowDialog();
+        return result;
     }
 }

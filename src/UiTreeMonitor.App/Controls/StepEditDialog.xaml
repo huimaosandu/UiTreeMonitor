@@ -1,0 +1,99 @@
+<Window x:Class="UiTreeMonitor.App.Controls.StepEditDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="编辑步骤" Width="520" SizeToContent="Height"
+        WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
+        WindowStyle="ToolWindow" ShowInTaskbar="False">
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" x:Name="TxtTitle" FontWeight="Bold" FontSize="13" Margin="0,0,0,10"/>
+
+        <StackPanel Grid.Row="1" x:Name="PnlLoop" Visibility="Collapsed" Margin="0,0,0,6">
+            <TextBlock Text="循环次数：" FontWeight="Bold"/>
+            <TextBox x:Name="TxtLoopCount" Text="2" Margin="0,2,0,8" Padding="2"/>
+            <TextBlock Text="每轮间隔（毫秒，0=不间隔）：" FontWeight="Bold"/>
+            <TextBox x:Name="TxtLoopInterval" Text="500" Margin="0,2,0,4" Padding="2"/>
+        </StackPanel>
+
+        <StackPanel Grid.Row="1" x:Name="PnlDelay" Visibility="Collapsed" Margin="0,0,0,6">
+            <TextBlock Text="延时时长（毫秒）：" FontWeight="Bold"/>
+            <TextBox x:Name="TxtDelayMs" Text="1000" Margin="0,2,0,4" Padding="2"/>
+        </StackPanel>
+
+        <StackPanel Grid.Row="1" x:Name="PnlTimer" Visibility="Collapsed" Margin="0,0,0,6">
+            <TextBlock Text="触发时刻（年-月-日 时:分:秒，已过则立即继续）：" FontWeight="Bold"/>
+            <TextBox x:Name="TxtTriggerAt" Margin="0,2,0,4" Padding="2"/>
+        </StackPanel>
+
+        <Grid Grid.Row="1" x:Name="PnlTrigger" Visibility="Collapsed" Margin="0,0,0,6">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <TextBlock Grid.Row="0" Grid.Column="0" Text="目标元素：" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,6,6"/>
+            <ComboBox Grid.Row="0" Grid.Column="1" x:Name="CboElement" Margin="0,0,4,6"
+                      ToolTip="从脚本已录制步骤的元素中选择，或用点选捕获"/>
+            <Button Grid.Row="0" Grid.Column="2" x:Name="BtnPick" Content="🎯 点选元素" Padding="6,2"
+                    Margin="0,0,0,6" Click="BtnPick_Click"
+                    ToolTip="点击后 3 秒内把鼠标移到目标元素上（悬停高亮框处），自动捕获其定位信息"/>
+
+            <TextBlock Grid.Row="1" Grid.Column="0" Text="监控属性：" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,6,6"/>
+            <ComboBox Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" x:Name="CboProperty" Margin="0,0,0,6">
+                <ComboBoxItem Content="Value（ValuePattern 值）" IsSelected="True"/>
+                <ComboBoxItem Content="Name（元素名称）"/>
+                <ComboBoxItem Content="RangeValue（数值）"/>
+                <ComboBoxItem Content="ToggleState（开关状态）"/>
+                <ComboBoxItem Content="ExpandCollapseState（展开状态）"/>
+                <ComboBoxItem Content="IsEnabled（是否启用）"/>
+            </ComboBox>
+
+            <TextBlock Grid.Row="2" Grid.Column="0" Text="触发条件：" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,6,6"/>
+            <ComboBox Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="2" x:Name="CboCondition" Margin="0,0,0,6">
+                <ComboBoxItem Content="等于" IsSelected="True"/>
+                <ComboBoxItem Content="不等于"/>
+                <ComboBoxItem Content="包含"/>
+                <ComboBoxItem Content="发生变化"/>
+                <ComboBoxItem Content="大于（数值比较）"/>
+                <ComboBoxItem Content="小于（数值比较）"/>
+            </ComboBox>
+
+            <TextBlock Grid.Row="3" Grid.Column="0" Text="期望值：" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,6,6"/>
+            <TextBox Grid.Row="3" Grid.Column="1" x:Name="TxtExpected" Margin="0,0,4,6" Padding="2"
+                     ToolTip="条件为'发生变化'时可留空"/>
+            <Button Grid.Row="3" Grid.Column="2" x:Name="BtnReadCurrent" Content="读取当前值" Padding="6,2"
+                    Margin="0,0,0,6" Click="BtnReadCurrent_Click" ToolTip="按当前元素定位读取一次监控属性值"/>
+
+            <TextBlock Grid.Row="4" Grid.Column="0" Text="超时（秒）：" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,6,6"/>
+            <TextBox Grid.Row="4" Grid.Column="1" x:Name="TxtTimeout" Text="60" Margin="0,0,4,6" Padding="2"
+                     ToolTip="0=无限等待；超时该步骤失败并中止任务"/>
+
+            <TextBlock Grid.Row="5" Grid.Column="0" Grid.ColumnSpan="3" x:Name="TxtTriggerHint"
+                       Foreground="#666666" FontSize="11" TextWrapping="Wrap"
+                       Text="执行语义：运行到此步时轮询监控属性，条件满足后执行其子步骤（无子步骤=纯等待点）；可嵌套循环。"/>
+        </Grid>
+
+        <TextBlock Grid.Row="2" x:Name="TxtError" Foreground="Red" FontSize="11" Margin="0,2,0,4" TextWrapping="Wrap"/>
+
+        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,8,0,0">
+            <Button Content="确定" Width="70" Padding="0,4" Click="BtnOk_Click"/>
+            <Button Content="取消" Width="70" Padding="0,4" Margin="8,0,0,0" IsCancel="True"/>
+        </StackPanel>
+    </Grid>
+</Window>

@@ -696,3 +696,146 @@ public class AppLogTests : IDisposable
         Assert.Contains("while locked", File.ReadAllText(alt));
     }
 }
+
+/// <summary>录制任务模型：树形步骤 JSON 持久化 round-trip 与列表展示文本。</summary>
+public class RecordingTaskTests
+{
+    [Fact]
+    public void ToFromJson_NestedTree_PreservesAllFields()
+    {
+        // 嵌套结构：loop 内含 delay+trigger，trigger 又带子步骤（多层嵌套的最小全类型覆盖）
+        var task = new RecordingTask
+        {
+            Name = "冒烟任务",
+            Mode = "uia",
+            Steps =
+            {
+                new StepNode
+                {
+                    Kind = StepKinds.Action,
+                    Action = new ActionRecord
+                    {
+                        Timestamp = new DateTime(2026, 11, 4, 12, 0, 0),
+                        ElementPath = "spec:v1|test",
+                        ElementName = "开始按钮",
+                        PatternName = "InvokePattern",
+                        MethodName = "Invoke",
+                        Parameters = new object?[] { "参数1" },
+                        Success = true,
+                        Result = "OK",
+                    },
+                },
+                new StepNode { Kind = StepKinds.Delay, DelayMs = 2500, IsEnabled = false },
+                new StepNode { Kind = StepKinds.Timer, TriggerAt = new DateTime(2026, 12, 25, 8, 30, 0) },
+                new StepNode
+                {
+                    Kind = StepKinds.Loop,
+                    LoopCount = 5,
+                    LoopIntervalMs = 200,
+                    Children =
+                    {
+                        new StepNode { Kind = StepKinds.Delay, DelayMs = 300 },
+                        new StepNode
+                        {
+                            Kind = StepKinds.Trigger,
+                            Trigger = new ElementTriggerSpec
+                            {
+                                ElementSpec = "coord:v1|100,200",
+                                ElementName = "温度显示",
+                                Property = "Value",
+                                Condition = "Greater",
+                                ExpectedValue = "100",
+                                TimeoutSec = 30,
+                                PollIntervalMs = 500,
+                            },
+                            Children = { new StepNode { Kind = StepKinds.Delay, DelayMs = 50 } },
+                        },
+                    },
+                },
+            },
+        };
+
+        var back = RecordingTask.FromJson(task.ToJson());
+
+        Assert.NotNull(back);
+        Assert.Equal(task.Id, back!.Id);                       // Guid 往返保持
+        Assert.Equal("冒烟任务", back.Name);
+        Assert.Equal("uia", back.Mode);
+        Assert.Equal(4, back.Steps.Count);
+
+        // action：全部字段（Parameters 往返后元素为 JsonElement，仅验证结构）
+        var action = back.Steps[0];
+        Assert.True(action.IsEnabled);
+        Assert.NotNull(action.Action);
+        Assert.Equal(new DateTime(2026, 11, 4, 12, 0, 0), action.Action!.Timestamp);
+        Assert.Equal("spec:v1|test", action.Action.ElementPath);
+        Assert.Equal("开始按钮", action.Action.ElementName);
+        Assert.Equal("InvokePattern", action.Action.PatternName);
+        Assert.Equal("Invoke", action.Action.MethodName);
+        Assert.True(action.Action.Success);
+        Assert.Equal("OK", action.Action.Result);
+        Assert.Single(action.Action.Parameters!);
+
+        // delay：字段 + 禁用标记
+        var delay = back.Steps[1];
+        Assert.Equal(StepKinds.Delay, delay.Kind);
+        Assert.False(delay.IsEnabled);
+        Assert.Equal(2500, delay.DelayMs);
+
+        // timer：触发时刻
+        Assert.Equal(new DateTime(2026, 12, 25, 8, 30, 0), back.Steps[2].TriggerAt);
+
+        // loop：参数与两层嵌套
+        var loop = back.Steps[3];
+        Assert.Equal(StepKinds.Loop, loop.Kind);
+        Assert.Equal(5, loop.LoopCount);
+        Assert.Equal(200, loop.LoopIntervalMs);
+        Assert.Equal(2, loop.Children.Count);
+        Assert.Equal(300, loop.Children[0].DelayMs);
+
+        // trigger：完整触发器配置 + 子步骤
+        var trig = loop.Children[1];
+        Assert.Equal(StepKinds.Trigger, trig.Kind);
+        Assert.NotNull(trig.Trigger);
+        Assert.Equal("coord:v1|100,200", trig.Trigger!.ElementSpec);
+        Assert.Equal("温度显示", trig.Trigger.ElementName);
+        Assert.Equal("Value", trig.Trigger.Property);
+        Assert.Equal("Greater", trig.Trigger.Condition);
+        Assert.Equal("100", trig.Trigger.ExpectedValue);
+        Assert.Equal(30, trig.Trigger.TimeoutSec);
+        Assert.Equal(500, trig.Trigger.PollIntervalMs);
+        Assert.Single(trig.Children);
+        Assert.Equal(50, trig.Children[0].DelayMs);
+    }
+
+    [Fact]
+    public void FromJson_Invalid_ReturnsNull()
+    {
+        Assert.Null(RecordingTask.FromJson("{ 不是合法 JSON"));
+    }
+
+    [Fact]
+    public void DisplayText_AllKinds_Formatted()
+    {
+        // 循环：无间隔不显示间隔段，有间隔显示毫秒数
+        Assert.Equal("🔁 循环 ×3", new StepNode { Kind = StepKinds.Loop, LoopCount = 3, LoopIntervalMs = 0 }.DisplayText);
+        Assert.Contains("每轮间隔 500ms", new StepNode { Kind = StepKinds.Loop }.DisplayText);
+        Assert.Equal("⏱ 延时 1200ms", new StepNode { Kind = StepKinds.Delay, DelayMs = 1200 }.DisplayText);
+        Assert.Equal("⏰ 定时 2026-11-04 09:05:00",
+            new StepNode { Kind = StepKinds.Timer, TriggerAt = new DateTime(2026, 11, 4, 9, 5, 0) }.DisplayText);
+
+        // 触发器：元素名 + 属性 + 条件 + 期望值；无子步骤 Detail 标注纯等待点
+        var trig = new StepNode
+        {
+            Kind = StepKinds.Trigger,
+            Trigger = new ElementTriggerSpec { ElementName = "温度", Property = "Value", Condition = "Greater", ExpectedValue = "80" },
+        };
+        Assert.Equal("⚗ 触发器：温度 的 Value > 80", trig.DisplayText);
+        Assert.Contains("纯等待点", trig.DetailText);
+
+        // 动作：Pattern.Method 元素名
+        Assert.Equal("InvokePattern.Invoke 按钮",
+            new StepNode { Kind = StepKinds.Action, Action = new ActionRecord { PatternName = "InvokePattern", MethodName = "Invoke", ElementName = "按钮" } }
+            .DisplayText);
+    }
+}
