@@ -4,6 +4,8 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Axe.Windows.Core.Bases;
+using UIAutomationClient;
+using UiTreeMonitor.Core;
 using UiTreeMonitor.Core.Models;
 using UiTreeMonitor.Core.Sampler;
 using UiTreeMonitor.Core.Uia;
@@ -192,7 +194,22 @@ public sealed class ActionReplayer : IDisposable
                 // 点击：一个坐标参数
                 if (coords.Count >= 1 && TryParseCoord(coords[0], out var x, out var y))
                 {
+                    // ★ 左键坐标点击语义化优先（不动光标）：
+                    //   录制时"点击即销毁弹窗"的按钮（OK/确定）抢不到元素只能坐标保底；回放时该弹窗
+                    //   已被前置步骤重新打开，FromPoint(x,y) 命中的正是当年那个按钮 → 直接 InvokePattern.Invoke，
+                    //   光标全程不动。元素无 Invoke/是自己 UI/解析失败 → 原样 SendInput 真点击（忠实回放）。
+                    if (record.MethodName == InputSimulator.LeftClickMethod)
+                    {
+                        var semantic = TrySemanticClick(x, y);
+                        if (semantic is not null)
+                        {
+                            AppLog.Write("ACTION", $"ReplayInput: LeftClick({x},{y}) → semantic Invoke '{semantic}' (cursor untouched)");
+                            return new ActionResult { Success = true, ReturnValue = $"语义 Invoke '{semantic}'（未动光标）" };
+                        }
+                    }
                     InputSimulator.MouseClick(x, y, record.MethodName == InputSimulator.RightClickMethod);
+                    if (record.MethodName == InputSimulator.LeftClickMethod)
+                        AppLog.Write("ACTION", $"ReplayInput: LeftClick({x},{y}) → SendInput real click (no InvokePattern at point)");
                     return new ActionResult { Success = true };
                 }
                 return new ActionResult { Success = false, Error = $"鼠标坐标无效: {string.Join(" | ", coords)}" };
@@ -219,6 +236,32 @@ public sealed class ActionReplayer : IDisposable
         return parts.Length == 2
             && int.TryParse(parts[0].Trim(), out x)
             && int.TryParse(parts[1].Trim(), out y);
+    }
+
+    /// <summary>左键坐标点击的语义化回放：FromPoint 命中元素支持 InvokePattern 且非本软件 UI → 直接 Invoke（光标不动）。
+    /// 返回元素名；不可语义化（无 Pattern/是自己/元素销毁/COM 失败）返回 null，调用方回退 SendInput 真点击。
+    /// COM 直连与 UiaSession 同款（回放线程已验证可用）；patternId=10000 即 UIA_InvokePatternId。</summary>
+    private static string? TrySemanticClick(int x, int y)
+    {
+        try
+        {
+            var uia = (IUIAutomation)new CUIAutomation();
+            var el = uia.ElementFromPoint(new tagPOINT { x = x, y = y });
+            if (el is null) return null;
+            int pid;
+            try { pid = el.CurrentProcessId; }
+            catch { return null; } // 元素销毁中
+            if (pid == Environment.ProcessId) return null; // 点击点是自己 UI → 不语义化，忠实真点击
+            if (el.GetCurrentPattern(10000) is not IUIAutomationInvokePattern invoke) return null; // 无 InvokePattern
+            var name = "";
+            try { name = el.CurrentName ?? ""; } catch { /* 名字读不到不碍事 */ }
+            invoke.Invoke();
+            return name.Length > 0 ? name : $"pid {pid}";
+        }
+        catch
+        {
+            return null; // 任何 COM 失败 → 真点击兜底
+        }
     }
 
     public void Dispose()
