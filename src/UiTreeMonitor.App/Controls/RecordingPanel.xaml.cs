@@ -313,26 +313,27 @@ public partial class RecordingPanel : UserControl
             }
             catch { /* 元素可能已销毁/进程已退出；已读到的部分继续用 */ }
 
+            // ★ 自己 UI 的动作最先拦（点"停止录制"按钮本身也是一次左键点击）——必须在校验丢弃之前：
+            //   若先做 hwnd 校验把 pid 清零，own 过滤失效，自己 UI 的点击会被当成"元素销毁"误录
+            if (pid != 0 && pid == Environment.ProcessId)
+            {
+                AppLog.Write("RECORD", $"Input {input.Kind} on own UI → filtered");
+                return;
+            }
+
             // ★ 竞态校验：点击"确定/关闭弹窗"类按钮时目标窗口被瞬间销毁，晚到的 FromPoint 会落到
             //   其后的窗口（曾把弹窗 OK 的 Invoke 记到主界面无关 Text 上）。钩子线程在 WM_LBUTTONUP
-            //   时刻快照了真实目标顶层窗口句柄（input.Hwnd）——FromPoint 结果的顶层窗口不一致 → 元素不可信，丢弃改坐标保底
+            //   时刻快照了真实目标顶层窗口句柄（input.Hwnd）——FromPoint 结果的顶层窗口不一致 → 元素不可信，丢弃
             if (elem is not null && input.Hwnd != IntPtr.Zero && pid != 0)
             {
                 var topHwnd = TopLevelHwndOf(elem);
                 if (topHwnd != input.Hwnd)
                 {
                     AppLog.Write("RECORD", $"Input {input.Kind}: FromPoint window {topHwnd} ≠ click-time window {input.Hwnd}" +
-                        $" (clicked window vanished, elem='{elemName}' is BEHIND it) → 丢弃元素，坐标保底");
+                        $" (clicked window vanished, elem='{elemName}' is BEHIND it) → 丢弃元素，语义化走 coord 定位");
                     elem = null;
                     pid = 0; elemName = ""; ctrlType = ""; procName = "";
                 }
-            }
-
-            // 自己窗口上的动作不录（点"停止录制"按钮本身也是一次左键点击；元素销毁 pid=0 时不算自己）
-            if (pid != 0 && pid == Environment.ProcessId)
-            {
-                AppLog.Write("RECORD", $"Input {input.Kind} on own UI → filtered");
-                return;
             }
 
             // ★ 模式严格二选一（设置即铁律，不混合）：
@@ -684,8 +685,11 @@ public partial class RecordingPanel : UserControl
 
     private static string? Esc(string? s) => string.IsNullOrEmpty(s) ? "" : Uri.EscapeDataString(s);
 
-    /// <summary>沿控件视图爬到顶层窗口元素并读其 NativeWindowHandle（与钩子快照的 WindowFromPoint 结果同源可比）。
-    /// 读取失败返回 IntPtr.Zero（调用方视为无法校验、不拦截）。</summary>
+    /// <summary>取元素所属顶层窗口句柄：沿控件视图向上，返回第一个非零 NativeWindowHandle。
+    /// ★ 控件视图里最近的窗口句柄祖先就是所属窗口（弹窗内按钮→QDialog 句柄；主窗口按钮→主窗口句柄），
+    ///   与钩子快照的 WindowFromPoint 同源可比。
+    /// ★ 不能"爬到 parent 为 null 才停"——那样会爬过顶层窗口到达桌面根：日志实锤根元素返回伪句柄 65548
+    ///   （恒定非零），与真实窗口句柄永不相等，导致所有正常点击被误判"窗口已销毁"全变 coord 定位。</summary>
     private static IntPtr TopLevelHwndOf(AutomationElement e)
     {
         try
@@ -693,11 +697,17 @@ public partial class RecordingPanel : UserControl
             var cur = e;
             for (int i = 0; i < 16; i++)
             {
+                try
+                {
+                    var h = cur.Current.NativeWindowHandle;
+                    if (h != IntPtr.Zero) return h;
+                }
+                catch { /* 元素销毁中，继续向父级找 */ }
                 var parent = TreeWalker.ControlViewWalker.GetParent(cur);
                 if (parent is null) break;
                 cur = parent;
             }
-            return cur.Current.NativeWindowHandle;
+            return IntPtr.Zero;
         }
         catch { return IntPtr.Zero; }
     }
@@ -825,8 +835,11 @@ public partial class RecordingPanel : UserControl
         try
         {
             using var replayer = new ActionReplayer();
-            // 输入动作记录（Input_Mouse/Input_Keyboard）不需要元素重定位，直接 SendInput 回放
-            var isInput = record.PatternName is InputSimulator.MousePattern or InputSimulator.KeyboardPattern;
+            // 不需要元素重定位的记录：Input 记录（直接 SendInput）、coord:v1 延迟定位（回放时 FromPoint
+            // 语义执行）、UIA 事件记录（不可回放仅提示）——传 spec 会误走"窗口根兜底"解析（误导日志）
+            var isInput = record.PatternName is InputSimulator.MousePattern or InputSimulator.KeyboardPattern
+                || (record.ElementPath?.StartsWith("coord:v1|", StringComparison.Ordinal) ?? false)
+                || record.PatternName.StartsWith("UIA_Event_", StringComparison.OrdinalIgnoreCase);
             var targetElem = isInput ? null
                 : ResolveElement(record.ElementPath)
                   ?? throw new Exception($"元素路径 [{record.ElementPath}] 未找到");
