@@ -711,6 +711,16 @@ public partial class RecordingPanel : UserControl
             switch (input.Kind)
             {
                 case InputActionKind.MouseLeftClick:
+                {
+                    // ★ 窗口级元素点击（标题栏/空白客户区 FromPoint 命中 Window）：Qt 窗口误报 InvokePattern，
+                    //   记录只会成为回放垃圾步骤（日志实锤：点主窗口空白 → Invoke on Window 被回放）→ 不录
+                    if (ctrlType.EndsWith(".Window", StringComparison.Ordinal))
+                    {
+                        var wkey = $"{procName}|{elemName}|click-window";
+                        if (_patternProbeLogged.TryAdd(wkey, 1))
+                            AppLog.Write("RECORD", $"[semantic-probe] click-on-window: elem='{TruncLog(elemName, 40)}' 窗口级点击无控件语义（激活窗口）→ 不记录");
+                        break;
+                    }
                     if (elem.TryGetCurrentPattern(InvokePattern.Pattern, out _))
                     {
                         replacePrevious = false;
@@ -720,6 +730,7 @@ public partial class RecordingPanel : UserControl
                     }
                     LogPatternProbe(elem, elemName, ctrlType, procName, "click-no-invoke");
                     break;
+                }
 
                 case InputActionKind.KeyDown:
                 {
@@ -793,10 +804,13 @@ public partial class RecordingPanel : UserControl
         Result = result,
     };
 
-    /// <summary>文本类虚拟键（会产生字符输入/删除的键）：0-9、A-Z、空格、Back、OEM 标点。
-    /// 回车在 KeyDown 分支单独处理（Value 优先、按钮焦点时 Invoke）；Tab/方向/F 键等无语义不录。</summary>
+    /// <summary>文本类虚拟键（会产生字符输入/删除的键）：主键区 0-9、A-Z、小键盘数字与运算符、空格、Back、OEM 标点。
+    /// 回车在 KeyDown 分支单独处理（Value 优先、按钮焦点时 Invoke）；Tab/方向/F 键等无语义不录。
+    /// ★ 小键盘 VK_NUMPAD0-9(0x60-0x69) 必须算文本键——NumLock 开时产生数字字符，
+    ///   数字输入（QDoubleSpinBox 等）高频走小键盘，漏掉即"键入完全丢失"（日志实锤：captured 计数含键、零 KeyQueue）。</summary>
     private static bool IsTextVk(uint vk) =>
-        vk is >= 0x30 and <= 0x5A    // 0-9、A-Z
+        vk is >= 0x30 and <= 0x5A    // 0-9、A-Z（主键区）
+        or >= 0x60 and <= 0x6F       // 小键盘：NUMPAD0-9(0x60-69)、* + - . / 等运算符(0x6A-6F)
         or 0x20 or 0x08              // Space、Back（删除也改变值，读实时值即最终值）
         or >= 0xBA and <= 0xC0       // OEM 标点 ;=,-./`
         or >= 0xDB and <= 0xDE;      // OEM 标点 [\]'
