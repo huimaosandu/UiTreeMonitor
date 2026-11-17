@@ -476,11 +476,25 @@ public partial class MainWindow : Window
             TxtStatus.Text = "请先选择目标窗口";
             return;
         }
-        CaptureTree(new TargetWindowInfo(w.ProcessId, w.Handle, w.ProcessName, w.Title));
+        CaptureTree(new TargetWindowInfo(w.ProcessId, w.Handle, w.ProcessName, w.Title), force: true);
     }
 
-    private void CaptureTree(TargetWindowInfo target)
+    /// <summary>切回刚看过的应用时直接复用树（UIA 跨进程抓一棵 240 节点的 Chromium 树要 ~2.7s，
+    /// 用户在两三个窗口间来回移动鼠标时不该每次都重抓）。缓存过期或手动刷新时照常重抓。</summary>
+    private readonly Dictionary<int, (TreeSnapshot Snap, DateTime At)> _treeCache = new();
+    private const int TreeCacheMax = 4;
+    private static readonly TimeSpan TreeCacheTtl = TimeSpan.FromSeconds(12);
+
+    private void CaptureTree(TargetWindowInfo target, bool force = false)
     {
+        if (!force && _treeCache.TryGetValue(target.ProcessId, out var cached)
+            && DateTime.Now - cached.At < TreeCacheTtl)
+        {
+            _currentTarget = target;
+            ApplyTree(cached.Snap);
+            return;
+        }
+
         TxtStatus.Text = $"正在抓取 {target.ProcessName} 的结构树…";
         _currentTarget = target;
 
@@ -497,11 +511,24 @@ public partial class MainWindow : Window
                 Dispatcher.Invoke(() => TxtStatus.Text = $"抓取失败: {ex.Message}");
                 return;
             }
-            Dispatcher.Invoke(() => ApplyTree(snap));
+            Dispatcher.Invoke(() =>
+            {
+                if (snap is not null && snap.NodeCount > 0) RememberTree(target.ProcessId, snap);
+                ApplyTree(snap);
+            });
         })
         { IsBackground = true };
         thread.SetApartmentState(System.Threading.ApartmentState.STA);
         thread.Start();
+    }
+
+    /// <summary>记下某进程最近一次树快照（超出上限淘汰最旧）。</summary>
+    private void RememberTree(int processId, TreeSnapshot snap)
+    {
+        _treeCache[processId] = (snap, DateTime.Now);
+        if (_treeCache.Count <= TreeCacheMax) return;
+        var oldest = _treeCache.OrderBy(kv => kv.Value.At).First().Key;
+        _treeCache.Remove(oldest);
     }
 
     private void ApplyTree(TreeSnapshot? snap)
@@ -811,7 +838,7 @@ public partial class MainWindow : Window
             if (!_detailsLocked)
             {
                 _detailsA11yElement = el; // 缓存原始元素（Actions 执行需实时 Pattern 引用）
-                var (props, pats) = TreeNodeViewModel.FromA11yElement(el, result.ProcessName);
+                var (props, pats) = TreeNodeViewModel.FromA11yElement(el, result.ProcessName, result);
                 TxtDetailsTitle.Text = $"[{result.ControlType}] {result.Name ?? ""}";
                 PropertiesGrid.ItemsSource = props;
                 PatternsTree.ItemsSource = pats;
@@ -874,7 +901,7 @@ public partial class MainWindow : Window
         {
             _lastAutoRecaptureAt = now;
             Log($"[HIGHLIGHT] miss → 自动重抓树 (name={result.Name} type={result.ControlType} rid={result.RuntimeId})");
-            CaptureTree(_currentTarget);
+            CaptureTree(_currentTarget, force: true);   // 必须绕过缓存，否则"重抓"只是复用旧树，永远自愈不了
             TxtCaptureStatus.Text = $"{result.ProcessName} — 树已过期，正在重新抓取…";
             return;
         }

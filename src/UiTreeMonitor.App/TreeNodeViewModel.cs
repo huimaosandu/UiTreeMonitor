@@ -7,6 +7,7 @@ using Axe.Windows.Core.Bases;
 using Axe.Windows.Desktop.UIAutomation;
 using UiTreeMonitor.Core.Models;
 using UiTreeMonitor.Core.Sampler;
+using UiTreeMonitor.Core.Targeting;
 using UiTreeMonitor.Core.Uia;
 
 namespace UiTreeMonitor.App;
@@ -133,7 +134,8 @@ public sealed class TreeNodeViewModel : INotifyPropertyChanged
     /// 从 A11yElement 直接构建 Details 数据（用于鼠标捕获场景，无 ElementNode）。
     /// 原版 PatternInfoControl/PatternViewModel 同款方式：el.Patterns → A11yPattern.Properties → NodeValue
     /// </summary>
-    public static (IReadOnlyList<PropertyItem> Properties, IReadOnlyList<PatternItem> Patterns) FromA11yElement(A11yElement el, string? processName)
+    public static (IReadOnlyList<PropertyItem> Properties, IReadOnlyList<PatternItem> Patterns) FromA11yElement(
+        A11yElement el, string? processName, MouseCaptureResult? cap = null)
     {
         // ★ 关键：必须调用此方法从 UIA 获取实时 Pattern 数据填充到 el.Patterns
         // 不调用的话 el.Patterns 永远为 null/空 → Details 面板 Patterns 区域空白
@@ -144,12 +146,13 @@ public sealed class TreeNodeViewModel : INotifyPropertyChanged
         var hasValue = new HashSet<string>();
 
         // === Properties（A11yElement 直接属性）===
+        // 捕获场景直接用捕获结果里已读好的值，避免在 UI 线程上重复 COM 往返（每次 ~4ms）
         var propMap = new (string Name, Func<string?> Getter)[]
         {
-            ("Name", () => el.Name),
-            ("ControlType", () => TreeSampler.ControlTypeName(el.ControlTypeId)),
-            ("AutomationId", () => el.AutomationId),
-            ("ClassName", () => el.ClassName),
+            ("Name", () => cap?.Name ?? TreeSampler.ReadName(el)),
+            ("ControlType", () => cap?.ControlType ?? TreeSampler.ControlTypeName(TreeSampler.ReadControlTypeId(el))),
+            ("AutomationId", () => cap?.AutomationId ?? TreeSampler.ReadAutomationId(el)),
+            ("ClassName", () => cap?.ClassName ?? TreeSampler.ReadClassName(el)),
             ("Framework", () => el.Framework),
             ("ProcessId", () => el.ProcessId.ToString()),
             ("ProcessName", () => processName),

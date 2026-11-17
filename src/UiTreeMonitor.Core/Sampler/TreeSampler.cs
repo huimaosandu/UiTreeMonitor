@@ -31,8 +31,10 @@ public sealed class TreeSampler
     public static string ControlTypeName(int controlTypeId) =>
         ControlTypes.TryGetValue(controlTypeId, out var n) ? n : $"UIA_{controlTypeId}";
 
-    /// <summary>从窗口句柄抓取整棵树（STA 线程内调用）。</summary>
-    public TreeSnapshot CaptureWindow(UiaSession session, TargetWindowInfo target, int maxDepth = 64, int maxNodes = 5000)
+    /// <summary>从窗口句柄抓取整棵树（STA 线程内调用）。
+    /// collectPatterns=false 时跳过 Populate + Pattern 采集：抓树快一倍，用于鼠标捕获跟随
+    /// （Pattern 值只为 Details 快照显示，实时捕获场景已有 A11yElement 可实时查）。</summary>
+    public TreeSnapshot CaptureWindow(UiaSession session, TargetWindowInfo target, int maxDepth = 64, int maxNodes = 5000, bool collectPatterns = true)
     {
         var root = session.GetRootFromHandle(target.Handle);
         if (root is null)
@@ -59,7 +61,7 @@ public sealed class TreeSampler
                 child = session.GetNextSibling(child);
             }
 
-            var node = BuildNode(id, parentId, depth, el);
+            var node = BuildNode(id, parentId, depth, el, collectPatterns);
             nodes[id] = node with { Children = childIds };
             order.Add(id);
             return id;
@@ -69,12 +71,14 @@ public sealed class TreeSampler
         return new TreeSnapshot { RootId = rootId, Nodes = nodes, Order = order, Target = target };
     }
 
-    private static ElementNode BuildNode(int id, int parentId, int depth, A11yElement el)
+    private static ElementNode BuildNode(int id, int parentId, int depth, A11yElement el, bool collectPatterns)
     {
         // ★ 关键：必须调用此方法从 UIA 获取实时 Pattern 数据填充到 el.Patterns
         // 原版在每次操作元素前都会调用（DesktopElementExtensionMethods）
         // 不调用的话 el.Patterns 永远为 null/空 → Details 面板 Patterns 区域空白
-        try { el.PopulateAllPropertiesWithLiveData(); } catch { /* 某些元素可能不支持 */ }
+        // 注意：该方法只影响 Pattern，不影响 Name（Name 见 ReadName，必须走 COM）
+        if (collectPatterns)
+            try { el.PopulateAllPropertiesWithLiveData(); } catch { /* 某些元素可能不支持 */ }
 
         string? rectStr = null;
         try
@@ -91,33 +95,36 @@ public sealed class TreeSampler
         var patternDataList = new List<PatternData>();
         var patternValues = new Dictionary<string, string?>(); // key = "PatternName.PropertyName"（便捷访问）
 
-        try
+        if (collectPatterns)
         {
-            if (el.Patterns is not null)
-                foreach (var p in el.Patterns)
-                {
-                    patternNames.Add(p.Name);
-                    if (p.Properties is not null && p.Properties.Count > 0)
+            try
+            {
+                if (el.Patterns is not null)
+                    foreach (var p in el.Patterns)
                     {
-                        // 有属性值：收集子属性 + 取第一个作为主显示值
-                        var subProps = new List<PatternPropData>();
-                        foreach (var pp in p.Properties)
+                        patternNames.Add(p.Name);
+                        if (p.Properties is not null && p.Properties.Count > 0)
                         {
-                            var nodeVal = pp.NodeValue ?? "(null)";
-                            patternValues[$"{p.Name}.{pp.Name}"] = nodeVal;
-                            subProps.Add(new PatternPropData(pp.Name, nodeVal));
+                            // 有属性值：收集子属性 + 取第一个作为主显示值
+                            var subProps = new List<PatternPropData>();
+                            foreach (var pp in p.Properties)
+                            {
+                                var nodeVal = pp.NodeValue ?? "(null)";
+                                patternValues[$"{p.Name}.{pp.Name}"] = nodeVal;
+                                subProps.Add(new PatternPropData(pp.Name, nodeVal));
+                            }
+                            var mainVal = p.Properties[0].NodeValue ?? "(null)";
+                            patternDataList.Add(new PatternData(p.Name, mainVal, subProps));
                         }
-                        var mainVal = p.Properties[0].NodeValue ?? "(null)";
-                        patternDataList.Add(new PatternData(p.Name, mainVal, subProps));
+                        else
+                        {
+                            patternDataList.Add(new PatternData(p.Name, "(supported, no current value)", Array.Empty<PatternPropData>()));
+                            patternValues[p.Name] = "(no properties)";
+                        }
                     }
-                    else
-                    {
-                        patternDataList.Add(new PatternData(p.Name, "(supported, no current value)", Array.Empty<PatternPropData>()));
-                        patternValues[p.Name] = "(no properties)";
-                    }
-                }
+            }
+            catch { /* Patterns 可能为空或异常 */ }
         }
-        catch { /* Patterns 可能为空或异常 */ }
 
         // 从 patternValues 中提取已知 Pattern 的主属性值（便捷访问，供 GetProperty 使用）
         string? GetVal(string patName, string propName) =>
@@ -128,23 +135,23 @@ public sealed class TreeSampler
             Id = id,
             ParentId = parentId,
             Depth = depth,
-            Name = Safe(el.Name),
+            Name = ReadName(el),
             // ★ 防御：某些 UIA 元素的 int 属性可能因 COM 层返回 null/失败而抛异常
             //   A11yElement.ProcessId / ControlTypeId 是 int 类型，COM 返回无效值时崩溃
             ProcessId = SafeGetInt(() => el.ProcessId),
-            ControlType = ControlTypeName(SafeGetInt(() => el.ControlTypeId, fallback: 50000)), // 默认 "Custom"
-            AutomationId = Safe(el.AutomationId),
-            ClassName = Safe(el.ClassName),
-            Framework = Safe(el.Framework),
+            ControlType = ControlTypeName(ReadControlTypeId(el)),
+            AutomationId = ReadAutomationId(el),
+            ClassName = ReadClassName(el),
+            Framework = ReadStr(el, u => u.CurrentFrameworkId, () => el.Framework),
             IsEnabled = SafeBool(() => el.IsEnabled),
             IsOffScreen = SafeBool(() => el.IsOffScreen),
             Value = GetVal("ValuePattern", "Value"),
             RangeValue = GetVal("RangeValuePattern", "Value"),
             ToggleState = GetVal("TogglePattern", "ToggleState"),
             BoundingRectangle = rectStr,
-            ItemStatus = Safe(el.ItemStatus),
-            HelpText = Safe(el.HelpText),
-            AccessKey = Safe(el.AccessKey),
+            ItemStatus = ReadStr(el, u => u.CurrentItemStatus, () => el.ItemStatus),
+            HelpText = ReadStr(el, u => u.CurrentHelpText, () => el.HelpText),
+            AccessKey = ReadStr(el, u => u.CurrentAccessKey, () => el.AccessKey),
             IsSelected = GetVal("SelectionItemPattern", "IsSelected"),
             ExpandCollapseState = GetVal("ExpandCollapsePattern", "ExpandCollapseState"),
             PatternDataList = patternDataList,
@@ -152,6 +159,44 @@ public sealed class TreeSampler
             RuntimeId = ReadRuntimeId(el),
             Children = Array.Empty<int>(),
         };
+    }
+
+    /// <summary>字符串属性读取：优先 COM 实时值，退回 Axe.Windows 缓存字段。
+    /// 实测（msedge 242 节点）：Axe.Windows 的 el.Name 只有 11% 有值（遍历得到的子元素不填字符串属性），
+    /// 改读 IUIAutomationElement.CurrentName 后升到 79%——结构树的名称必须走 COM。</summary>
+    private static string? ReadStr(A11yElement el, Func<IUIAutomationElement, string?> fromUia, Func<string?> fromAxe)
+    {
+        try
+        {
+            if (el.PlatformObject is IUIAutomationElement u)
+            {
+                var v = fromUia(u);
+                if (!string.IsNullOrEmpty(v)) return v;
+            }
+        }
+        catch { /* COM 读取失败，退回缓存字段 */ }
+        try { return Safe(fromAxe()); } catch { return null; }
+    }
+
+    /// <summary>读元素名称（结构树显示 / 捕获定位都用这一份，保证两侧一致）。</summary>
+    public static string? ReadName(A11yElement el) => ReadStr(el, u => u.CurrentName, () => el.Name);
+
+    /// <summary>读 AutomationId（XAML 的 x:Name 就在这里）。</summary>
+    public static string? ReadAutomationId(A11yElement el) => ReadStr(el, u => u.CurrentAutomationId, () => el.AutomationId);
+
+    /// <summary>读 ClassName。</summary>
+    public static string? ReadClassName(A11yElement el) => ReadStr(el, u => u.CurrentClassName, () => el.ClassName);
+
+    /// <summary>读 ControlTypeId（同样优先 COM 实时值：Axe.Windows 缓存值可能与当前元素不符，
+    /// 会出现"树里显示 Button、实际是 MenuItem"这类错位）。</summary>
+    public static int ReadControlTypeId(A11yElement el)
+    {
+        try
+        {
+            if (el.PlatformObject is IUIAutomationElement u) return (int)u.CurrentControlType;
+        }
+        catch { /* 退回缓存值 */ }
+        try { return el.ControlTypeId; } catch { return 50000; } // 50000 = Custom
     }
 
     /// <summary>读 UIA RuntimeId（"a.b.c"）：同一元素实例内唯一，用于鼠标捕获到树节点的精确命中。

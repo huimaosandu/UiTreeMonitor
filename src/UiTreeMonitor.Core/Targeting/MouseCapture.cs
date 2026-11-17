@@ -119,10 +119,10 @@ public sealed class MouseCapture : IDisposable
                             _lastFingerprint = fp;
                             var r = new MouseCaptureResult(
                                 X: 0, Y: 0,   // SelectAction 不直接暴露光标像素坐标，树定位用矩形/属性
-                                Safe(el.Name),
-                                TreeSampler.ControlTypeName(el.ControlTypeId),
-                                Safe(el.AutomationId),
-                                Safe(el.ClassName),
+                                TreeSampler.ReadName(el),        // ★ 走 COM（el.Name 对 Chromium 元素常为空）
+                                TreeSampler.ControlTypeName(TreeSampler.ReadControlTypeId(el)),
+                                TreeSampler.ReadAutomationId(el),
+                                TreeSampler.ReadClassName(el),
                                 SafeGetInt(() => el.ProcessId),   // ★ 安全读取，COM 可能返回 null
                                 Safe(el.ProcessName),
                                 NormalizeRect(el.BoundingRectangle),
