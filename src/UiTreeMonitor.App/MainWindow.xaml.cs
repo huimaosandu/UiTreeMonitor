@@ -1781,20 +1781,21 @@ public partial class MainWindow : Window
                     case "rid": rid = v; break;
                 }
             }
-            if (_currentTarget is null || _currentTarget.Handle == IntPtr.Zero)
-            {
-                Log("ResolveBySpec: 无目标窗口（先抓取/悬停目标后再回放）");
-                return null;
-            }
-
             // 期望矩形（未移动窗口时的强佐证；移动后失效不惩罚）
             var hasRect = false;
-            int rl = 0, rt = 0;
+            int rl = 0, rt = 0, rr = 0, rb = 0;
             if (rectStr.Length > 0)
             {
                 var p = rectStr.Split(',');
-                if (p.Length == 4 && int.TryParse(p[0], out rl) && int.TryParse(p[1], out rt)) hasRect = true;
+                if (p.Length == 4 && int.TryParse(p[0], out rl) && int.TryParse(p[1], out rt)
+                    && int.TryParse(p[2], out rr) && int.TryParse(p[3], out rb)) hasRect = true;
             }
+
+            // ★ 目标窗口不是回放的硬前提：录制用"随鼠标捕获"（静默捕获）时并不设置目标窗口，
+            //   原来这里直接 return null → 每一步都报「元素未找到」，看着像 spec 坏了，其实是没目标。
+            var hasTarget = _currentTarget is not null && _currentTarget.Handle != IntPtr.Zero;
+            if (!hasTarget)
+                Log("ResolveBySpec: 无目标窗口（录制时用随鼠标捕获，目标未设置）→ 走 spec 兜底定位");
             var query = new Core.Uia.SpecQuery
             {
                 AutomationId = autoId,
@@ -1810,39 +1811,82 @@ public partial class MainWindow : Window
             // ★ 快速定位：raw UIA walker 遍历（只读几个属性），不再走 UiaSession 的
             //   "每节点 new DesktopElement(setMembers:true)≈10ms" —— 229 节点从 2.3s 降到 ~0.2s。
             //   回放每步前都要定位一次，这就是之前"播放慢"的主因。
-            var hit = Core.Uia.SpecResolver.Find(_currentTarget.Handle, query, out var note);
-            if (hit is not null)
+            var note = "";
+            if (hasTarget)
             {
-                Log($"ResolveBySpec: {note} (main hwnd {_currentTarget.Handle}) → 回放目标");
-                return hit;
+                var hit = Core.Uia.SpecResolver.Find(_currentTarget!.Handle, query, out note);
+                if (hit is not null)
+                {
+                    Log($"ResolveBySpec: {note} (main hwnd {_currentTarget.Handle}) → 回放目标");
+                    return hit;
+                }
+
+                // ★ 扩展：目标进程的其他可见顶层窗口（弹窗/工具窗；QDialog 是独立顶层窗口）
+                var targetPid = (uint)_currentTarget.ProcessId;
+                if (targetPid > 0)
+                {
+                    var popups = new List<IntPtr>();
+                    EnumWindows((h, _) =>
+                    {
+                        GetWindowThreadProcessId(h, out var pp);
+                        if (pp == targetPid && h != _currentTarget.Handle && IsWindowVisible(h)) popups.Add(h);
+                        return true;
+                    }, IntPtr.Zero);
+                    foreach (var h in popups)
+                    {
+                        try
+                        {
+                            var popupHit = Core.Uia.SpecResolver.Find(h, query, out var pnote);
+                            if (popupHit is not null)
+                            {
+                                Log($"ResolveBySpec: {pnote} (popup hwnd {h}) → 回放目标");
+                                return popupHit;
+                            }
+                        }
+                        catch { /* 弹窗可能已关闭 */ }
+                    }
+                    if (popups.Count > 0)
+                        Log($"ResolveBySpec: no match in main tree ({note}); tried {popups.Count} sibling top-level window(s) of pid {targetPid}");
+                }
             }
 
-            // ★ 扩展：目标进程的其他可见顶层窗口（弹窗/工具窗；QDialog 是独立顶层窗口）
-            var targetPid = (uint)_currentTarget.ProcessId;
-            if (targetPid > 0)
+            // ★ 兜底一：用 spec 的矩形中心点反查窗口。按钮在屏幕上的位置通常不变，
+            //   WindowFromPoint 一次 P/Invoke 就能给出它当前所在的窗口句柄（UWP 会先给子窗口，
+            //   再拿 GA_ROOT 顶层窗口各试一次），不必依赖"目标窗口"是否被设置。
+            if (hasRect && rr > rl && rb > rt)
             {
-                var popups = new List<IntPtr>();
-                EnumWindows((h, _) =>
+                var cx = (rl + rr) / 2;
+                var cy = (rt + rb) / 2;
+                var seed = WindowFromPoint(cx, cy);
+                foreach (var h in new[] { seed, RootOf(seed) })
                 {
-                    GetWindowThreadProcessId(h, out var p);
-                    if (p == targetPid && h != _currentTarget.Handle && IsWindowVisible(h)) popups.Add(h);
-                    return true;
-                }, IntPtr.Zero);
-                foreach (var h in popups)
-                {
+                    if (h == IntPtr.Zero) continue;
                     try
                     {
-                        var popupHit = Core.Uia.SpecResolver.Find(h, query, out var pnote);
-                        if (popupHit is not null)
+                        var pointHit = Core.Uia.SpecResolver.Find(h, query, out var hnote);
+                        if (pointHit is not null)
                         {
-                            Log($"ResolveBySpec: {pnote} (popup hwnd {h}) → 回放目标");
-                            return popupHit;
+                            Log($"ResolveBySpec: 兜底命中（rect 中心 ({cx},{cy}) → hwnd {h}）{hnote} → 回放目标");
+                            return pointHit;
                         }
                     }
-                    catch { /* 弹窗可能已关闭 */ }
+                    catch { /* 窗口已关闭 */ }
                 }
-                if (popups.Count > 0)
-                    Log($"ResolveBySpec: no match in main tree ({note}); tried {popups.Count} sibling top-level window(s) of pid {targetPid}");
+                Log($"ResolveBySpec: 兜底（rect 中心 ({cx},{cy}) → hwnd {seed}/{RootOf(seed)}）未命中");
+            }
+
+            // ★ 兜底二：autoId 是跨进程重启也稳定的锚（num5Button 这类），直接全桌面找一次。
+            //   UWP 应用重开后 hwnd/pid/runtimeId 全变、窗口也可能被移动，只有 autoId 还能认。
+            //   走 Core 的 raw UIA 全局查询（回放跑在后台 MTA 线程，WPF 的 AutomationElement 要 STA，不能用）。
+            if (autoId.Length > 0)
+            {
+                var globalHit = Core.Uia.SpecResolver.FindGlobalByAutomationId(autoId, out var gnote);
+                if (globalHit is not null)
+                {
+                    Log($"ResolveBySpec: 兜底命中（{gnote}）→ 回放目标");
+                    return globalHit;
+                }
+                Log($"ResolveBySpec: 兜底全桌面搜索失败（{gnote}）");
             }
 
             Log($"ResolveBySpec: no match (spec autoId='{autoId}' name='{name}' type='{type}', {note})");
@@ -1859,6 +1903,23 @@ public partial class MainWindow : Window
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
     [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hwnd);
     private delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr lp);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct Win32Point { public int X; public int Y; }
+    [DllImport("user32.dll", EntryPoint = "WindowFromPoint")]
+    private static extern IntPtr WindowFromPointNative(Win32Point p);
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetAncestor(IntPtr hwnd, uint flags);
+    private const uint GA_ROOT = 2;
+
+    private static IntPtr WindowFromPoint(int x, int y) =>
+        WindowFromPointNative(new Win32Point { X = x, Y = y });
+
+    private static IntPtr RootOf(IntPtr hwnd)
+    {
+        try { return hwnd == IntPtr.Zero ? IntPtr.Zero : GetAncestor(hwnd, GA_ROOT); }
+        catch { return IntPtr.Zero; }
+    }
 
     /// <summary>初始化 UIA 桌面元素上下文（ListenAction 的前置条件）。</summary>
     /// <remarks>

@@ -128,4 +128,34 @@ public static class SpecResolver
         try { return new Axe.Windows.Desktop.UIAutomation.DesktopElement(el, keepElement: true, setMembers: true); }
         catch { return null; }
     }
+
+    /// <summary>全桌面按 AutomationId 精确找元素（跨进程重启、窗口移动都不受影响）。
+    /// UIA 内部按 provider 分发查询，不逐节点 walk，比逐窗口遍历快得多。
+    /// ★ App 项目不能 new CUIAutomation（EmbedInteropTypes 限制），所以这个能力必须放在 Core。
+    /// ★ 回放跑在后台 MTA 线程，不能用 WPF 的 AutomationElement（它要求 STA）——这里走 raw COM。</summary>
+    public static A11yElement? FindGlobalByAutomationId(string autoId, out string detail)
+    {
+        detail = "";
+        if (string.IsNullOrEmpty(autoId)) return null;
+        IUIAutomation? uia;
+        try { uia = (IUIAutomation)new CUIAutomation(); }
+        catch (Exception ex) { detail = $"CUIAutomation init failed: {ex.GetType().Name}"; return null; }
+        try
+        {
+            // 30011 = UIA_AutomationIdPropertyId（不能引用静态常量类 UIA_PropertyIds，只能写字面量）
+            var cond = uia.CreatePropertyCondition(30011, autoId);
+            var root = uia.GetRootElement();
+            // 7 = Subtree（Element 1 | Children 2 | Descendants 4），与录制监听的 scope 一致
+            var hit = root.FindFirst((TreeScope)7, cond);
+            if (hit is null) { detail = $"global autoId '{autoId}' not found"; return null; }
+            var wrapped = Wrap(hit);
+            detail = wrapped is null ? $"global hit for '{autoId}' but wrap failed" : $"hit by global autoId '{autoId}'";
+            return wrapped;
+        }
+        catch (Exception ex)
+        {
+            detail = $"global search {ex.GetType().Name}: {ex.Message}";
+            return null;
+        }
+    }
 }
