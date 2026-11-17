@@ -1704,93 +1704,37 @@ public partial class MainWindow : Window
                 Log("ResolveBySpec: 无目标窗口（先抓取/悬停目标后再回放）");
                 return null;
             }
-    
-            using var session = Core.Uia.UiaSession.Create();
-            var root = session.GetRootFromHandle(_currentTarget.Handle);
-            if (root is null) return null;
-    
+
             // 期望矩形（未移动窗口时的强佐证；移动后失效不惩罚）
-            int[]? rect = null;
+            var hasRect = false;
+            int rl = 0, rt = 0;
             if (rectStr.Length > 0)
             {
                 var p = rectStr.Split(',');
-                if (p.Length == 4 && int.TryParse(p[0], out var l) && int.TryParse(p[1], out var t))
-                    rect = new[] { l, t };
+                if (p.Length == 4 && int.TryParse(p[0], out rl) && int.TryParse(p[1], out rt)) hasRect = true;
             }
-    
-            const int threshold = 40;
-    
-            // 在指定根元素的子树内评分查找（主窗口与弹窗窗口共用同一套评分）
-            A11yElement? FindInRoot(A11yElement rootEl, string rootTag)
+            var query = new Core.Uia.SpecQuery
             {
-                var best = (Score: 0, El: null as A11yElement);
-                const int maxNodes = 3000;
-                var visited = 0;
-    
-                var stack = new Stack<A11yElement>();
-                stack.Push(rootEl);
-                while (stack.Count > 0 && visited < maxNodes)
-                {
-                    var el = stack.Pop();
-                    visited++;
-                    int score = 0;
-                    try
-                    {
-                        // ★ RuntimeId 在同一元素实例内唯一：命中即直接返回，不受 Name/AutomationId 变化影响
-                        if (rid.Length > 0 && Core.Sampler.TreeSampler.ReadRuntimeId(el) == rid)
-                        {
-                            Log($"ResolveBySpec: hit by runtimeId={rid} (visited={visited}, {rootTag}) → 回放目标");
-                            return el;
-                        }
+                AutomationId = autoId,
+                Name = name,
+                ControlType = type,
+                ClassName = cls,
+                RuntimeId = rid,
+                HasRect = hasRect,
+                RectLeft = rl,
+                RectTop = rt,
+            };
 
-                        // ★ 缓存优先、缺了才直读：Axe 缓存字段对 Chromium 元素常为空，只用缓存会 score=0
-                        //   → no match；但每个节点都做 4 次 COM 直读又会把 3000 节点遍历拖慢，
-                        //   所以只在缓存缺失时补读（补齐后再评分）。
-                        string elAutoId = el.AutomationId ?? "",
-                               elName = el.Name ?? "",
-                               elClass = el.ClassName ?? "";
-                        var elCt = el.ControlTypeId;
-                        if (elAutoId.Length == 0) elAutoId = Core.Sampler.TreeSampler.ReadAutomationId(el) ?? "";
-                        if (elName.Length == 0) elName = Core.Sampler.TreeSampler.ReadName(el) ?? "";
-                        if (elClass.Length == 0) elClass = Core.Sampler.TreeSampler.ReadClassName(el) ?? "";
-                        var elType = Core.Sampler.TreeSampler.ControlTypeName(elCt);
-                        if (autoId.Length > 0 && elAutoId == autoId) score += 50;
-                        if (type.Length > 0 && elType == type) score += 20;
-                        if (name.Length > 0 && elName == name) score += 20;
-                        else if (name.Length > 0 && elName.Length > 0) score -= 10; // 名字不同仅轻惩罚（动态名元素）
-                        if (cls.Length > 0 && elClass == cls) score += 5;
-                        if (rect is not null && el.BoundingRectangle is { Width: > 0 } r
-                            && Math.Abs(r.Left - rect[0]) <= 40 && Math.Abs(r.Top - rect[1]) <= 40)
-                            score += 15;
-    
-                        if (score > best.Score) best = (score, el);
-                        if (score >= 50 + 20 + 20) break; // 满分提前结束
-                    }
-                    catch { /* 元素已销毁，跳过 */ }
-    
-                    try
-                    {
-                        var child = session.GetFirstChild(el);
-                        while (child is not null)
-                        {
-                            stack.Push(child);
-                            child = session.GetNextSibling(child);
-                        }
-                    }
-                    catch { /* 子树遍历失败 */ }
-                }
-    
-                if (best.El is not null && best.Score >= threshold)
-                {
-                    Log($"ResolveBySpec: hit score={best.Score} (visited={visited}, {rootTag}) elem='{Core.Sampler.TreeSampler.ReadName(best.El)}' → 回放目标");
-                    return best.El;
-                }
-                return null;
+            // ★ 快速定位：raw UIA walker 遍历（只读几个属性），不再走 UiaSession 的
+            //   "每节点 new DesktopElement(setMembers:true)≈10ms" —— 229 节点从 2.3s 降到 ~0.2s。
+            //   回放每步前都要定位一次，这就是之前"播放慢"的主因。
+            var hit = Core.Uia.SpecResolver.Find(_currentTarget.Handle, query, out var note);
+            if (hit is not null)
+            {
+                Log($"ResolveBySpec: {note} (main hwnd {_currentTarget.Handle}) → 回放目标");
+                return hit;
             }
-    
-            var hit = FindInRoot(root, $"main hwnd {_currentTarget.Handle}");
-            if (hit is not null) return hit;
-    
+
             // ★ 扩展：目标进程的其他可见顶层窗口（弹窗/工具窗；QDialog 是独立顶层窗口）
             var targetPid = (uint)_currentTarget.ProcessId;
             if (targetPid > 0)
@@ -1806,18 +1750,20 @@ public partial class MainWindow : Window
                 {
                     try
                     {
-                        var popupRoot = session.GetRootFromHandle(h);
-                        if (popupRoot is null) continue;
-                        var popupHit = FindInRoot(popupRoot, $"popup hwnd {h}");
-                        if (popupHit is not null) return popupHit;
+                        var popupHit = Core.Uia.SpecResolver.Find(h, query, out var pnote);
+                        if (popupHit is not null)
+                        {
+                            Log($"ResolveBySpec: {pnote} (popup hwnd {h}) → 回放目标");
+                            return popupHit;
+                        }
                     }
                     catch { /* 弹窗可能已关闭 */ }
                 }
                 if (popups.Count > 0)
-                    Log($"ResolveBySpec: no match in main tree; tried {popups.Count} sibling top-level window(s) of pid {targetPid}");
+                    Log($"ResolveBySpec: no match in main tree ({note}); tried {popups.Count} sibling top-level window(s) of pid {targetPid}");
             }
-    
-            Log($"ResolveBySpec: no match (spec autoId='{autoId}' name='{name}' type='{type}')");
+
+            Log($"ResolveBySpec: no match (spec autoId='{autoId}' name='{name}' type='{type}', {note})");
             return null;
         }
         catch (Exception ex)

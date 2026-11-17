@@ -1213,9 +1213,10 @@ public partial class RecordingPanel : UserControl
         _playRunner.Start();
     }
 
-    private void BtnStep_Click(object sender, RoutedEventArgs e)
+    private async void BtnStep_Click(object sender, RoutedEventArgs e)
     {
         if (_steps.Count == 0 || ResolveElement is null) return;
+        if (_playRunner is not null) { TxtStatus.Text = "回放进行中，先停止再单步"; return; }
 
         _stepIndex++;
         if (_stepIndex >= _steps.Count)
@@ -1226,18 +1227,21 @@ public partial class RecordingPanel : UserControl
         }
 
         var node = _steps[_stepIndex];
-        SelectVmByNode(node);
         if (node.Kind != StepKinds.Action)
         {
             TxtStatus.Text = $"→ [{_stepIndex + 1}] {node.DisplayText}：控制节点请在'全部回放'中执行";
             return;
         }
         var record = node.Action!;
-        TxtStatus.Text = $"→ 单步 [{_stepIndex + 1}/{_steps.Count}] {record.MethodName}()...";
 
-        // ★ 颜色标注：上一步落定为已完成，当前这一步标"执行中"
-        SettleRunningMarks();
+        // ★ 每次单步都先清空全部颜色（与"全部回放"同规则），只把当前这一步标成"执行中"
+        ClearRunMarks();
+        TxtStatus.Text = $"→ 单步 [{_stepIndex + 1}/{_steps.Count}] {record.MethodName}()...";
         MarkStep(node, StepMark.Running);
+        // ★ 关键：单步是在 UI 线程同步执行，不先让出一帧的话黄色根本来不及画出来
+        //   （执行完立刻变成绿/红，看起来就是"当前步骤不是黄色"）
+        await Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.Render);
+        RevealNode(node);
 
         try
         {
@@ -1255,7 +1259,6 @@ public partial class RecordingPanel : UserControl
             node.Action = record with { Success = ok, Result = result };
             MarkStep(node, ok ? StepMark.Done : StepMark.Failed);
             RefreshTree();
-            SelectVmByNode(_steps[_stepIndex]);
             TxtStatus.Text = ok
                 ? $"→ [{_stepIndex + 1}] {record.MethodName}() ✓"
                 : $"→ [{_stepIndex + 1}] {record.MethodName}() ✗ {result}";
@@ -1266,6 +1269,31 @@ public partial class RecordingPanel : UserControl
             RefreshTree();
             TxtStatus.Text = $"→ [{_stepIndex + 1}] 错误: {ex.Message}";
         }
+    }
+
+    /// <summary>把某步骤行滚到可视区（不选中——选中态的容器高亮会盖掉进度颜色）。</summary>
+    private void RevealNode(StepNode node)
+    {
+        try
+        {
+            if (!_vmById.TryGetValue(node.Id, out var vm)) return;
+            TvSteps.UpdateLayout();
+            var item = FindItemContainer(TvSteps, vm);
+            item?.BringIntoView();
+        }
+        catch { /* 容器未生成（虚拟化）时忽略 */ }
+    }
+
+    private static TreeViewItem? FindItemContainer(ItemsControl parent, object dataContext)
+    {
+        foreach (var o in parent.Items)
+        {
+            if (parent.ItemContainerGenerator.ContainerFromItem(o) is not TreeViewItem item) continue;
+            if (ReferenceEquals(item.DataContext, dataContext)) return item;
+            var nested = FindItemContainer(item, dataContext);
+            if (nested is not null) return nested;
+        }
+        return null;
     }
 
     // ==== 录制任务（JSON 存于程序目录 RecordingTasks\） ====
