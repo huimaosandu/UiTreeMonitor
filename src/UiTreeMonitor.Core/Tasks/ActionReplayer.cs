@@ -241,11 +241,11 @@ public sealed class ActionReplayer : IDisposable
             var name = TrySemanticClick(x, y);
             if (name is not null)
             {
-                AppLog.Write("ACTION", $"ReplayCoordInvoke: ({x},{y}) → semantic Invoke '{name}' (cursor untouched)");
-                return new ActionResult { Success = true, ReturnValue = $"语义 Invoke '{name}' @({x},{y})（未动光标）" };
+                AppLog.Write("ACTION", $"ReplayCoordInvoke: ({x},{y}) → 语义 {name} (cursor untouched)");
+                return new ActionResult { Success = true, ReturnValue = $"语义 {name} @({x},{y})（未动光标）" };
             }
-            AppLog.Write("ACTION", $"ReplayCoordInvoke: ({x},{y}) → FAILED (no invokable element at point)");
-            return new ActionResult { Success = false, Error = $"坐标 ({x},{y}) 处无可 Invoke 元素（弹窗未打开/位置已变化）" };
+            AppLog.Write("ACTION", $"ReplayCoordInvoke: ({x},{y}) → FAILED (no semantic pattern at point)");
+            return new ActionResult { Success = false, Error = $"坐标 ({x},{y}) 处元素没有可执行的语义动作（Invoke/DoDefaultAction/Toggle/Select/Expand 全不可用，或弹窗未打开/页面已变化）" };
         }
         return new ActionResult { Success = false, Error = $"coord:v1 路径无效: {coordPath}" };
     }
@@ -260,8 +260,10 @@ public sealed class ActionReplayer : IDisposable
             && int.TryParse(parts[1].Trim(), out y);
     }
 
-    /// <summary>坐标处元素的语义 Invoke：FromPoint 命中元素支持 InvokePattern 且非本软件 UI → 直接 Invoke（光标不动）。
-    /// 返回元素名；不可用（无 Pattern/是自己/元素销毁/COM 失败）返回 null，由 ReplayCoordInvoke 记为该步失败。</summary>
+    /// <summary>坐标处元素的语义点击：FromPoint 命中元素 → 按能力优先级执行最贴切的 UIA 动作（光标不动）。
+    /// 顺序 Invoke → LegacyIAccessible.DoDefaultAction → Toggle → SelectionItem.Select → ExpandCollapse.Expand。
+    /// 浏览器（Chromium）的菜单项常常只有 ExpandCollapse、没有 Invoke，只认 Invoke 会假失败。
+    /// 返回"动作+元素名"；都不可用（无 Pattern/是自己 UI/元素销毁/COM 失败）返回 null，由调用方记为该步失败。</summary>
     private static string? TrySemanticClick(int x, int y)
     {
         try
@@ -273,15 +275,48 @@ public sealed class ActionReplayer : IDisposable
             try { pid = el.CurrentProcessId; }
             catch { return null; } // 元素销毁中
             if (pid == Environment.ProcessId) return null; // 点击点是自己 UI → 不语义化，忠实真点击
-            if (el.GetCurrentPattern(10000) is not IUIAutomationInvokePattern invoke) return null; // 无 InvokePattern
+
             var name = "";
             try { name = el.CurrentName ?? ""; } catch { /* 名字读不到不碍事 */ }
-            invoke.Invoke();
-            return name.Length > 0 ? name : $"pid {pid}";
+            var label = name.Length > 0 ? name : $"pid {pid}";
+
+            if (el.GetCurrentPattern(10000) is IUIAutomationInvokePattern invoke)
+            {
+                invoke.Invoke();
+                return $"Invoke '{label}'";
+            }
+            if (el.GetCurrentPattern(10018) is IUIAutomationLegacyIAccessiblePattern legacy)
+            {
+                legacy.DoDefaultAction();
+                return $"DoDefaultAction '{label}'";
+            }
+            if (el.GetCurrentPattern(10015) is IUIAutomationTogglePattern toggle)
+            {
+                toggle.Toggle();
+                return $"Toggle '{label}'";
+            }
+            if (el.GetCurrentPattern(10010) is IUIAutomationSelectionItemPattern selectItem)
+            {
+                selectItem.Select();
+                return $"Select '{label}'";
+            }
+            if (el.GetCurrentPattern(10002) is IUIAutomationExpandCollapsePattern expandCollapse)
+            {
+                // 点击语义 = 打开/收起（菜单/树节点）：已展开时再点应收起
+                var state = expandCollapse.CurrentExpandCollapseState;
+                if (state == ExpandCollapseState.ExpandCollapseState_Expanded)
+                {
+                    expandCollapse.Collapse();
+                    return $"Collapse '{label}'";
+                }
+                expandCollapse.Expand();
+                return $"Expand '{label}'";
+            }
+            return null; // 四种语义能力都没有 → 不做盲目真点击
         }
         catch
         {
-            return null; // 任何 COM 失败 → 真点击兜底
+            return null; // 任何 COM 失败 → 该步失败
         }
     }
 

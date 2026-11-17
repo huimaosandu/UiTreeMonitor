@@ -491,14 +491,16 @@ public partial class RecordingPanel : UserControl
                         Timestamp = input.Timestamp,
                         ElementName = "(窗口已关闭·坐标延迟定位)",
                         ElementPath = $"coord:v1|{input.X},{input.Y}",
-                        PatternName = "InvokePattern",
-                        MethodName = "Invoke",
+                        // ★ 不要写死 InvokePattern：录制时元素已消失，此刻根本不知道它支持什么。
+                        //   回放时按坐标探测实际能力（Invoke → LegacyIAccessible → Toggle → Select → Expand）
+                        PatternName = "(coord:auto)",
+                        MethodName = "Click",
                         Parameters = null,
                         Success = true,
-                        Result = $"Invoke @({input.X},{input.Y})（录制时窗口瞬时关闭）",
+                        Result = $"按坐标探测语义动作 @({input.X},{input.Y})（录制时元素已消失）",
                     };
                     AppendRecord(coord, replacePrevious: false, source: "input-semantic coord-deferred");
-                    AppLog.Write("RECORD", $"OnInputAction→semantic: InvokePattern.Invoke @({input.X},{input.Y}) [coord-deferred: 点击即关窗，回放按坐标语义定位]");
+                    AppLog.Write("RECORD", $"OnInputAction→coord-deferred @({input.X},{input.Y}) [录制时元素已消失，回放按坐标探测实际语义动作]");
                     return;
                 }
                 // 元素活着但无 InvokePattern：探针日志已注明（click-no-invoke），UIA 模式不录无语义动作
@@ -721,14 +723,15 @@ public partial class RecordingPanel : UserControl
                             AppLog.Write("RECORD", $"[semantic-probe] click-on-window: elem='{TruncLog(elemName, 40)}' 窗口级点击无控件语义（激活窗口）→ 不记录");
                         break;
                     }
-                    if (elem.TryGetCurrentPattern(InvokePattern.Pattern, out _))
+                    // ★ 按点击语义优先级探测真实 Pattern（不能默认 Invoke）：
+                    //   Chromium 的菜单项/自绘按钮常常只有 ExpandCollapse、没有 Invoke，
+                    //   以前一律只认 Invoke → 这些点击要么被丢弃、要么回放必然失败。
+                    if (TryBuildClickSemantic(elem, elemName, procName, ctrlType, input.Timestamp, out record))
                     {
                         replacePrevious = false;
-                        record = BuildSemantic(elem, "InvokePattern", "Invoke", null,
-                            result: $"{procName} {ShortType(ctrlType)} Invoke", elemName, input.Timestamp);
                         return true;
                     }
-                    LogPatternProbe(elem, elemName, ctrlType, procName, "click-no-invoke");
+                    LogPatternProbe(elem, elemName, ctrlType, procName, "click-no-semantic");
                     break;
                 }
 
@@ -803,6 +806,63 @@ public partial class RecordingPanel : UserControl
         Success = true,
         Result = result,
     };
+
+    /// <summary>
+    /// 点击语义探测：按优先级找"点一下这个元素"最贴切的 UIA 动作，并把**真实 Pattern** 记进脚本。
+    /// 顺序 Invoke → Toggle → SelectionItem → ExpandCollapse → LegacyIAccessible。
+    /// 之所以要这条链：浏览器/Chromium 的菜单项、自绘按钮普遍没有 InvokePattern，
+    /// 只提供 ExpandCollapse（下拉菜单）或 LegacyIAccessible；以前只认 Invoke，
+    /// 这类点击要么录不进去、要么被记成 Invoke，回放时必然"无可 Invoke 元素"。
+    /// </summary>
+    private bool TryBuildClickSemantic(AutomationElement elem, string elemName, string procName,
+        string ctrlType, DateTime ts, out ActionRecord record)
+    {
+        record = null!;
+        var shortType = ShortType(ctrlType);
+        try
+        {
+            if (elem.TryGetCurrentPattern(InvokePattern.Pattern, out _))
+            {
+                record = BuildSemantic(elem, "InvokePattern", "Invoke", null,
+                    $"{procName} {shortType} Invoke", elemName, ts);
+                return true;
+            }
+
+            if (elem.TryGetCurrentPattern(TogglePattern.Pattern, out var tObj) && tObj is TogglePattern tp)
+            {
+                // 把点击后的状态写进日志/脚本：Toggle 是翻转动作，回放时若已是该状态就不该再翻转，
+                // 有状态值才能人工核对（UIA 的 Toggle 没有 SetState，无法自动纠偏）
+                var state = "";
+                try { state = tp.Current.ToggleState.ToString(); } catch { /* 状态读不到 */ }
+                record = BuildSemantic(elem, "TogglePattern", "Toggle", null,
+                    $"{procName} {shortType} Toggle→{state}", elemName, ts);
+                return true;
+            }
+
+            if (elem.TryGetCurrentPattern(SelectionItemPattern.Pattern, out _))
+            {
+                record = BuildSemantic(elem, "SelectionItemPattern", "Select", null,
+                    $"{procName} {shortType} Select", elemName, ts);
+                return true;
+            }
+
+            if (elem.TryGetCurrentPattern(ExpandCollapsePattern.Pattern, out var ecObj) && ecObj is ExpandCollapsePattern ecp)
+            {
+                // ★ 录制回调在点击生效之后取元素，读到的展开状态已是"点击造成的结果"，
+                //   所以动作取"达到该状态的那个动作"，不能取反（取反会把"打开菜单"录成 Collapse）。
+                var collapsed = false;
+                try { collapsed = ecp.Current.ExpandCollapseState == ExpandCollapseState.Collapsed; } catch { /* 状态读不到按展开处理 */ }
+                record = BuildSemantic(elem, "ExpandCollapsePattern", collapsed ? "Collapse" : "Expand", null,
+                    $"{procName} {shortType} {(collapsed ? "Collapse" : "Expand")}", elemName, ts);
+                return true;
+            }
+
+            // LegacyIAccessible 这一档留给回放端（坐标探测时按 UIA interop 的 pattern id 判断）；
+            // 录制端 System.Windows.Automation 封装里没有该 Pattern 类型，不做探测。
+        }
+        catch { /* Pattern 探测失败 → 调用方回退坐标记录 */ }
+        return false;
+    }
 
     /// <summary>文本类虚拟键（会产生字符输入/删除的键）：主键区 0-9、A-Z、小键盘数字与运算符、空格、Back、OEM 标点。
     /// 回车在 KeyDown 分支单独处理（Value 优先、按钮焦点时 Invoke）；Tab/方向/F 键等无语义不录。
