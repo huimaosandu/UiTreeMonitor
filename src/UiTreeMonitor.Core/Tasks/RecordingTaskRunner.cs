@@ -30,6 +30,8 @@ public sealed class TaskRunSnapshot
     public int CurrentIndex { get; init; }      // 扁平序号（进度显示）
     public int TotalSteps { get; init; }        // 启用的扁平步骤数
     public int LoopRound { get; init; }         // 当前循环轮次（无循环=0）
+    /// <summary>正在执行的步骤节点 Id：UI 用它在步骤树里标"当前行"（扁平序号在循环里会回绕，Id 不会）。</summary>
+    public Guid? CurrentNodeId { get; init; }
     public string? LastError { get; init; }
     public DateTime StartedAt { get; init; }
     public DateTime? EndedAt { get; init; }
@@ -79,9 +81,11 @@ public sealed class RecordingTaskRunner : IDisposable
 
     public void Dispose()
     {
-        _cts.Cancel();
+        // ★ 只取消、不 Dispose 凭据：后台线程可能还在 ThrowIfCancellationRequested() / Sleep 里
+        //   访问 token，立刻 Dispose 会让它抛 ObjectDisposedException，被外层当成 Failed 记日志
+        //   （表现为"点了停止却报失败"）。CancellationTokenSource 很轻，一次回放一个，随 GC 回收。
+        try { _cts.Cancel(); } catch { /* 已释放 */ }
         _replayer.Dispose();
-        _cts.Dispose();
     }
 
     // ==== 内部执行 ====
@@ -124,17 +128,17 @@ public sealed class RecordingTaskRunner : IDisposable
         switch (node.Kind)
         {
             case StepKinds.Action:
-                Set(RecTaskRunState.Running, node.DisplayText, index: index, round: round);
+                Set(RecTaskRunState.Running, node.DisplayText, index: index, round: round, nodeId: node.Id);
                 ExecuteAction(node);
                 break;
 
             case StepKinds.Delay:
-                Set(RecTaskRunState.Running, node.DisplayText, index: index, round: round);
+                Set(RecTaskRunState.Running, node.DisplayText, index: index, round: round, nodeId: node.Id);
                 Sleep(node.DelayMs);
                 break;
 
             case StepKinds.Timer:
-                Set(RecTaskRunState.WaitingTimer, node.DisplayText, index: index, round: round);
+                Set(RecTaskRunState.WaitingTimer, node.DisplayText, index: index, round: round, nodeId: node.Id);
                 var wait = node.TriggerAt - DateTime.Now;
                 if (wait > TimeSpan.Zero)
                 {
@@ -154,7 +158,7 @@ public sealed class RecordingTaskRunner : IDisposable
                 {
                     _cts.Token.ThrowIfCancellationRequested();
                     i++;
-                    Set(RecTaskRunState.Running, $"{node.DisplayText} 第 {i} 轮", index: index, round: i);
+                    Set(RecTaskRunState.Running, $"{node.DisplayText} 第 {i} 轮", index: index, round: i, nodeId: node.Id);
                     foreach (var child in node.Children)
                         ExecuteNode(child, flat, ref index, round: i);
                     if (node.LoopIntervalMs > 0 && node.LoopHasMoreRounds(i, start))
@@ -169,7 +173,7 @@ public sealed class RecordingTaskRunner : IDisposable
                 break;
 
             case StepKinds.Screenshot:
-                Set(RecTaskRunState.Running, node.DisplayText, index: index, round: round);
+                Set(RecTaskRunState.Running, node.DisplayText, index: index, round: round, nodeId: node.Id);
                 ExecuteScreenshot(node);
                 break;
         }
@@ -181,6 +185,7 @@ public sealed class RecordingTaskRunner : IDisposable
         if (record is null) return;
         try
         {
+            _cts.Token.ThrowIfCancellationRequested(); // 停止后不再发起新的动作
             var needsElement = record.PatternName is not InputSimulator.MousePattern
                 and not InputSimulator.KeyboardPattern
                 && !(record.ElementPath?.StartsWith("coord:v1|", StringComparison.Ordinal) ?? false)
@@ -236,7 +241,7 @@ public sealed class RecordingTaskRunner : IDisposable
         if (t is null || string.IsNullOrEmpty(t.ElementSpec))
             throw new InvalidOperationException("触发器未配置目标元素");
 
-        Set(RecTaskRunState.WaitingTrigger, node.DisplayText, index: index, round: round);
+        Set(RecTaskRunState.WaitingTrigger, node.DisplayText, index: index, round: round, nodeId: node.Id);
         AppLog.Write("TASK", $"Trigger step: waiting '{t.ElementName}' {t.Property} {t.Condition} {t.ExpectedValue} (timeout {t.TimeoutSec}s)");
         var deadline = t.TimeoutSec > 0 ? DateTime.Now.AddSeconds(t.TimeoutSec) : (DateTime?)null;
         string? lastValue = null;
@@ -349,7 +354,8 @@ public sealed class RecordingTaskRunner : IDisposable
         }
     }
 
-    private void Set(RecTaskRunState state, string step, int? index = null, int? round = null, string? error = null)
+    private void Set(RecTaskRunState state, string step, int? index = null, int? round = null, string? error = null,
+        Guid? nodeId = null)
     {
         _snapshot = new TaskRunSnapshot
         {
@@ -358,6 +364,7 @@ public sealed class RecordingTaskRunner : IDisposable
             CurrentIndex = index ?? _snapshot.CurrentIndex,
             TotalSteps = _snapshot.TotalSteps == 0 ? FlattenEnabled(Task.Steps).Count() : _snapshot.TotalSteps,
             LoopRound = round ?? _snapshot.LoopRound,
+            CurrentNodeId = nodeId ?? _snapshot.CurrentNodeId,
             LastError = error ?? _snapshot.LastError,
             StartedAt = _snapshot.StartedAt == default ? DateTime.Now : _snapshot.StartedAt,
             EndedAt = state is RecTaskRunState.Completed or RecTaskRunState.Failed or RecTaskRunState.Cancelled

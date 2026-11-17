@@ -899,8 +899,18 @@ public partial class RecordingPanel : UserControl
             var r = c.BoundingRectangle;
             var rect = r.IsEmpty || r.Width <= 0 || r.Height <= 0
                 ? "" : $"{(int)r.Left},{(int)r.Top},{(int)r.Right},{(int)r.Bottom}";
+            // ★ runtimeId：UIA RuntimeId 在同一元素实例内唯一，回放时优先用它精确命中
+            //   （浏览器里 Name/AutomationId 会随状态变——输入框 placeholder 变成输入内容，属性评分就失配了）
+            string rid = "";
+            try
+            {
+                var ids = elem.GetRuntimeId();
+                if (ids is { Length: > 0 }) rid = string.Join(".", ids);
+            }
+            catch { /* 部分 provider 不提供 RuntimeId */ }
             return $"spec:v1|autoId={Esc(c.AutomationId)}|name={Esc(c.Name)}|type={ShortType(c.ControlType?.ProgrammaticName ?? "")}" +
-                   $"|class={Esc(c.ClassName)}|rect={rect}";
+                   $"|class={Esc(c.ClassName)}|rect={rect}" +
+                   (rid.Length > 0 ? $"|rid={rid}" : "");
         }
         catch { return "spec:v1|"; }
     }
@@ -1123,6 +1133,10 @@ public partial class RecordingPanel : UserControl
         if (_playRunner is not null)
         {
             _playRunner.Stop();
+            // 立即给反馈：按钮先显示"停止中"并临时禁用，避免连点又启动一轮
+            BtnPlayAll.Content = "■ 停止中…";
+            BtnPlayAll.IsEnabled = false;
+            TxtStatus.Text = "■ 正在停止回放…（当前动作执行完即停，后续步骤不再继续）";
             return;
         }
         if (_steps.Count == 0) return;
@@ -1137,13 +1151,25 @@ public partial class RecordingPanel : UserControl
     private void StartPlayback(RecordingTask task)
     {
         if (_playRunner is not null) return;
+        ClearRunMarks(); // 新一轮回放：先清掉上一轮的颜色标注
         BtnPlayAll.Content = "■ 停止回放";
+        BtnPlayAll.IsEnabled = true;
         BtnStep.IsEnabled = false;
         TxtStatus.Text = "▶ 回放中…";
 
         _playRunner = new RecordingTaskRunner(task, ResolveElement ?? (_ => null));
         _playRunner.StateChanged += snap => Dispatcher.BeginInvoke(() =>
         {
+            // ★ 颜色标注：当前步骤黄、已执行完绿、失败红（按 NodeId 找行，循环回绕也不会错）
+            if (snap.State is RecTaskRunState.Running or RecTaskRunState.WaitingTrigger or RecTaskRunState.WaitingTimer)
+            {
+                if (snap.CurrentNodeId is Guid runId)
+                {
+                    SettleRunningMarks(exceptNodeId: runId); // 上一步到此已完成
+                    if (_vmById.TryGetValue(runId, out var runVm)) MarkStep(runVm.Node, StepMark.Running);
+                }
+            }
+
             var stateText = snap.State switch
             {
                 RecTaskRunState.WaitingTrigger => "⏳ 等待触发条件",
@@ -1154,17 +1180,34 @@ public partial class RecordingPanel : UserControl
                 (snap.LoopRound > 0 ? $" [第 {snap.LoopRound} 轮]" : "");
             if (snap.State is RecTaskRunState.Completed or RecTaskRunState.Failed or RecTaskRunState.Cancelled)
             {
+                switch (snap.State)
+                {
+                    case RecTaskRunState.Completed:
+                        foreach (var vm in _vmById.Values)
+                            if (vm.Node.IsEnabled) MarkStep(vm.Node, StepMark.Done);
+                        break;
+                    case RecTaskRunState.Failed:
+                        SettleRunningMarks(exceptNodeId: snap.CurrentNodeId);
+                        if (snap.CurrentNodeId is Guid failId && _vmById.TryGetValue(failId, out var failVm))
+                            MarkStep(failVm.Node, StepMark.Failed);
+                        break;
+                    default: // Cancelled：被打断的那步不标完成，也不标失败（保持原色）
+                        SettleRunningMarks(exceptNodeId: snap.CurrentNodeId);
+                        if (snap.CurrentNodeId is Guid stopId && _vmById.TryGetValue(stopId, out var stopVm) && stopVm.IsRunning)
+                            MarkStep(stopVm.Node, StepMark.None);
+                        break;
+                }
+
                 TxtStatus.Text = snap.State switch
                 {
                     RecTaskRunState.Completed => $"✓ 回放完成（{snap.TotalSteps} 步）",
                     RecTaskRunState.Cancelled => "■ 回放已停止",
                     _ => $"✗ 回放失败：{snap.LastError}",
                 };
-                _playRunner.Dispose();
+                _playRunner?.Dispose();
                 _playRunner = null;
-                BtnPlayAll.Content = "▶ 全部回放";
-                BtnStep.IsEnabled = !_isRecording;
-                RefreshTree(); // 回写结果显示
+                RefreshTree();  // 回写结果显示 + 重放颜色标记
+                RefreshUI();    // 按钮文案/可用状态复位
             }
         });
         _playRunner.Start();
@@ -1192,6 +1235,10 @@ public partial class RecordingPanel : UserControl
         var record = node.Action!;
         TxtStatus.Text = $"→ 单步 [{_stepIndex + 1}/{_steps.Count}] {record.MethodName}()...";
 
+        // ★ 颜色标注：上一步落定为已完成，当前这一步标"执行中"
+        SettleRunningMarks();
+        MarkStep(node, StepMark.Running);
+
         try
         {
             using var replayer = new ActionReplayer();
@@ -1206,6 +1253,7 @@ public partial class RecordingPanel : UserControl
             var (ok, result) = replayer.ExecuteOne(record, targetElem);
 
             node.Action = record with { Success = ok, Result = result };
+            MarkStep(node, ok ? StepMark.Done : StepMark.Failed);
             RefreshTree();
             SelectVmByNode(_steps[_stepIndex]);
             TxtStatus.Text = ok
@@ -1214,6 +1262,8 @@ public partial class RecordingPanel : UserControl
         }
         catch (Exception ex)
         {
+            MarkStep(node, StepMark.Failed);
+            RefreshTree();
             TxtStatus.Text = $"→ [{_stepIndex + 1}] 错误: {ex.Message}";
         }
     }
@@ -1440,7 +1490,11 @@ public partial class RecordingPanel : UserControl
 
     // ==== 步骤树（TreeView 绑定 + 右键编辑） ====
 
-    /// <summary>步骤树行 ViewModel（绑定 DisplayText/Detail/DisabledMark/Children；IsMultiSelected=Shift 范围多选高亮）。</summary>
+    /// <summary>步骤行的执行状态（颜色标注用）。</summary>
+    public enum StepMark { None, Running, Done, Failed }
+
+    /// <summary>步骤树行 ViewModel（绑定 DisplayText/Detail/DisabledMark/Children；IsMultiSelected=Shift 范围多选高亮；
+    /// IsRunning/IsDone/IsFailed=回放进度颜色标注）。</summary>
     public sealed class StepVm : System.ComponentModel.INotifyPropertyChanged
     {
         public required StepNode Node { get; init; }
@@ -1450,28 +1504,118 @@ public partial class RecordingPanel : UserControl
         public string DisabledMark => Node.IsEnabled ? "Collapsed" : "Visible";
         public StepVm? Parent { get; init; }
 
+        /// <summary>步骤序号：根级 1、2、3…；子级 1.1、1.1.1…（层级点分）。</summary>
+        public string IndexText { get; init; } = "";
+
         private bool _isMultiSelected;
         /// <summary>Shift 范围多选标记（背景淡蓝；Tab 批量移入容器作用于多选集）。</summary>
         public bool IsMultiSelected
         {
             get => _isMultiSelected;
-            set { if (_isMultiSelected != value) { _isMultiSelected = value; PropertyChanged?.Invoke(this, new(nameof(IsMultiSelected))); } }
+            set => SetField(ref _isMultiSelected, value, nameof(IsMultiSelected));
+        }
+
+        private bool _isRunning;
+        /// <summary>正在执行（黄底加粗）。</summary>
+        public bool IsRunning
+        {
+            get => _isRunning;
+            private set => SetField(ref _isRunning, value, nameof(IsRunning));
+        }
+
+        private bool _isDone;
+        /// <summary>已执行完成（浅绿）。</summary>
+        public bool IsDone
+        {
+            get => _isDone;
+            private set => SetField(ref _isDone, value, nameof(IsDone));
+        }
+
+        private bool _isFailed;
+        /// <summary>执行失败（浅红）。</summary>
+        public bool IsFailed
+        {
+            get => _isFailed;
+            private set => SetField(ref _isFailed, value, nameof(IsFailed));
+        }
+
+        /// <summary>设置该行的执行标记（互斥：同一时刻只有一种颜色）。</summary>
+        public void SetMark(StepMark mark)
+        {
+            IsRunning = mark == StepMark.Running;
+            IsDone = mark == StepMark.Done;
+            IsFailed = mark == StepMark.Failed;
+        }
+
+        private void SetField(ref bool field, bool value, string name)
+        {
+            if (field == value) return;
+            field = value;
+            PropertyChanged?.Invoke(this, new(name));
         }
 
         public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged;
     }
 
+    /// <summary>执行状态标记（NodeId → 标记）：RefreshTree 会重建 VM，靠它把颜色还原回去。</summary>
+    private readonly Dictionary<Guid, StepMark> _runMarks = new();
+
+    /// <summary>当前显示标记的步骤行索引（NodeId → VM），供回放快照快速找行。</summary>
+    private readonly Dictionary<Guid, StepVm> _vmById = new();
+
     private void RefreshTree()
     {
-        TvSteps.ItemsSource = BuildVmList(_steps, null);
+        _vmById.Clear();
+        TvSteps.ItemsSource = BuildVmListWithMarks(_steps, "");
     }
 
-    private static List<StepVm> BuildVmList(List<StepNode> nodes, StepVm? parent)
+    /// <summary>构建步骤行 VM：层级序号（1 / 1.1 / 1.1.1）+ 还原执行标记。</summary>
+    private List<StepVm> BuildVmListWithMarks(List<StepNode> nodes, string prefix)
     {
         var list = new List<StepVm>();
-        foreach (var n in nodes)
-            list.Add(new StepVm { Node = n, Parent = parent, Children = BuildVmList(n.Children, null) });
+        for (var i = 0; i < nodes.Count; i++)
+        {
+            var n = nodes[i];
+            var idx = prefix.Length == 0 ? $"{i + 1}" : $"{prefix}{i + 1}";
+            var vm = new StepVm
+            {
+                Node = n,
+                Parent = null,
+                IndexText = idx,
+                Children = BuildVmListWithMarks(n.Children, idx + "."),
+            };
+            vm.SetMark(_runMarks.TryGetValue(n.Id, out var m) ? m : StepMark.None);
+            _vmById[n.Id] = vm;
+            list.Add(vm);
+        }
         return list;
+    }
+
+    /// <summary>给某个步骤行打标记（同时记进 _runMarks，RefreshTree 后仍保留颜色）。</summary>
+    private void MarkStep(StepNode node, StepMark mark)
+    {
+        if (mark == StepMark.None) _runMarks.Remove(node.Id);
+        else _runMarks[node.Id] = mark;
+        _vmById.TryGetValue(node.Id, out var vm);
+        vm?.SetMark(mark);
+    }
+
+    /// <summary>把当前所有"执行中"（黄色）的行落定为已完成；失败行保持红色。</summary>
+    private void SettleRunningMarks(Guid? exceptNodeId = null)
+    {
+        foreach (var (id, vm) in _vmById)
+        {
+            if (exceptNodeId is not null && id == exceptNodeId.Value) continue;
+            if (!vm.IsRunning) continue;
+            MarkStep(vm.Node, StepMark.Done);
+        }
+    }
+
+    /// <summary>清空全部执行标记（新一轮回放/单步开始时）。</summary>
+    private void ClearRunMarks()
+    {
+        _runMarks.Clear();
+        foreach (var vm in _vmById.Values) vm.SetMark(StepMark.None);
     }
 
     private void TvSteps_SelectedItemChanged(object sender, RoutedPropertyChangedEventArgs<object> e)

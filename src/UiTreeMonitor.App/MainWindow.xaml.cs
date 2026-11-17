@@ -1682,7 +1682,7 @@ public partial class MainWindow : Window
     {
         try
         {
-            string autoId = "", name = "", type = "", cls = "", rectStr = "";
+            string autoId = "", name = "", type = "", cls = "", rectStr = "", rid = "";
             foreach (var seg in spec.Split('|'))
             {
                 int eq = seg.IndexOf('=');
@@ -1696,6 +1696,7 @@ public partial class MainWindow : Window
                     case "type": type = v; break;
                     case "class": cls = v; break;
                     case "rect": rectStr = v; break;
+                    case "rid": rid = v; break;
                 }
             }
             if (_currentTarget is null || _currentTarget.Handle == IntPtr.Zero)
@@ -1735,7 +1736,24 @@ public partial class MainWindow : Window
                     int score = 0;
                     try
                     {
-                        string elAutoId = el.AutomationId ?? "", elName = el.Name ?? "", elType = Core.Sampler.TreeSampler.ControlTypeName(el.ControlTypeId), elClass = el.ClassName ?? "";
+                        // ★ RuntimeId 在同一元素实例内唯一：命中即直接返回，不受 Name/AutomationId 变化影响
+                        if (rid.Length > 0 && Core.Sampler.TreeSampler.ReadRuntimeId(el) == rid)
+                        {
+                            Log($"ResolveBySpec: hit by runtimeId={rid} (visited={visited}, {rootTag}) → 回放目标");
+                            return el;
+                        }
+
+                        // ★ 缓存优先、缺了才直读：Axe 缓存字段对 Chromium 元素常为空，只用缓存会 score=0
+                        //   → no match；但每个节点都做 4 次 COM 直读又会把 3000 节点遍历拖慢，
+                        //   所以只在缓存缺失时补读（补齐后再评分）。
+                        string elAutoId = el.AutomationId ?? "",
+                               elName = el.Name ?? "",
+                               elClass = el.ClassName ?? "";
+                        var elCt = el.ControlTypeId;
+                        if (elAutoId.Length == 0) elAutoId = Core.Sampler.TreeSampler.ReadAutomationId(el) ?? "";
+                        if (elName.Length == 0) elName = Core.Sampler.TreeSampler.ReadName(el) ?? "";
+                        if (elClass.Length == 0) elClass = Core.Sampler.TreeSampler.ReadClassName(el) ?? "";
+                        var elType = Core.Sampler.TreeSampler.ControlTypeName(elCt);
                         if (autoId.Length > 0 && elAutoId == autoId) score += 50;
                         if (type.Length > 0 && elType == type) score += 20;
                         if (name.Length > 0 && elName == name) score += 20;
@@ -1764,7 +1782,7 @@ public partial class MainWindow : Window
     
                 if (best.El is not null && best.Score >= threshold)
                 {
-                    Log($"ResolveBySpec: hit score={best.Score} (visited={visited}, {rootTag}) elem='{best.El.Name}' → 回放目标");
+                    Log($"ResolveBySpec: hit score={best.Score} (visited={visited}, {rootTag}) elem='{Core.Sampler.TreeSampler.ReadName(best.El)}' → 回放目标");
                     return best.El;
                 }
                 return null;

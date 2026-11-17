@@ -16,6 +16,9 @@
                         </Style.Triggers>
                     </Style>
                 </StackPanel.Style>
+                <!-- 步骤序号（1、2、3…；子步骤 1.1、1.2） -->
+                <TextBlock Text="{Binding IndexText}" Foreground="#996515" FontSize="11" FontWeight="Bold"
+                           MinWidth="18" Margin="0,0,4,0" VerticalAlignment="Center"/>
                 <TextBlock Text="⏸ " Foreground="#CC0000" FontWeight="Bold"
                            Visibility="{Binding DisabledMark}"/>
                 <TextBlock Text="{Binding DisplayText}" VerticalAlignment="Center"/>
@@ -101,6 +104,20 @@
                 <Style TargetType="TreeViewItem">
                     <Setter Property="IsExpanded" Value="True"/>
                     <Setter Property="Padding" Value="1"/>
+                    <Style.Triggers>
+                        <!-- 回放/单步状态：
+                             已执行完成 → 浅绿；当前执行中 → 黄；执行失败 → 浅红（优先级由后往前） -->
+                        <DataTrigger Binding="{Binding IsDone}" Value="True">
+                            <Setter Property="Background" Value="#DCFCE7"/>
+                        </DataTrigger>
+                        <DataTrigger Binding="{Binding IsRunning}" Value="True">
+                            <Setter Property="Background" Value="#FFE58F"/>
+                            <Setter Property="FontWeight" Value="Bold"/>
+                        </DataTrigger>
+                        <DataTrigger Binding="{Binding IsFailed}" Value="True">
+                            <Setter Property="Background" Value="#FEE2E2"/>
+                        </DataTrigger>
+                    </Style.Triggers>
                 </Style>
             </TreeView.ItemContainerStyle>
             <TreeView.ContextMenu>
