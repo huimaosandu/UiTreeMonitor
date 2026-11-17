@@ -57,4 +57,21 @@ public static class WindowEnumerator
         }, IntPtr.Zero);
         return result;
     }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct POINT { public int X, Y; }
+
+    [DllImport("user32.dll")]
+    private static extern bool GetCursorPos(out POINT lpPoint);
+
+    /// <summary>当前光标屏幕坐标（物理像素）。抓树完成后用它校验"鼠标是否还停在捕获的那个元素上"，
+    /// 避免树加载完把高亮补到一个用户早已离开的元素上。</summary>
+    public static (int X, int Y)? GetCursorPosition()
+    {
+        try
+        {
+            return GetCursorPos(out var p) ? (p.X, p.Y) : null;
+        }
+        catch { return null; }
+    }
 }

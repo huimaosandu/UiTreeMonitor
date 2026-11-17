@@ -72,18 +72,33 @@ public static class PatternActionRunner
             // 反射包装异常：取 InnerException（实际的 UIA COM 异常）
             var inner = tie.InnerException;
             var msg = inner?.Message ?? tie.Message;
-            var hResult = inner?.HResult ?? tie.HResult.GetHashCode();
-            var err = $"{msg} (0x{hResult:X8})";
+            var hResult = inner?.HResult ?? tie.HResult;
+            // 常见失败原因说人话（用户看到的就是这一行）
+            var hint = ExplainHResult(hResult);
+            var err = hint is null ? $"{msg} (0x{hResult:X8})" : $"{msg} (0x{hResult:X8}) — {hint}";
             AppLog.Write("ACTION", $"Run() → TargetInvocationException: {err}");
             return new ActionResult { Success = false, Error = err };
         }
         catch (Exception ex)
         {
+            var hint = ExplainHResult(ex.HResult);
+            var err = hint is null ? ex.Message : $"{ex.Message} — {hint}";
             AppLog.Write("ACTION", $"Run() → Exception: {ex.GetType().Name}: {ex.Message}");
-            return new ActionResult { Success = false, Error = ex.Message };
+            return new ActionResult { Success = false, Error = err };
         }
 #pragma warning restore CA1031
     }
+
+    /// <summary>UIA/COM 失败码 → 可操作的中文提示（返回 null 表示没有专门的解释）。</summary>
+    private static string? ExplainHResult(int hr) => unchecked((uint)hr) switch
+    {
+        0x80131509 => "元素状态已变化：缓存里的 Pattern 引用可能已过期，把鼠标移回该元素重新捕获后再执行",
+        0x80040201 => "元素已不可用（控件被重建/窗口已关闭），请重新捕获",
+        0x80040200 => "该控件当前不支持这个 Pattern 操作",
+        0x80070005 => "目标进程拒绝了操作（权限不足，可尝试以管理员身份运行）",
+        0x80131505 => "操作超时（目标界面无响应，可能正忙或卡死）",
+        _ => null,
+    };
 
     /// <summary>获取 Pattern 上所有可执行的 Action 方法（带 [PatternMethodAttribute] 标记）。</summary>
     public static MethodInfo[] GetActionMethods(A11yPattern pattern)

@@ -17,6 +17,7 @@ using AccessibilityInsights.SharedUx.Enums;
 using AccessibilityInsights.SharedUx.Highlighting;
 using Axe.Windows.Actions;
 using Axe.Windows.Core.Bases;
+using Axe.Windows.Desktop.UIAutomation;
 using UiTreeMonitor.Core.Filters;
 using UiTreeMonitor.Core.Models;
 using UiTreeMonitor.Core.Sampler;
@@ -479,21 +480,30 @@ public partial class MainWindow : Window
         CaptureTree(new TargetWindowInfo(w.ProcessId, w.Handle, w.ProcessName, w.Title), force: true);
     }
 
-    /// <summary>切回刚看过的应用时直接复用树（UIA 跨进程抓一棵 240 节点的 Chromium 树要 ~2.7s，
-    /// 用户在两三个窗口间来回移动鼠标时不该每次都重抓）。缓存过期或手动刷新时照常重抓。</summary>
-    private readonly Dictionary<int, (TreeSnapshot Snap, DateTime At)> _treeCache = new();
-    private const int TreeCacheMax = 4;
-    private static readonly TimeSpan TreeCacheTtl = TimeSpan.FromSeconds(12);
+    /// <summary>鼠标是否仍停在捕获的那个元素矩形内（抓树是异步的，回来时用户可能已经移走）。</summary>
+    private static bool CursorStillOn(MouseCaptureResult cap)
+    {
+        if (cap.BoundingRectangle is not { } r || r.Width <= 0 || r.Height <= 0) return true; // 没有矩形就不拦
+        var pt = WindowEnumerator.GetCursorPosition();
+        if (pt is null) return true;
+        var (x, y) = pt.Value;
+        return x >= r.Left && x <= r.Right && y >= r.Top && y <= r.Bottom;
+    }
+
+    // 抓树串行化：切应用时多个捕获结果会各自触发抓树，并发抓出来的树互相覆盖，
+    // 表现就是"第一次反应不过来、要试一两次"。同一时刻只抓一棵，后来的请求排队（只保留最新）。
+    private int? _loadingTreeFor;
+    private TargetWindowInfo? _pendingTreeTarget;
 
     private void CaptureTree(TargetWindowInfo target, bool force = false)
     {
-        if (!force && _treeCache.TryGetValue(target.ProcessId, out var cached)
-            && DateTime.Now - cached.At < TreeCacheTtl)
+        if (_loadingTreeFor == target.ProcessId) return; // 同一进程已在抓，忽略
+        if (_loadingTreeFor is not null)
         {
-            _currentTarget = target;
-            ApplyTree(cached.Snap);
+            _pendingTreeTarget = target;                 // 正在抓别的进程：记下最新请求，抓完再抓
             return;
         }
+        _loadingTreeFor = target.ProcessId;
 
         TxtStatus.Text = $"正在抓取 {target.ProcessName} 的结构树…";
         _currentTarget = target;
@@ -503,18 +513,24 @@ public partial class MainWindow : Window
             TreeSnapshot? snap = null;
             try
             {
-                using var session = UiaSession.Create();
-                snap = new TreeSampler().CaptureWindow(session, target);
+                // 快速路径：raw UIA walker（190 节点 ~120ms；Axe 包装版要 ~2s）
+                snap = new TreeSampler().CaptureWindowFast(target);
             }
             catch (Exception ex)
             {
-                Dispatcher.Invoke(() => TxtStatus.Text = $"抓取失败: {ex.Message}");
+                Dispatcher.Invoke(() =>
+                {
+                    TxtStatus.Text = $"抓取失败: {ex.Message}";
+                    _loadingTreeFor = null;
+                    RunPendingTree();
+                });
                 return;
             }
             Dispatcher.Invoke(() =>
             {
-                if (snap is not null && snap.NodeCount > 0) RememberTree(target.ProcessId, snap);
                 ApplyTree(snap);
+                _loadingTreeFor = null;
+                RunPendingTree();
             });
         })
         { IsBackground = true };
@@ -522,13 +538,12 @@ public partial class MainWindow : Window
         thread.Start();
     }
 
-    /// <summary>记下某进程最近一次树快照（超出上限淘汰最旧）。</summary>
-    private void RememberTree(int processId, TreeSnapshot snap)
+    /// <summary>抓完一棵后处理排队中的目标。注意不对 _pendingTreeTarget 再 force（它本身就是新目标）。</summary>
+    private void RunPendingTree()
     {
-        _treeCache[processId] = (snap, DateTime.Now);
-        if (_treeCache.Count <= TreeCacheMax) return;
-        var oldest = _treeCache.OrderBy(kv => kv.Value.At).First().Key;
-        _treeCache.Remove(oldest);
+        var pending = _pendingTreeTarget;
+        _pendingTreeTarget = null;
+        if (pending is not null) CaptureTree(pending, force: true);
     }
 
     private void ApplyTree(TreeSnapshot? snap)
@@ -576,8 +591,10 @@ public partial class MainWindow : Window
             if (!string.IsNullOrWhiteSpace(TxtTreeSearch.Text)) RunSearch();
             // ★ 补定位：悬停触发的异步抓树完成时，悬停结果只产过一次（已被上一轮消费）——
             //   树加载+容器生成后对新树重新定位并展开高亮（悬停高亮功能的关键闭环）
+            //   但只在鼠标仍停在该元素矩形内时才补，否则会把高亮补到用户早已离开的元素上
             if (_capturing && _lastHoverResult is { IsValid: true } hover
-                && snap.Target is not null && snap.Target.ProcessId == hover.ProcessId)
+                && snap.Target is not null && snap.Target.ProcessId == hover.ProcessId
+                && CursorStillOn(hover))
             {
                 TryHighlightCaptureResult(hover);
             }
@@ -1112,7 +1129,11 @@ public partial class MainWindow : Window
             _detailsElemName = vm.Name;
             _detailsElemControlType = vm.ControlType;
             _detailsElemAutomationId = vm.AutomationId;
-            _detailsElemBoundingRect = null; // 树选中路径直接用节点 Id 算路径，清掉旧悬停矩形避免串味
+            _detailsElemBoundingRect = vm.BoundingRectangle; // 节点自带的矩形（右键添加监控/重解析都用它）
+
+            // ★ 快速抓树的快照不含 Pattern：选中节点时尝试用 RuntimeId + 矩形实时取回这条元素，
+            //   补全 Patterns 并让 Actions 可用（取不到就保持快照视图）
+            AttachLiveElementForNode(vm);
         }
         else
         {
@@ -1363,10 +1384,27 @@ public partial class MainWindow : Window
             TxtStatus.Text = "Pattern 信息不可用（元素可能已销毁）";
             return;
         }
-        var pattern = _detailsA11yElement.Patterns[patIdx];
+        var capturedPattern = _detailsA11yElement.Patterns[patIdx];
+        string patternName = capturedPattern.Name;
+
+        // ★ 执行前重解析实时元素：SelectAction 的 POI context 会被下一次捕获替换，
+        //   缓存 A11yElement.Patterns 里的 COM 引用随即失效（调用直接抛 0x80131509 / 0x80040201）。
+        //   用捕获时的矩形中心 ElementFromPoint 重取，并用 RuntimeId（或矩形）确认是同一个元素。
+        var element = _detailsA11yElement;
+        var pattern = capturedPattern;
+        var liveEl = ResolveLiveDetailsElement();
+        if (liveEl is not null && FindPatternByName(liveEl, patternName) is { } freshPattern)
+        {
+            element = liveEl;
+            pattern = freshPattern;
+        }
+        else if (liveEl is null)
+        {
+            TxtStatus.Text = "元素已失效，暂用捕获时的引用；若执行失败请把鼠标移回该元素重新捕获";
+        }
 
         // 打开 Actions 对话框
-        var dlg = new Controls.PatternActionDialog(_detailsA11yElement, pattern) { Owner = this };
+        var dlg = new Controls.PatternActionDialog(element, pattern) { Owner = this };
 
         // ★ 录制中：执行完成后自动追加到录制脚本
         if (RecordingPanel != null)
@@ -1377,7 +1415,8 @@ public partial class MainWindow : Window
             {
                 // 计算当前元素的 ElementPath（无条件尝试：UniqueId>0 用 UniqueId 查找，否则用矩形/属性兜底）
                 string elemPath = "";
-                string elemName = _detailsA11yElement.Name ?? "";
+                string elemName = "";
+                try { elemName = TreeSampler.ReadName(element) ?? ""; } catch { }
 
                 // ★ 无条件计算 ElementPath（不再要求 UniqueId > 0）
                 if (_currentTree is not null)
@@ -1413,7 +1452,7 @@ public partial class MainWindow : Window
                     Timestamp = DateTime.Now,
                     ElementPath = elemPath,
                     ElementName = elemName,
-                    PatternName = pattern.Name,
+                    PatternName = patternName,
                     MethodName = methodName,    // ★ 实际方法名（非 ReturnValue）
                     Parameters = null,         // TODO: 从 PatternActionView 获取实际参数值
                     Success = result.Success,
@@ -1423,6 +1462,98 @@ public partial class MainWindow : Window
         }
 
         dlg.ShowDialog();
+    }
+
+    /// <summary>
+    /// 树节点选中后，尝试把快照节点"复活"成实时 A11yElement：
+    /// 用节点矩形中心 ElementFromPoint 取元素，RuntimeId（读不到时矩形相等）校验是同一元素，
+    /// 然后重建 Details（含实时 Patterns，Actions 便可执行）。取不到就保持快照视图。
+    /// </summary>
+    private void AttachLiveElementForNode(TreeNodeViewModel vm)
+    {
+        if (_currentTarget is null || string.IsNullOrEmpty(vm.BoundingRectangle)) return;
+        var parts = vm.BoundingRectangle.Split(',');
+        if (parts.Length != 4) return;
+        int l, t, r, b;
+        if (!int.TryParse(parts[0], out l) || !int.TryParse(parts[1], out t)
+            || !int.TryParse(parts[2], out r) || !int.TryParse(parts[3], out b)) return;
+        if (r - l <= 0 || b - t <= 0) return; // 不可见/无尺寸的节点取不到
+
+        try
+        {
+            using var session = UiTreeMonitor.Core.Uia.UiaSession.Create();
+            var el = session.GetElementFromPoint((l + r) / 2, (t + b) / 2);
+            if (el is null) return;
+
+            var rid = TreeSampler.ReadRuntimeId(el);
+            bool same = !string.IsNullOrEmpty(vm.RuntimeId) && rid == vm.RuntimeId;
+            if (!same)
+            {
+                var er = el.BoundingRectangle;
+                same = er.Left == l && er.Top == t && er.Right == r && er.Bottom == b;
+            }
+            if (!same) return; // 取到的是被遮挡的别的元素
+
+            try { el.PopulateAllPropertiesWithLiveData(); } catch { }
+            _detailsA11yElement = el; // Actions / 录制可用
+            var (props, pats) = TreeNodeViewModel.FromA11yElement(el, vm.ProcessName);
+            PropertiesGrid.ItemsSource = props;
+            PatternsTree.ItemsSource = pats;
+        }
+        catch { /* 元素已不可用：保持快照视图 */ }
+    }
+
+    /// <summary>
+    /// 重新解析"Details 当前元素"的实时引用。
+    /// 背景：鼠标捕获拿到的 A11yElement 由 SelectAction 的 POI context 持有，下一次捕获会替换并清理它，
+    /// 缓存里 A11yElement.Patterns 中的 COM 引用随之失效 —— 之后点 Actions 就会抛
+    /// 0x80131509 / 0x80040201。这里用捕获时的元素矩形中心做 ElementFromPoint 重取，
+    /// 再用 RuntimeId（读不到时用矩形相等）确认是同一条元素，保证拿到新鲜 Pattern。
+    /// </summary>
+    private Axe.Windows.Core.Bases.A11yElement? ResolveLiveDetailsElement()
+    {
+        if (_lastHoverResult is not { IsValid: true, BoundingRectangle: { } rect }) return null;
+        if (rect.Width <= 0 || rect.Height <= 0) return null;
+
+        int cx = rect.Left + rect.Width / 2;
+        int cy = rect.Top + rect.Height / 2;
+        try
+        {
+            using var session = UiTreeMonitor.Core.Uia.UiaSession.Create(); // UI 线程是 STA
+            var el = session.GetElementFromPoint(cx, cy);
+            if (el is null) return null;
+
+            var rid = TreeSampler.ReadRuntimeId(el);
+            bool same = !string.IsNullOrEmpty(_lastHoverResult.RuntimeId) && rid == _lastHoverResult.RuntimeId;
+            if (!same)
+            {
+                // RuntimeId 读不到（少数 provider）：退回矩形完全相等
+                try
+                {
+                    var r = el.BoundingRectangle;
+                    same = r.Left == rect.Left && r.Top == rect.Top && r.Right == rect.Right && r.Bottom == rect.Bottom;
+                }
+                catch { same = false; }
+            }
+            if (!same) return null;
+
+            try { el.PopulateAllPropertiesWithLiveData(); } catch { /* Patterns 填充失败时仍可用基础属性 */ }
+            return el;
+        }
+        catch { return null; }
+    }
+
+    /// <summary>在元素上按名称找 Pattern（重解析后 Pattern 顺序可能与捕获时不同，必须按名字匹配）。</summary>
+    private static Axe.Windows.Core.Bases.A11yPattern? FindPatternByName(Axe.Windows.Core.Bases.A11yElement el, string name)
+    {
+        try
+        {
+            if (el.Patterns is null) return null;
+            foreach (var p in el.Patterns)
+                if (p.Name == name) return p;
+        }
+        catch { /* 元素已失效 */ }
+        return null;
     }
 
     /// <summary>回放时的元素解析器：通过 ElementPath 在当前目标窗口 UIA 树中找到实时 A11yElement。</summary>

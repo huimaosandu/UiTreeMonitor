@@ -159,3 +159,6 @@ uv run --project .\test_ui .\test_ui\test_ui_name.py
 - 2026-11-17：结构树关闭虚拟化（容器真实生成），修复「随鼠标捕获」在深层节点上只高亮不展开的问题；高亮改为整行底色 + 加粗 + 左边框并自动选中/滚动；结构树新增关键词检索（多关键词 AND、命中计数、上一个/下一个、Esc 清空）
 - 2026-11-17：捕获定位改为「结构位置唯一确定」：树节点采集 UIA RuntimeId，捕获先按 RuntimeId 精确命中再算结构索引路径（`路径=0/4/1/3`），矩形/属性仅作兜底并在状态栏标注匹配方式；同进程定位落空自动重抓树（3s 节流）。实测 44 节点 RuntimeId 覆盖 100%，矩形偏移 40px 仍精确命中原路径
 - 2026-11-17：修复结构树「全是无名称」——根因是 `A11yElement.Name` 取的是 Axe.Windows 缓存字段，对 Chromium 子元素几乎不填充（实测 msedge 242 节点仅 11% 有值）；改为直读 UIA 实时属性（`CurrentName` / `CurrentAutomationId` / `CurrentClassName` / `CurrentControlType`），覆盖率升到 79%（余下为真无名的容器），同时纠正了「树里显示 Button、实际是 MenuItem」的类型错位。新增进程树缓存（12 秒 / 最多 4 个进程）：在几个应用间来回移动鼠标时直接复用树，不必每次重等 UIA 抓树（Chromium 240 节点约 2.9 秒）
+- 2026-11-17：抓树提速 10 倍——瓶颈是 `new DesktopElement(..., setMembers: true)` 每节点约 10ms（msedge 190 节点批量抓树 2699ms）；新增 `TreeSampler.CaptureWindowFast`，直接用 UIA COM walker 遍历并只读必要属性，同窗口 **269ms**，Name / RuntimeId 结果与旧路径完全一致。鼠标捕获跟随改走快速路径；监控任务仍用带 Pattern 的完整路径
+- 2026-11-17：修复 Actions 执行报 `0x80131509`——捕获元素的 `A11yElement` 由 SelectAction 的 POI context 持有，下一次捕获会替换并清理它，缓存里的 Pattern 引用随之失效；改为执行前用元素矩形中心 `ElementFromPoint` 重取实时元素并按 Pattern 名匹配（RuntimeId / 矩形校验同一元素），失败时把 UIA 错误码翻成可操作的中文提示。树节点选中时也会用同样方式把快照节点「复活」成实时元素，Details 的 Patterns 与 Actions 随之可用
+- 2026-11-17：抓树串行化（切应用时多个捕获结果并发抓树会互相覆盖，表现就是「第一次反应不过来、要试一两次」）；抓树完成后只在鼠标仍停在该元素矩形内时才补高亮，避免高亮跳到用户已离开的元素

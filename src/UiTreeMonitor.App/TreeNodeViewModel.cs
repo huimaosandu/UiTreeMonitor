@@ -47,6 +47,11 @@ public sealed class TreeNodeViewModel : INotifyPropertyChanged
     public int ProcessId { get; init; }
     public string? ProcessName { get; init; } // Details 面板右键添加目标时用
 
+    /// <summary>UIA RuntimeId（"a.b.c"）与屏幕矩形（"L,T,R,B"）：树选中节点时用来实时重取该元素，
+    /// 补全 Pattern / 让 Actions 可用（快速抓树快照本身不含 Pattern）。</summary>
+    public string? RuntimeId { get; init; }
+    public string? BoundingRectangle { get; init; }
+
     private bool _isHighlighted;
     public bool IsHighlighted
     {
@@ -90,6 +95,8 @@ public sealed class TreeNodeViewModel : INotifyPropertyChanged
             ClassName = node.ClassName,
             ProcessId = node.ProcessId,
             ProcessName = processName,
+            RuntimeId = node.RuntimeId,
+            BoundingRectangle = node.BoundingRectangle,
             Properties = props,
             Patterns = pats,
             SearchKey = $"{node.Name} {node.AutomationId} {node.ClassName} {node.ControlType}".ToLowerInvariant(),
