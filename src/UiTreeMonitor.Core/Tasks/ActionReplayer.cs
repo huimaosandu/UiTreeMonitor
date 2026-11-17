@@ -260,75 +260,140 @@ public sealed class ActionReplayer : IDisposable
             && int.TryParse(parts[1].Trim(), out y);
     }
 
-    /// <summary>坐标处元素的语义点击：FromPoint 命中元素 → 按 UiaPatternCatalog 的优先级执行最贴切的 UIA 动作（光标不动）。
-    /// 顺序（见 UiaPatternCatalog.ClickActions）：Invoke → LegacyIAccessible.DoDefaultAction → Toggle →
-    /// SelectionItem.Select → ExpandCollapse.Expand/Collapse。
-    /// 浏览器（Chromium）的菜单项常常只有 ExpandCollapse、没有 Invoke，只认 Invoke 会假失败。
-    /// 返回"动作+元素名"；都不可用返回 null，并把该元素**实际支持的 Pattern 清单**写进 <paramref name="failureDetail"/>。</summary>
+    /// <summary>UIA "当前状态无效"：0x80131509 Operation is not valid due to the current state of the object。
+    /// Chromium 元素在重绘/焦点切换的瞬间读 Pattern 会抛它，属瞬态错误，重取元素再试通常就好。</summary>
+    private const int HResultInvalidState = unchecked((int)0x80131509);
+
+    /// <summary>坐标处元素的语义点击（带瞬态重试）：FromPoint 命中元素 → 按 UiaPatternCatalog 的优先级执行最贴切的
+    /// UIA 动作（光标不动）。顺序 Invoke → LegacyIAccessible.DoDefaultAction → Toggle → SelectionItem.Select →
+    /// ExpandCollapse.Expand/Collapse。浏览器（Chromium）的菜单项常常只有 ExpandCollapse、没有 Invoke。
+    /// 返回"动作+元素名"；都不可用返回 null，并把该元素**实际支持的 Pattern 清单 / 各档失败原因**写进 <paramref name="failureDetail"/>。</summary>
     private static string? TrySemanticClick(int x, int y, out string? failureDetail)
     {
+        // ★ 瞬态重试：日志实测同一坐标时好时坏（(1568,152) 这次成功、下次 0x80131509）。
+        //   每轮都重新 ElementFromPoint，避免复用已经失效的 COM 引用。
         failureDetail = null;
-        IUIAutomationElement? el = null;
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            var ok = TrySemanticClickOnce(x, y, out var detail, out var transient);
+            if (ok is not null) return ok;
+            failureDetail = detail;
+            if (!transient) return null; // 确定性失败（无元素/自己 UI/确实没有点击语义）→ 不必重试
+            if (attempt < 2) Thread.Sleep(80);
+        }
+        return null;
+    }
+
+    private static string? TrySemanticClickOnce(int x, int y, out string? failureDetail, out bool transient)
+    {
+        failureDetail = null;
+        transient = false;
         try
         {
             var uia = (IUIAutomation)new CUIAutomation();
-            el = uia.ElementFromPoint(new tagPOINT { x = x, y = y });
+            var el = uia.ElementFromPoint(new tagPOINT { x = x, y = y });
             if (el is null) { failureDetail = "该坐标没有元素"; return null; }
             int pid;
             try { pid = el.CurrentProcessId; }
-            catch { failureDetail = "元素正在销毁"; return null; } // 元素销毁中
-            if (pid == Environment.ProcessId) { failureDetail = "该坐标落在录制工具自身界面"; return null; } // 点到自己 UI → 忠实真点击
+            catch { failureDetail = "元素正在销毁"; transient = true; return null; }
+            if (pid == Environment.ProcessId) { failureDetail = "该坐标落在录制工具自身界面"; return null; } // 自己 UI → 不语义化
 
             var name = "";
             try { name = el.CurrentName ?? ""; } catch { /* 名字读不到不碍事 */ }
             var label = name.Length > 0 ? name : $"pid {pid}";
 
-            // ★ 按 UiaPatternCatalog 顺序逐个试"点击语义"能力（id 见 Uia.PatternIds，已与 interop 常量核对）
-            if (el.GetCurrentPattern(PatternIds.Invoke) is IUIAutomationInvokePattern invoke)
-            {
-                invoke.Invoke();
-                return $"Invoke '{label}'";
-            }
-            if (el.GetCurrentPattern(PatternIds.LegacyIAccessible) is IUIAutomationLegacyIAccessiblePattern legacy)
-            {
-                legacy.DoDefaultAction();
-                return $"DoDefaultAction '{label}'";
-            }
-            if (el.GetCurrentPattern(PatternIds.Toggle) is IUIAutomationTogglePattern toggle)
-            {
-                toggle.Toggle();
-                return $"Toggle '{label}'";
-            }
-            if (el.GetCurrentPattern(PatternIds.SelectionItem) is IUIAutomationSelectionItemPattern selectItem)
-            {
-                selectItem.Select();
-                return $"Select '{label}'";
-            }
-            if (el.GetCurrentPattern(PatternIds.ExpandCollapse) is IUIAutomationExpandCollapsePattern expandCollapse)
-            {
-                // 点击语义 = 打开/收起（菜单/树节点）：已展开时再点应收起
-                var state = expandCollapse.CurrentExpandCollapseState;
-                if (state == ExpandCollapseState.ExpandCollapseState_Expanded)
-                {
-                    expandCollapse.Collapse();
-                    return $"Collapse '{label}'";
-                }
-                expandCollapse.Expand();
-                return $"Expand '{label}'";
-            }
+            // ★ 每档单独容错：某一种 Pattern 读失败不能中断后面的能力探测
+            //   （以前整段一个大 try，Invoke 抛 0x80131509 就直接整体失败，后面 4 档根本没试）
+            var errors = new List<string>();
+            var sawTransient = false;
 
-            // 五种点击语义都不支持 → 把该元素实际支持的 Pattern 清单报出来（诊断用，比"无可 Invoke 元素"有用得多）
+            try
+            {
+                if (el.GetCurrentPattern(PatternIds.Invoke) is IUIAutomationInvokePattern invoke)
+                {
+                    invoke.Invoke();
+                    return $"Invoke '{label}'";
+                }
+            }
+            catch (Exception ex) { Note(ex, "Invoke"); }
+
+            try
+            {
+                if (el.GetCurrentPattern(PatternIds.LegacyIAccessible) is IUIAutomationLegacyIAccessiblePattern legacy)
+                {
+                    legacy.DoDefaultAction();
+                    return $"DoDefaultAction '{label}'";
+                }
+            }
+            catch (Exception ex) { Note(ex, "DoDefaultAction"); }
+
+            try
+            {
+                if (el.GetCurrentPattern(PatternIds.Toggle) is IUIAutomationTogglePattern toggle)
+                {
+                    toggle.Toggle();
+                    return $"Toggle '{label}'";
+                }
+            }
+            catch (Exception ex) { Note(ex, "Toggle"); }
+
+            try
+            {
+                if (el.GetCurrentPattern(PatternIds.SelectionItem) is IUIAutomationSelectionItemPattern selectItem)
+                {
+                    selectItem.Select();
+                    return $"Select '{label}'";
+                }
+            }
+            catch (Exception ex) { Note(ex, "Select"); }
+
+            try
+            {
+                if (el.GetCurrentPattern(PatternIds.ExpandCollapse) is IUIAutomationExpandCollapsePattern expandCollapse)
+                {
+                    // 点击语义 = 打开/收起（菜单/树节点）：已展开时再点应收起
+                    var state = expandCollapse.CurrentExpandCollapseState;
+                    if (state == ExpandCollapseState.ExpandCollapseState_Expanded)
+                    {
+                        expandCollapse.Collapse();
+                        return $"Collapse '{label}'";
+                    }
+                    expandCollapse.Expand();
+                    return $"Expand '{label}'";
+                }
+            }
+            catch (Exception ex) { Note(ex, "Expand"); }
+
+            // 五种点击语义都没成 → 把元素实际支持的 Pattern 清单 + 各档失败原因报出来
             var supported = UiaPatternCatalog.SupportedNames(el);
             var ctrl = "";
             try { ctrl = el.CurrentControlType == 0 ? "" : $" ControlType={el.CurrentControlType}"; } catch { }
-            failureDetail = $"元素 '{label}'{ctrl} 没有点击语义（支持: " +
-                (supported.Count > 0 ? string.Join(",", supported) : "无任何 Pattern") + ")";
-            return null; // 不做盲目的真点击
+            failureDetail = $"元素 '{label}'{ctrl} 没有可执行的点击语义（支持: " +
+                (supported.Count > 0 ? string.Join(",", supported) : "无任何 Pattern") + "）" +
+                (errors.Count > 0 ? "；失败档: " + string.Join(" | ", errors) : "");
+            transient = sawTransient;
+            return null;
+
+            void Note(Exception ex, string stage)
+            {
+                if (ex.HResult == HResultInvalidState)
+                {
+                    // 元素状态瞬时无效：值得重试，也值得报出来（Chromium 重绘瞬间的典型错误）
+                    sawTransient = true;
+                    errors.Add($"{stage}: 元素状态瞬时无效(0x80131509)");
+                }
+                else if (ex.Message.Contains("support", StringComparison.OrdinalIgnoreCase))
+                {
+                    // "不支持该 Pattern"是正常情况（元素就没这个能力），不算失败原因
+                }
+                else errors.Add($"{stage}={ex.Message}");
+            }
         }
         catch (Exception ex)
         {
             failureDetail = $"语义探测失败: {ex.Message}";
-            return null; // 任何 COM 失败 → 该步失败
+            transient = ex.HResult == HResultInvalidState;
+            return null;
         }
     }
 

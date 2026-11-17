@@ -119,6 +119,23 @@ public sealed class TreeNodeViewModel : INotifyPropertyChanged
         return list;
     }
 
+    /// <summary>
+    /// 统一的 Pattern 子属性行文本："属性名 = 值"。
+    /// Axe.Windows 的 NodeValue 本身常常已经是 "HorizontalScrollable = False" 这种形式，
+    /// 不补判会显示成「HorizontalScrollable　HorizontalScrollable = False」的重复（原版截图里没重复）。
+    /// </summary>
+    private static PropertyItem MakeSubProperty(string name, string? raw)
+    {
+        var v = raw ?? "(null)";
+        if (!v.StartsWith(name + " = ", StringComparison.Ordinal)) v = $"{name} = {v}";
+        return new PropertyItem
+        {
+            Name = name,
+            Value = v.Length > 120 ? v[..117] + "..." : v,
+            FullValue = v,
+        };
+    }
+
     /// <summary>从 ElementNode 构建 Pattern 列表（使用 PatternDataList，与 FromA11yElement 统一格式）。</summary>
     private static IReadOnlyList<PatternItem> BuildPatterns(ElementNode node)
     {
@@ -127,9 +144,7 @@ public sealed class TreeNodeViewModel : INotifyPropertyChanged
         // 统一使用 PatternDataList（与 FromA11yElement 同款数据源和格式）
         foreach (var pd in node.PatternDataList)
         {
-            var subProps = pd.SubProps.Select(sp =>
-                new PropertyItem { Name = sp.Name, Value = sp.Value.Length > 120 ? sp.Value.Substring(0, 117) + "..." : sp.Value, FullValue = sp.Value }
-            ).ToList();
+            var subProps = pd.SubProps.Select(sp => MakeSubProperty(sp.Name, sp.Value)).ToList();
             list.Add(new PatternItem { Name = pd.Name, Value = pd.DisplayValue, SubProperties = subProps,
                 HasActions = false, PatternIndex = list.Count }); // 快照无 A11yPattern 引用，不支持 Actions
         }
@@ -197,16 +212,12 @@ public sealed class TreeNodeViewModel : INotifyPropertyChanged
                     var hasActions = PatternActionRunner.HasActions(p);
                     if (p.Properties is not null && p.Properties.Count > 0)
                     {
-                        // 有属性值：显示每个子属性
+                        // 有属性值：显示每个子属性（统一成 "属性名 = 值"，见 MakeSubProperty）
                         var subProps = new List<PropertyItem>();
                         foreach (var pp in p.Properties)
-                        {
-                            var nodeVal = pp.NodeValue ?? "(null)";
-                            var display = nodeVal.Length > 120 ? nodeVal.Substring(0, 117) + "..." : nodeVal;
-                            subProps.Add(new PropertyItem { Name = pp.Name, Value = display, FullValue = nodeVal });
-                        }
-                        // 用第一个属性的值作为 Pattern 的主显示值
-                        var mainVal = p.Properties[0].NodeValue ?? "(null)";
+                            subProps.Add(MakeSubProperty(pp.Name, pp.NodeValue));
+                        // 用第一个属性的值作为 Pattern 的主显示值（原版 PatternInfoControl 同款）
+                        var mainVal = subProps.Count > 0 ? subProps[0].Value : "(null)";
                         pats.Add(new PatternItem { Name = p.Name, Value = mainVal, SubProperties = subProps,
                             HasActions = hasActions, PatternIndex = patIdx });
                     }

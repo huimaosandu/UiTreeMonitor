@@ -155,19 +155,27 @@
                                             <MenuItem Header="添加为监测目标" Click="MenuItem_AddAsTarget_Click"/>
                                         </ContextMenu>
                                     </TreeView.ContextMenu>
-                                    <TreeView.ItemTemplate>
+                                    <TreeView.Resources>
+                                        <!-- Pattern 行：名字 + 首个属性值 + Actions 按钮 -->
                                         <HierarchicalDataTemplate DataType="{x:Type local:PatternItem}" ItemsSource="{Binding SubProperties}">
                                             <StackPanel Orientation="Horizontal">
                                                 <TextBlock Text="{Binding Name}" FontWeight="Bold" Margin="0,0,6,0"/>
                                                 <TextBlock Text="{Binding Value}" Foreground="#0066CC"/>
-                                                <Button Content="Actions..." Visibility="{Binding HasActions, Converter={x:Static local:BoolToVisibilityConverter.Default}}"
+                                                <!-- ★ FallbackValue：子属性行若走到这个模板，HasActions 绑定失败时
+                                                     WPF 会用按钮默认值 Visible 把按钮画出来（原版的 bug），必须显式兜底 -->
+                                                <Button Content="Actions..." Visibility="{Binding HasActions, Converter={x:Static local:BoolToVisibilityConverter.Default}, FallbackValue=Collapsed}"
                                                         Click="PatternAction_Click" Margin="8,0,0,0"
                                                         Padding="4,2" FontSize="11" FontWeight="Normal"
                                                         ToolTip="执行此 Pattern 的 UIA 操作方法"
                                                         Tag="{Binding PatternIndex}"/>
                                             </StackPanel>
                                         </HierarchicalDataTemplate>
-                                    </TreeView.ItemTemplate>
+                                        <!-- 属性行（Pattern 的子属性）：只显示 "属性名 = 值"，没有 Actions -->
+                                        <DataTemplate DataType="{x:Type local:PropertyItem}">
+                                            <TextBlock Text="{Binding Value}" Foreground="#0066CC" TextTrimming="CharacterEllipsis"
+                                                       ToolTip="{Binding FullValue}"/>
+                                        </DataTemplate>
+                                    </TreeView.Resources>
                                 </TreeView>
                             </Expander>
                         </StackPanel>
