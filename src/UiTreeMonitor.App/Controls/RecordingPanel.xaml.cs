@@ -345,6 +345,7 @@ public partial class RecordingPanel : UserControl
             AutomationElement? elem = null;
             int pid = 0;
             string elemName = "", ctrlType = "", procName = "";
+            string? specAtClick = null;   // ★ 元素新鲜时刻的定位 spec（见下方说明）
             try
             {
                 elem = input.Kind == InputActionKind.KeyDown
@@ -363,6 +364,12 @@ public partial class RecordingPanel : UserControl
                     elemName = elem.Current.Name ?? "";
                     ctrlType = elem.Current.ControlType?.ProgrammaticName ?? "";
                     procName = Process.GetProcessById(pid).ProcessName;
+
+                    // ★ 定位 spec 必须在这里抓（点击后**立刻**，元素还新鲜）。
+                    //   Chromium 弹出菜单：点完菜单项菜单就关，几百毫秒后再去读该元素的
+                    //   Name/ControlType/ClassName/BoundingRectangle 全是空，只剩 RuntimeId 侥幸可读
+                    //   （实测 spec 变成 autoId=|name=|type=|class=|rect=|rid=42.…），回放必然"元素未找到"。
+                    specAtClick = BuildSpec(elem);
                 }
             }
             catch { /* 元素可能已销毁/进程已退出；已读到的部分继续用 */ }
@@ -416,7 +423,7 @@ public partial class RecordingPanel : UserControl
             //   鼠标键盘模式 → 只产坐标记录（SendInput 回放），绝不语义化
             if (_uiaSemanticMode)
             {
-                HandleUiaSemanticInput(input, elem, pid, elemName, procName, ctrlType);
+                HandleUiaSemanticInput(input, elem, pid, elemName, procName, ctrlType, specAtClick);
                 return;
             }
 
@@ -485,12 +492,12 @@ public partial class RecordingPanel : UserControl
     /// - 右键/右键拖动/其他键（Tab/方向/F 键等）：无 UIA 语义等价，不记录（Tab 先 flush 键入）
     /// </summary>
     private void HandleUiaSemanticInput(InputActionRecord input, AutomationElement? elem,
-        int pid, string elemName, string procName, string ctrlType)
+        int pid, string elemName, string procName, string ctrlType, string? specAtClick)
     {
         switch (input.Kind)
         {
             case InputActionKind.MouseLeftClick:
-                if (elem is not null && TryBuildSemanticRecord(input, elem, elemName, procName, ctrlType, out var semantic, out var replacePrev))
+                if (elem is not null && TryBuildSemanticRecord(input, elem, elemName, procName, ctrlType, specAtClick, out var semantic, out var replacePrev))
                 {
                     // ★ 语义探测成功但**元素定位属性全读空**（Chromium 的 IUIAutomationElement
                     //   属性包整包抛异常的典型表现，GitHub 弹出菜单项实测如此）：这样的语义步骤
@@ -536,7 +543,7 @@ public partial class RecordingPanel : UserControl
                 if (isEnter)
                 {
                     FlushPendingKeys(reason: "enter");
-                    if (elem is not null && TryBuildSemanticRecord(input, elem, elemName, procName, ctrlType, out var keyRecord, out var keyMerge))
+                    if (elem is not null && TryBuildSemanticRecord(input, elem, elemName, procName, ctrlType, specAtClick, out var keyRecord, out var keyMerge))
                     {
                         AppendRecord(keyRecord, keyMerge, source: $"input-semantic {input.Kind}");
                         AppLog.Write("RECORD", $"OnInputAction→semantic: {keyRecord.PatternName}.{keyRecord.MethodName}" +
@@ -570,7 +577,7 @@ public partial class RecordingPanel : UserControl
             }
 
             case InputActionKind.MouseLeftDrag:
-                if (elem is not null && TryBuildSemanticRecord(input, elem, elemName, procName, ctrlType, out var dragRecord, out var dragMerge))
+                if (elem is not null && TryBuildSemanticRecord(input, elem, elemName, procName, ctrlType, specAtClick, out var dragRecord, out var dragMerge))
                 {
                     AppendRecord(dragRecord, dragMerge, source: $"input-semantic {input.Kind}");
                     AppLog.Write("RECORD", $"OnInputAction→semantic: {dragRecord.PatternName}.{dragRecord.MethodName}" +
@@ -718,7 +725,8 @@ public partial class RecordingPanel : UserControl
     /// 元素不支持对应 Pattern 或读取失败 → 返回 false（调用方回退坐标记录）。
     /// </summary>
     private bool TryBuildSemanticRecord(InputActionRecord input, AutomationElement? elem,
-        string elemName, string procName, string ctrlType, out ActionRecord record, out bool replacePrevious)
+        string elemName, string procName, string ctrlType, string? specOverride,
+        out ActionRecord record, out bool replacePrevious)
     {
         record = null!;
         replacePrevious = false;
@@ -741,7 +749,7 @@ public partial class RecordingPanel : UserControl
                     // ★ 按点击语义优先级探测真实 Pattern（不能默认 Invoke）：
                     //   Chromium 的菜单项/自绘按钮常常只有 ExpandCollapse、没有 Invoke，
                     //   以前一律只认 Invoke → 这些点击要么被丢弃、要么回放必然失败。
-                    if (TryBuildClickSemantic(elem, elemName, procName, ctrlType, input.Timestamp, out record))
+                    if (TryBuildClickSemantic(elem, elemName, procName, ctrlType, input.Timestamp, specOverride, out record))
                     {
                         replacePrevious = false;
                         return true;
@@ -765,7 +773,7 @@ public partial class RecordingPanel : UserControl
                         {
                             replacePrevious = true;
                             record = BuildSemantic(elem, "ValuePattern", "SetValue", new object?[] { value },
-                                result: $"{procName} {ShortType(ctrlType)} → \"{value}\"", elemName, input.Timestamp);
+                                result: $"{procName} {ShortType(ctrlType)} → \"{value}\"", elemName, input.Timestamp, specOverride);
                             return true;
                         }
                     }
@@ -774,7 +782,7 @@ public partial class RecordingPanel : UserControl
                         var value = rp.Current.Value;
                         replacePrevious = true;
                         record = BuildSemantic(elem, "RangeValuePattern", "SetValue", new object?[] { value },
-                            result: $"{procName} {ShortType(ctrlType)} → {value}", elemName, input.Timestamp);
+                            result: $"{procName} {ShortType(ctrlType)} → {value}", elemName, input.Timestamp, specOverride);
                         return true;
                     }
                     // 回车且焦点无值类 Pattern（按钮焦点）→ Invoke（表单提交语义）
@@ -782,7 +790,7 @@ public partial class RecordingPanel : UserControl
                     {
                         replacePrevious = false;
                         record = BuildSemantic(elem, "InvokePattern", "Invoke", null,
-                            result: $"{procName} {ShortType(ctrlType)} Invoke(Enter)", elemName, input.Timestamp);
+                            result: $"{procName} {ShortType(ctrlType)} Invoke(Enter)", elemName, input.Timestamp, specOverride);
                         return true;
                     }
                     LogPatternProbe(elem, elemName, ctrlType, procName, "key-no-value");
@@ -797,7 +805,7 @@ public partial class RecordingPanel : UserControl
                         var value = rp.Current.Value;
                         replacePrevious = true;
                         record = BuildSemantic(elem, "RangeValuePattern", "SetValue", new object?[] { value },
-                            result: $"{procName} {ShortType(ctrlType)} → {value}", elemName, input.Timestamp);
+                            result: $"{procName} {ShortType(ctrlType)} → {value}", elemName, input.Timestamp, specOverride);
                         return true;
                     }
                     LogPatternProbe(elem, elemName, ctrlType, procName, "drag-no-rangevalue");
@@ -809,12 +817,16 @@ public partial class RecordingPanel : UserControl
         return false;
     }
 
+    /// <param name="specOverride">**点击发生瞬间**抓到的定位 spec（见 OnInputAction）。Chromium 弹出菜单项
+    /// 在点击后几百毫秒就失效，此时才去读 Name/ControlType/Rect 全是空（实测只剩 RuntimeId 侥幸可读），
+    /// 所以必须在元素还新鲜的那一刻先抓一份，语义化时直接用。传 null 表示没抓到，按当下现读。</param>
     private static ActionRecord BuildSemantic(AutomationElement elem, string pattern, string method,
-        object?[]? parameters, string result, string elemName, DateTime timestamp) => new()
+        object?[]? parameters, string result, string elemName, DateTime timestamp,
+        string? specOverride = null) => new()
     {
         Timestamp = timestamp,
         ElementName = elemName,
-        ElementPath = BuildSpec(elem),          // spec 定位（回放经 ResolveBySpec 重定位，不依赖坐标）
+        ElementPath = specOverride ?? BuildSpec(elem),   // spec 定位（回放经 ResolveBySpec 重定位，不依赖坐标）
         PatternName = pattern,
         MethodName = method,
         Parameters = parameters,
@@ -831,7 +843,7 @@ public partial class RecordingPanel : UserControl
     /// 固定探测链必然漏；能力全集同时进 Result，回放失败时一眼能看出该元素到底能干什么。
     /// </summary>
     private bool TryBuildClickSemantic(AutomationElement elem, string elemName, string procName,
-        string ctrlType, DateTime ts, out ActionRecord record)
+        string ctrlType, DateTime ts, string? specOverride, out ActionRecord record)
     {
         record = null!;
         var shortType = ShortType(ctrlType);
@@ -878,7 +890,7 @@ public partial class RecordingPanel : UserControl
                 }
 
                 record = BuildSemantic(elem, action.PatternName, method, null,
-                    $"{procName} {shortType} {method}{extra}　patterns=[{capability}]", elemName, ts);
+                    $"{procName} {shortType} {method}{extra}　patterns=[{capability}]", elemName, ts, specOverride);
                 return true;
             }
 
@@ -922,63 +934,38 @@ public partial class RecordingPanel : UserControl
     };
 
     /// <summary>与 EventListenerCore.BuildSpec（COM 版）同格式的 WPF 元素 spec（回放 ResolveBySpec 通用）。
-    /// ★ 必须**逐属性独立读取**：`AutomationElement.Current` 是整包读取，Chromium 弹出菜单项只要有一个
-    ///   属性读不到就整包抛异常，结果 autoId/name/type/class/rect/rid 全空 —— 录制出 "spec:v1|" 空壳，
-    ///   回放必然报「元素未找到: spec:v1|」（GitHub 弹出菜单 "New issue" 实测）。</summary>
+    /// ★ 必须**逐字段读** `AutomationElementInformation`：Chromium 弹出菜单项只要有一个属性读不到，
+    ///   整包 `elem.Current` 就抛异常（原来 catch 后只剩 "spec:v1|" 空壳；实测只剩 RuntimeId 可读，
+    ///   回放报「元素未找到: spec:v1|autoId=|name=|type=|class=|rect=|rid=42.…」）。</summary>
     private static string BuildSpec(AutomationElement elem)
     {
-        var autoId = Esc(ReadStr(elem, AutomationElement.AutomationIdProperty)) ?? "";
-        var name = Esc(ReadStr(elem, AutomationElement.NameProperty)) ?? "";
-        var type = ReadControlType(elem) ?? "";
-        var cls = Esc(ReadStr(elem, AutomationElement.ClassNameProperty)) ?? "";
-        var rect = ReadRect(elem) ?? "";
-        var rid = ReadRuntimeId(elem) ?? "";
+        string autoId = "", name = "", type = "", cls = "", rectStr = "", rid = "";
 
-        // 定位信息一条都读不到 → 返回空串，调用方改录坐标（绝不录成 "spec:v1|" 这种回放必死的空步）
-        if (autoId.Length == 0 && name.Length == 0 && type.Length == 0
-            && cls.Length == 0 && rect.Length == 0 && rid.Length == 0) return "";
-
-        return $"spec:v1|autoId={autoId}|name={name}|type={type}|class={cls}|rect={rect}" +
-               (rid.Length > 0 ? $"|rid={rid}" : "");
-    }
-
-    private static string ReadStr(AutomationElement elem, AutomationProperty prop)
-    {
-        try { return elem.GetCurrentPropertyValue(prop, false) as string ?? ""; }
-        catch { return ""; }
-    }
-
-    private static string ReadControlType(AutomationElement elem)
-    {
+        try { autoId = elem.Current.AutomationId ?? ""; } catch { }
+        try { name = elem.Current.Name ?? ""; } catch { }
+        try { type = ShortType(elem.Current.ControlType?.ProgrammaticName ?? ""); } catch { }
+        try { cls = elem.Current.ClassName ?? ""; } catch { }
         try
         {
-            var v = elem.GetCurrentPropertyValue(AutomationElement.ControlTypeProperty, false);
-            return v is ControlType ct ? ShortType(ct.ProgrammaticName) : "";
+            var r = elem.Current.BoundingRectangle;
+            if (!r.IsEmpty && r.Width > 0 && r.Height > 0)
+                rectStr = $"{(int)r.Left},{(int)r.Top},{(int)r.Right},{(int)r.Bottom}";
         }
-        catch { return ""; }
-    }
-
-    private static string ReadRect(AutomationElement elem)
-    {
-        try
-        {
-            var v = elem.GetCurrentPropertyValue(AutomationElement.BoundingRectangleProperty, false);
-            if (v is System.Windows.Rect r && r.Width > 0 && r.Height > 0)
-                return $"{(int)r.Left},{(int)r.Top},{(int)r.Right},{(int)r.Bottom}";
-        }
-        catch { /* 部分 provider 不提供 BoundingRectangle */ }
-        return "";
-    }
-
-    private static string ReadRuntimeId(AutomationElement elem)
-    {
+        catch { }
         try
         {
             var ids = elem.GetRuntimeId();
-            if (ids is { Length: > 0 }) return string.Join(".", ids);
+            if (ids is { Length: > 0 }) rid = string.Join(".", ids);
         }
-        catch { /* 部分 provider 不提供 RuntimeId */ }
-        return "";
+        catch { }
+
+        // 定位信息一条都读不到 → 返回空串，调用方改录坐标（绝不录成 "spec:v1|" 这种回放必死的空步）
+        if (autoId.Length == 0 && name.Length == 0 && type.Length == 0
+            && cls.Length == 0 && rectStr.Length == 0 && rid.Length == 0) return "";
+
+        return $"spec:v1|autoId={Esc(autoId) ?? ""}|name={Esc(name) ?? ""}|type={type}" +
+               $"|class={Esc(cls) ?? ""}|rect={rectStr}" +
+               (rid.Length > 0 ? $"|rid={rid}" : "");
     }
 
     private static string? Esc(string? s) => string.IsNullOrEmpty(s) ? "" : Uri.EscapeDataString(s);
