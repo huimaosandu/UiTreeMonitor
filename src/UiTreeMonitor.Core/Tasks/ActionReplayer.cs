@@ -238,14 +238,14 @@ public sealed class ActionReplayer : IDisposable
         var xy = coordPath["coord:v1|".Length..].Split(',');
         if (xy.Length == 2 && int.TryParse(xy[0].Trim(), out var x) && int.TryParse(xy[1].Trim(), out var y))
         {
-            var name = TrySemanticClick(x, y);
+            var name = TrySemanticClick(x, y, out var why);
             if (name is not null)
             {
                 AppLog.Write("ACTION", $"ReplayCoordInvoke: ({x},{y}) → 语义 {name} (cursor untouched)");
                 return new ActionResult { Success = true, ReturnValue = $"语义 {name} @({x},{y})（未动光标）" };
             }
-            AppLog.Write("ACTION", $"ReplayCoordInvoke: ({x},{y}) → FAILED (no semantic pattern at point)");
-            return new ActionResult { Success = false, Error = $"坐标 ({x},{y}) 处元素没有可执行的语义动作（Invoke/DoDefaultAction/Toggle/Select/Expand 全不可用，或弹窗未打开/页面已变化）" };
+            AppLog.Write("ACTION", $"ReplayCoordInvoke: ({x},{y}) → FAILED: {why}");
+            return new ActionResult { Success = false, Error = $"坐标 ({x},{y}) 处无法执行语义动作：{why ?? "未知原因"}" };
         }
         return new ActionResult { Success = false, Error = $"coord:v1 路径无效: {coordPath}" };
     }
@@ -260,47 +260,51 @@ public sealed class ActionReplayer : IDisposable
             && int.TryParse(parts[1].Trim(), out y);
     }
 
-    /// <summary>坐标处元素的语义点击：FromPoint 命中元素 → 按能力优先级执行最贴切的 UIA 动作（光标不动）。
-    /// 顺序 Invoke → LegacyIAccessible.DoDefaultAction → Toggle → SelectionItem.Select → ExpandCollapse.Expand。
+    /// <summary>坐标处元素的语义点击：FromPoint 命中元素 → 按 UiaPatternCatalog 的优先级执行最贴切的 UIA 动作（光标不动）。
+    /// 顺序（见 UiaPatternCatalog.ClickActions）：Invoke → LegacyIAccessible.DoDefaultAction → Toggle →
+    /// SelectionItem.Select → ExpandCollapse.Expand/Collapse。
     /// 浏览器（Chromium）的菜单项常常只有 ExpandCollapse、没有 Invoke，只认 Invoke 会假失败。
-    /// 返回"动作+元素名"；都不可用（无 Pattern/是自己 UI/元素销毁/COM 失败）返回 null，由调用方记为该步失败。</summary>
-    private static string? TrySemanticClick(int x, int y)
+    /// 返回"动作+元素名"；都不可用返回 null，并把该元素**实际支持的 Pattern 清单**写进 <paramref name="failureDetail"/>。</summary>
+    private static string? TrySemanticClick(int x, int y, out string? failureDetail)
     {
+        failureDetail = null;
+        IUIAutomationElement? el = null;
         try
         {
             var uia = (IUIAutomation)new CUIAutomation();
-            var el = uia.ElementFromPoint(new tagPOINT { x = x, y = y });
-            if (el is null) return null;
+            el = uia.ElementFromPoint(new tagPOINT { x = x, y = y });
+            if (el is null) { failureDetail = "该坐标没有元素"; return null; }
             int pid;
             try { pid = el.CurrentProcessId; }
-            catch { return null; } // 元素销毁中
-            if (pid == Environment.ProcessId) return null; // 点击点是自己 UI → 不语义化，忠实真点击
+            catch { failureDetail = "元素正在销毁"; return null; } // 元素销毁中
+            if (pid == Environment.ProcessId) { failureDetail = "该坐标落在录制工具自身界面"; return null; } // 点到自己 UI → 忠实真点击
 
             var name = "";
             try { name = el.CurrentName ?? ""; } catch { /* 名字读不到不碍事 */ }
             var label = name.Length > 0 ? name : $"pid {pid}";
 
-            if (el.GetCurrentPattern(10000) is IUIAutomationInvokePattern invoke)
+            // ★ 按 UiaPatternCatalog 顺序逐个试"点击语义"能力（id 见 Uia.PatternIds，已与 interop 常量核对）
+            if (el.GetCurrentPattern(PatternIds.Invoke) is IUIAutomationInvokePattern invoke)
             {
                 invoke.Invoke();
                 return $"Invoke '{label}'";
             }
-            if (el.GetCurrentPattern(10018) is IUIAutomationLegacyIAccessiblePattern legacy)
+            if (el.GetCurrentPattern(PatternIds.LegacyIAccessible) is IUIAutomationLegacyIAccessiblePattern legacy)
             {
                 legacy.DoDefaultAction();
                 return $"DoDefaultAction '{label}'";
             }
-            if (el.GetCurrentPattern(10015) is IUIAutomationTogglePattern toggle)
+            if (el.GetCurrentPattern(PatternIds.Toggle) is IUIAutomationTogglePattern toggle)
             {
                 toggle.Toggle();
                 return $"Toggle '{label}'";
             }
-            if (el.GetCurrentPattern(10010) is IUIAutomationSelectionItemPattern selectItem)
+            if (el.GetCurrentPattern(PatternIds.SelectionItem) is IUIAutomationSelectionItemPattern selectItem)
             {
                 selectItem.Select();
                 return $"Select '{label}'";
             }
-            if (el.GetCurrentPattern(10002) is IUIAutomationExpandCollapsePattern expandCollapse)
+            if (el.GetCurrentPattern(PatternIds.ExpandCollapse) is IUIAutomationExpandCollapsePattern expandCollapse)
             {
                 // 点击语义 = 打开/收起（菜单/树节点）：已展开时再点应收起
                 var state = expandCollapse.CurrentExpandCollapseState;
@@ -312,10 +316,18 @@ public sealed class ActionReplayer : IDisposable
                 expandCollapse.Expand();
                 return $"Expand '{label}'";
             }
-            return null; // 四种语义能力都没有 → 不做盲目真点击
+
+            // 五种点击语义都不支持 → 把该元素实际支持的 Pattern 清单报出来（诊断用，比"无可 Invoke 元素"有用得多）
+            var supported = UiaPatternCatalog.SupportedNames(el);
+            var ctrl = "";
+            try { ctrl = el.CurrentControlType == 0 ? "" : $" ControlType={el.CurrentControlType}"; } catch { }
+            failureDetail = $"元素 '{label}'{ctrl} 没有点击语义（支持: " +
+                (supported.Count > 0 ? string.Join(",", supported) : "无任何 Pattern") + ")";
+            return null; // 不做盲目的真点击
         }
-        catch
+        catch (Exception ex)
         {
+            failureDetail = $"语义探测失败: {ex.Message}";
             return null; // 任何 COM 失败 → 该步失败
         }
     }

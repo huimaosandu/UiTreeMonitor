@@ -808,11 +808,12 @@ public partial class RecordingPanel : UserControl
     };
 
     /// <summary>
-    /// 点击语义探测：按优先级找"点一下这个元素"最贴切的 UIA 动作，并把**真实 Pattern** 记进脚本。
-    /// 顺序 Invoke → Toggle → SelectionItem → ExpandCollapse → LegacyIAccessible。
-    /// 之所以要这条链：浏览器/Chromium 的菜单项、自绘按钮普遍没有 InvokePattern，
-    /// 只提供 ExpandCollapse（下拉菜单）或 LegacyIAccessible；以前只认 Invoke，
-    /// 这类点击要么录不进去、要么被记成 Invoke，回放时必然"无可 Invoke 元素"。
+    /// 点击语义探测：**直接读元素实际支持的 Pattern 全集**（`GetSupportedPatterns()`），
+    /// 再按 UiaPatternCatalog.ClickActions 的优先级挑一个"点一下这个元素"最贴切的动作用，
+    /// 并把真实 Pattern 名 + 该元素支持的全部 Pattern 写进脚本。
+    /// 之所以不能固定枚举几类：浏览器/Chromium 的自绘控件、Win32 老控件、Qt 自绘控件的
+    /// 能力组合千差万别（只有 ExpandCollapse、只有 LegacyIAccessible、只有 SelectionItem…），
+    /// 固定探测链必然漏；能力全集同时进 Result，回放失败时一眼能看出该元素到底能干什么。
     /// </summary>
     private bool TryBuildClickSemantic(AutomationElement elem, string elemName, string procName,
         string ctrlType, DateTime ts, out ActionRecord record)
@@ -821,44 +822,53 @@ public partial class RecordingPanel : UserControl
         var shortType = ShortType(ctrlType);
         try
         {
-            if (elem.TryGetCurrentPattern(InvokePattern.Pattern, out _))
+            // ★ 元素支持的 Pattern 全集（WAF 内部同样是拿全表逐个试，这里一次拿到，不再自己维护探测链）
+            var supported = elem.GetSupportedPatterns();
+            var ids = new HashSet<int>();
+            var names = new List<string>();
+            foreach (var pat in supported)
             {
-                record = BuildSemantic(elem, "InvokePattern", "Invoke", null,
-                    $"{procName} {shortType} Invoke", elemName, ts);
+                try { ids.Add(pat.Id); names.Add(pat.ProgrammaticName); } catch { /* 单个 pattern 读不到 */ }
+            }
+            var capability = names.Count > 0 ? string.Join(",", names) : "(none)";
+
+            foreach (var action in UiaPatternCatalog.ClickActions)
+            {
+                if (!ids.Contains(action.PatternId)) continue;
+
+                var method = action.MethodName;
+                var extra = "";
+                if (action.Kind == UiaPatternCatalog.ClickKind.Toggle)
+                {
+                    // Toggle 是翻转：把点击后的状态写进脚本，回放时能核对（UIA 没有 SetState，无法自动纠偏）
+                    try
+                    {
+                        if (elem.TryGetCurrentPattern(TogglePattern.Pattern, out var tObj) && tObj is TogglePattern tp)
+                            extra = $"→{tp.Current.ToggleState}";
+                    }
+                    catch { /* 状态读不到 */ }
+                }
+                else if (action.Kind == UiaPatternCatalog.ClickKind.ExpandCollapse)
+                {
+                    // ★ 录制回调在点击生效之后取元素，读到的展开状态已是"点击造成的结果"，
+                    //   所以动作取"达到该状态的那个动作"，不能取反（取反会把"打开菜单"录成 Collapse）。
+                    var collapsed = false;
+                    try
+                    {
+                        if (elem.TryGetCurrentPattern(ExpandCollapsePattern.Pattern, out var ecObj) && ecObj is ExpandCollapsePattern ecp)
+                            collapsed = ecp.Current.ExpandCollapseState == ExpandCollapseState.Collapsed;
+                    }
+                    catch { /* 状态读不到按展开处理 */ }
+                    method = collapsed ? "Collapse" : "Expand";
+                }
+
+                record = BuildSemantic(elem, action.PatternName, method, null,
+                    $"{procName} {shortType} {method}{extra}　patterns=[{capability}]", elemName, ts);
                 return true;
             }
 
-            if (elem.TryGetCurrentPattern(TogglePattern.Pattern, out var tObj) && tObj is TogglePattern tp)
-            {
-                // 把点击后的状态写进日志/脚本：Toggle 是翻转动作，回放时若已是该状态就不该再翻转，
-                // 有状态值才能人工核对（UIA 的 Toggle 没有 SetState，无法自动纠偏）
-                var state = "";
-                try { state = tp.Current.ToggleState.ToString(); } catch { /* 状态读不到 */ }
-                record = BuildSemantic(elem, "TogglePattern", "Toggle", null,
-                    $"{procName} {shortType} Toggle→{state}", elemName, ts);
-                return true;
-            }
-
-            if (elem.TryGetCurrentPattern(SelectionItemPattern.Pattern, out _))
-            {
-                record = BuildSemantic(elem, "SelectionItemPattern", "Select", null,
-                    $"{procName} {shortType} Select", elemName, ts);
-                return true;
-            }
-
-            if (elem.TryGetCurrentPattern(ExpandCollapsePattern.Pattern, out var ecObj) && ecObj is ExpandCollapsePattern ecp)
-            {
-                // ★ 录制回调在点击生效之后取元素，读到的展开状态已是"点击造成的结果"，
-                //   所以动作取"达到该状态的那个动作"，不能取反（取反会把"打开菜单"录成 Collapse）。
-                var collapsed = false;
-                try { collapsed = ecp.Current.ExpandCollapseState == ExpandCollapseState.Collapsed; } catch { /* 状态读不到按展开处理 */ }
-                record = BuildSemantic(elem, "ExpandCollapsePattern", collapsed ? "Collapse" : "Expand", null,
-                    $"{procName} {shortType} {(collapsed ? "Collapse" : "Expand")}", elemName, ts);
-                return true;
-            }
-
-            // LegacyIAccessible 这一档留给回放端（坐标探测时按 UIA interop 的 pattern id 判断）；
-            // 录制端 System.Windows.Automation 封装里没有该 Pattern 类型，不做探测。
+            // 支持全集里没有任何"点击语义"能力 → 交给调用方走坐标记录，但把能力清单写进日志备查
+            LogPatternProbe(elem, elemName, ctrlType, procName, "click-no-semantic");
         }
         catch { /* Pattern 探测失败 → 调用方回退坐标记录 */ }
         return false;
