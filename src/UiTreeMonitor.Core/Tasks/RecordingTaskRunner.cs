@@ -201,11 +201,16 @@ public sealed class RecordingTaskRunner : IDisposable
                 }
             }
             var (ok, result) = _replayer.ExecuteOne(record, element);
+            // ★ 把本次执行结果写回节点：步骤详情列显示它，右键"复制结果"也取这里
+            //   （原来只写日志，列表里显示的永远是录制时的旧 Result）
+            node.Action = record with { Success = ok, Result = result };
             AppLog.Write("TASK", $"Action step {(ok ? "OK" : "FAIL")}: {record.PatternName}.{record.MethodName} → {result}");
             if (!ok) throw new InvalidOperationException(result ?? "执行失败");
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            // 元素未找到等异常也要写回失败原因，否则详情列还是录制时的旧结果
+            node.Action = record with { Success = false, Result = ex.Message };
             throw new InvalidOperationException($"步骤 [{node.DisplayText}] 失败: {ex.Message}", ex);
         }
     }

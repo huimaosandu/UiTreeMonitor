@@ -45,6 +45,7 @@ public partial class RecordingPanel : UserControl
     private int _stepIndex = -1;
     private StepVm? _selectedVm;        // 步骤树当前选中节点（右键操作目标）
     private StepVm? _anchorVm;          // Shift 范围多选锚点（上次单选项）
+    private StepVm? _contextVm;         // 右键命中的行（"复制结果"用它，未命中则回落到 _selectedVm）
     private bool _triggerPickSolo;      // 触发器捕获由右键插入发起（非录制中）：完成/取消后停止静默捕获
     private bool _screenshotPickSolo;   // 截图捕获由右键插入发起（非录制中）：完成/取消后停止静默捕获并恢复烧杯
     private StepNode? _insertAnchor;    // "插入动作"录制锚点：新录动作依次插到该节点之后（null=根级末尾追加）
@@ -1166,7 +1167,11 @@ public partial class RecordingPanel : UserControl
                 if (snap.CurrentNodeId is Guid runId)
                 {
                     SettleRunningMarks(exceptNodeId: runId); // 上一步到此已完成
-                    if (_vmById.TryGetValue(runId, out var runVm)) MarkStep(runVm.Node, StepMark.Running);
+                    if (_vmById.TryGetValue(runId, out var runVm))
+                    {
+                        MarkStep(runVm.Node, StepMark.Running);
+                        runVm.RefreshDetail(); // 上一步写回的结果/错误立即刷新到该行的详情列
+                    }
                 }
             }
 
@@ -1575,6 +1580,10 @@ public partial class RecordingPanel : UserControl
             IsFailed = mark == StepMark.Failed;
         }
 
+        /// <summary>回放/单步把结果写回 node.Action 后，通知详情列重新读（DetailText 是计算属性）。</summary>
+        public void RefreshDetail() =>
+            PropertyChanged?.Invoke(this, new(nameof(Detail)));
+
         private void SetField(ref bool field, bool value, string name)
         {
             if (field == value) return;
@@ -1726,9 +1735,55 @@ public partial class RecordingPanel : UserControl
     private void TvSteps_MouseRightButtonUp(object sender, System.Windows.Input.MouseButtonEventArgs e)
     {
         // TreeView 右键默认不改变选中：保持 _selectedVm（未选中时操作目标=根级末尾）
+        // 但"复制结果"要复制用户右键点中的那一行，所以单独记一份命中行
+        _contextVm = VmFromPoint(e.GetPosition(TvSteps));
     }
 
-    private void SelectVmByNode(StepNode node) { /* 选中展开由 RefreshTree 后 ItemsSource 重建，保持简单 */ }
+    /// <summary>右键"复制结果"：把步骤最近一次执行的结果/错误文本复制到剪贴板（多选时复制全部）。</summary>
+    private void MenuCopyResult_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var vms = FlattenVms(TvSteps.ItemsSource as List<StepVm>)
+                .Where(v => v.IsMultiSelected)
+                .ToList();
+            if (vms.Count == 0)
+            {
+                var one = _contextVm ?? _selectedVm;
+                if (one is null) { TxtStatus.Text = "先在步骤树里选中一行（或多选）再复制结果"; return; }
+                vms.Add(one);
+            }
+
+            var sb = new System.Text.StringBuilder();
+            foreach (var vm in vms)
+            {
+                var n = vm.Node;
+                var idx = (vm.IndexText ?? "").Trim();
+                sb.AppendLine($"{(idx.Length > 0 ? idx + " " : "")}{n.DisplayText}");
+                if (n.Kind == StepKinds.Action && n.Action is { } a)
+                {
+                    sb.AppendLine($"  状态: {(a.Success ? "成功" : "失败")}");
+                    if (a.ElementName.Length > 0) sb.AppendLine($"  元素: {a.ElementName}");
+                    sb.AppendLine($"  结果: {(string.IsNullOrWhiteSpace(a.Result) ? "(无返回值)" : a.Result)}");
+                }
+                else
+                {
+                    var d = n.DetailText;
+                    if (!string.IsNullOrWhiteSpace(d)) sb.AppendLine($"  结果: {d}");
+                }
+                sb.AppendLine();
+            }
+
+            var text = sb.ToString().TrimEnd();
+            if (text.Length == 0) { TxtStatus.Text = "该步骤还没有可复制的内容"; return; }
+            System.Windows.Clipboard.SetText(text);
+            TxtStatus.Text = $"已复制 {vms.Count} 个步骤的结果到剪贴板（{text.Length} 字符）";
+        }
+        catch (Exception ex)
+        {
+            TxtStatus.Text = $"复制结果失败: {ex.Message}";
+        }
+    }
 
     // ---- 右键菜单：插入控制节点（插入到选中步骤上方；未选中→根级末尾） ----
 

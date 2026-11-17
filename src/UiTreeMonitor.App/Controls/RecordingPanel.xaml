@@ -124,6 +124,8 @@
                 <ContextMenu x:Name="MenuSteps">
                     <MenuItem Header="▶ 运行此步骤（含子步骤）" Click="MenuRunStep_Click"
                               ToolTip="只运行选中步骤（循环/触发器按展开语义执行子树；运行中再点=停止）"/>
+                    <MenuItem Header="复制结果" Click="MenuCopyResult_Click"
+                              ToolTip="复制该步骤最近一次执行的结果/错误文本（Shift 多选时复制全部选中行）；右键点中哪行就复制哪行"/>
                     <Separator/>
                     <MenuItem Header="插入动作（自动开录制）" Click="MenuInsertAction_Click"
                               ToolTip="未录制时自动开始录制（保留现有步骤），此后录制的动作依次插到选中行上方"/>
