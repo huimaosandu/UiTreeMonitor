@@ -83,6 +83,13 @@ public partial class RecordingPanel : UserControl
     private int _primedX, _primedY;
     private DateTime _primedTick = DateTime.MinValue;
 
+    // ★ "输入锚"：最近一次用户输入（点击/键入/拖动）命中的元素 RuntimeId。
+    //   UIA 属性变化事件是**结果**而不是动作：一次操作会连带触发大量后代元素的连锁事件
+    //   （实测展开一行 → 139 条 ExpandCollapse Changed，元素名甚至是 "AccessKey: Property does not exist"
+    //    这种属性行文本）。只有与最近输入命中同一元素的事件才是用户真正做的动作。
+    private string _lastInputRuntimeId = "";
+    private DateTime _lastInputTick = DateTime.MinValue;
+
     /// <summary>录制状态变化通知。</summary>
     public event Action<bool>? RecordingStateChanged;
 
@@ -454,6 +461,18 @@ public partial class RecordingPanel : UserControl
                 _recentClickTick = DateTime.Now;
             }
 
+            // ★ 更新输入锚：UIA 事件只认"与本次输入同一元素"的那些（过滤连锁噪声）
+            if (elem is not null && pid != 0)
+            {
+                try
+                {
+                    var ids = elem.GetRuntimeId();
+                    _lastInputRuntimeId = ids is { Length: > 0 } ? string.Join(".", ids) : "";
+                }
+                catch { _lastInputRuntimeId = ""; }
+                _lastInputTick = DateTime.Now;
+            }
+
             // ★ 自己 UI 的动作最先拦（点"停止录制"按钮本身也是一次左键点击）——必须在校验丢弃之前：
             //   若先做 hwnd 校验把 pid 清零，own 过滤失效，自己 UI 的点击会被当成"元素销毁"误录
             if (pid != 0 && pid == Environment.ProcessId)
@@ -732,6 +751,24 @@ public partial class RecordingPanel : UserControl
 
             var record = uiaEvent.ToActionRecord();
 
+            // ★ 输入锚过滤（最关键的一道）：属性变化事件是"结果"，一次用户操作会连带触发大量
+            //   后代元素的连锁事件——实测展开一行刷出 139 条 ExpandCollapse Changed，元素名甚至是
+            //   "AccessKey: Property does not exist" 这种属性行文本，全录下来就是"点一下录上百个动作"。
+            //   只有"与最近一次用户输入命中同一元素"的事件才可能是真正要录的动作。
+            var sinceInput = (DateTime.Now - _lastInputTick).TotalMilliseconds;
+            if (sinceInput > 1500)
+            {
+                AppLog.Write("RECORD", $"[anchor] 丢弃无输入锚事件 {uiaEvent.EventName} " +
+                    $"elem='{TruncLog(uiaEvent.ElementName, 30)}'（距上次用户输入 {sinceInput:F0}ms > 1500ms）");
+                return;
+            }
+            if (!string.IsNullOrEmpty(_lastInputRuntimeId) && !string.IsNullOrEmpty(uiaEvent.RuntimeId)
+                && uiaEvent.RuntimeId != _lastInputRuntimeId)
+            {
+                AppLog.Write("RECORD", $"[anchor] 丢弃非本元素事件 {uiaEvent.EventName} " +
+                    $"elem='{TruncLog(uiaEvent.ElementName, 30)}' rid={uiaEvent.RuntimeId} ≠ 输入锚 {_lastInputRuntimeId}");
+                return;
+            }
             // ★ 事件洪水节流：同元素（spec 忽略 rect 抖动）同 Pattern 同方法在 400ms 内重复触发只留一条。
             //   部分控件一次点击会连带触发多条属性事件，这些不是用户操作，回放也是无意义的重复动作。
             //   值类（ReplacePrevious=true，逐字符输入/拖动）不走节流，靠 merge 保留最终值。

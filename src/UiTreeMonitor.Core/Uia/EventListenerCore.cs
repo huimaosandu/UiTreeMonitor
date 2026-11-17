@@ -45,6 +45,10 @@ public sealed record UiaEventRecord
     public string ElementName { get; init; } = "";
     public string ControlType { get; init; } = "";
     public string? ElementPath { get; init; }        // 语义记录=元素定位 spec（回放时在目标窗口树中重定位）
+    /// <summary>元素 RuntimeId（"a.b.c"）。供订阅方做"输入锚"过滤：一次用户操作会连带触发大量
+    /// 后代元素的连锁属性事件（实测展开一行 → 139 条 ExpandCollapse Changed），只有与最近一次
+    /// 用户输入命中同一元素的事件才是真正要录的动作。</summary>
+    public string RuntimeId { get; init; } = "";
     public IList<object>? ChangedProperties { get; init; }
 
     // ==== 语义化（可回放）字段：UIA 事件/属性变化 → 对应 Pattern 操作 ====
@@ -526,6 +530,15 @@ public sealed class EventListenerCore : IDisposable
             catch { /* 元素可能已销毁 */ }
             try { typeName = TreeSampler.ControlTypeName(ctrlTypeId); } catch { /* 未知类型 */ }
 
+            // RuntimeId：给订阅方做"输入锚"过滤用（-1 表示 provider 不提供）
+            string rid = "";
+            try
+            {
+                var ids = elem.GetRuntimeId();
+                if (ids is { Length: > 0 }) rid = string.Join(".", ids);
+            }
+            catch { /* 部分 provider 不提供 RuntimeId */ }
+
             var record = new UiaEventRecord
             {
                 Timestamp = DateTime.Now,
@@ -534,9 +547,11 @@ public sealed class EventListenerCore : IDisposable
                 ElementUniqueId = 0,
                 ElementName = elemName,
                 ControlType = typeName,
+                RuntimeId = rid,
                 ElementPath = pattern is null
                     ? null
-                    : $"spec:v1|autoId={Esc(autoId)}|name={Esc(elemName)}|type={typeName}|class={Esc(className)}|rect={rectStr}",
+                    : $"spec:v1|autoId={Esc(autoId)}|name={Esc(elemName)}|type={typeName}|class={Esc(className)}|rect={rectStr}" +
+                      (rid.Length > 0 ? $"|rid={rid}" : ""),
                 ChangedProperties = null,
                 PlaybackPattern = pattern,
                 PlaybackMethod = method,
