@@ -29,7 +29,8 @@ public sealed record MouseCaptureResult(
     bool? IsKeyboardFocusable,           // 是否可键盘聚焦（高亮信息卡用）
     int? TreeNodeId,                     // 在已加载树中定位到的节点 id（可能为 null）
     bool IsValid,
-    Guid? ElementContextId = null);      // SelectAction 的 POI ElementContext id（供 UI 取 A11yElement 驱动原版高亮）
+    Guid? ElementContextId = null,       // SelectAction 的 POI ElementContext id（供 UI 取 A11yElement 驱动原版高亮）
+    string? RuntimeId = null);           // 捕获元素的 UIA RuntimeId（"a.b.c"）：在树快照里精确定位
 
 /// <summary>
 /// 鼠标捕获器（Element Inspector）。
@@ -128,7 +129,8 @@ public sealed class MouseCapture : IDisposable
                                 SafeBool(() => el.IsKeyboardFocusable),  // ★ 安全读取，COM 可能返回 null
                                 TreeNodeId: null,
                                 IsValid: true,
-                                ElementContextId: ecId);
+                                ElementContextId: ecId,
+                                RuntimeId: TreeSampler.ReadRuntimeId(el));
                             ResultProduced?.Invoke(r);
                         }
                     }
@@ -148,28 +150,48 @@ public sealed class MouseCapture : IDisposable
     private static string Fingerprint(A11yElement el)
         => $"{el.ProcessId}|{el.Name}|{el.AutomationId}|{el.ControlTypeId}|{el.ClassName}|{el.BoundingRectangle}";
 
-    /// <summary>把一次捕获结果定位到已加载树：返回匹配节点 id。
-    /// 矩形优先（悬停元素与树节点同源 UIA，"L,T,R,B" 物理像素矩形稳定唯一——Name 是实时变化值、
-    /// AutomationId 常缺失/重复，属性匹配不可靠）；矩形未命中再属性匹配兜底。</summary>
-    public static int? LocateInTree(TreeSnapshot tree, MouseCaptureResult capture)
+    /// <summary>一次"捕获 → 树位置"的定位结果。Path 是结构索引路径（如 "0/4/1/3"），
+    /// 与任务/脚本里的 ElementPath 同一套编码，可直接复制使用。</summary>
+    public sealed record TreeHit(int NodeId, string Via, string? Path);
+
+    /// <summary>把一次捕获结果定位到已加载树，返回节点 id + 结构路径 + 命中方式。
+    /// 顺序：RuntimeId（元素身份证，精确）→ 矩形完全相等 → 矩形容差 → 精确属性。
+    /// 只有 Via=runtime 才是"同一元素"的铁证；其余方式命中会在 UI 上标注，提示刷新结构树。</summary>
+    public static TreeHit? LocateInTree(TreeSnapshot tree, MouseCaptureResult capture)
     {
         if (!capture.IsValid || tree is null || tree.Nodes.Count == 0) return null;
+
+        TreeHit Make(int id, string via) => new(id, via, ElementMatcher.BuildPath(tree, id));
+
+        // 第0优先：RuntimeId 精确相等 —— 捕获元素与树快照同源 UIA，RuntimeId 是元素实例的身份证，
+        // 命中即同一元素，结构路径也就是唯一确定的位置（不受缩放/滚动/DPI/Name 变化影响）
+        if (!string.IsNullOrEmpty(capture.RuntimeId))
+        {
+            foreach (var node in tree.Nodes.Values)
+            {
+                if (node.RuntimeId is not null && node.RuntimeId == capture.RuntimeId) return Make(node.Id, "runtime");
+            }
+        }
 
         // 第1优先：屏幕矩形 + ControlType 完全相等（元素不动则矩形不变，与值变化无关）
         var rectStr = RectString(capture.BoundingRectangle);
         if (rectStr is not null)
         {
             var byRect = ElementMatcher.FindByRect(tree, rectStr, capture.ControlType);
-            if (byRect is not null) return byRect.Id;
+            if (byRect is not null) return Make(byRect.Id, "rect");
+            // 第1.5：容差匹配（窗口缩放/滚动/DPR 造成 1-8px 偏移时，精确相等会全盘落空）
+            var near = ElementMatcher.FindByRectNear(tree, rectStr, capture.ControlType, 8);
+            if (near is not null) return Make(near.Id, "rect-near");
         }
 
         // 第2优先：属性匹配（Name+Type+AutoId 全条件，空条件跳过；取深度最深）
+        var capName = NormalizeName(capture.Name);
         ElementNode? best = null;
         foreach (var (id, node) in tree.Nodes)
         {
             if (node.ProcessId != 0 && capture.ProcessId != 0 && node.ProcessId != capture.ProcessId)
                 continue;
-            bool nameOk = string.IsNullOrEmpty(capture.Name) || node.Name == capture.Name;
+            bool nameOk = capName is null || NormalizeName(node.Name) == capName;
             bool typeOk = node.ControlType == capture.ControlType;
             bool autoOk = string.IsNullOrEmpty(capture.AutomationId) || node.AutomationId == capture.AutomationId;
             if (nameOk && typeOk && autoOk)
@@ -178,7 +200,17 @@ public sealed class MouseCapture : IDisposable
                 if (best is null || node.Depth > best.Depth) best = node;
             }
         }
-        return best?.Id;
+        return best is null ? null : Make(best.Id, "attr");
+    }
+
+    /// <summary>Name 归一化：去掉零宽字符/不换行空格并压缩空白（网页元素 Name 常夹 \u200B，精确比较会莫名不相等）。</summary>
+    private static string? NormalizeName(string? s)
+    {
+        if (string.IsNullOrWhiteSpace(s)) return null;
+        var cleaned = s.Replace("\u200B", "").Replace("\u200C", "").Replace("\u200D", "")
+                       .Replace("\uFEFF", "").Replace("\u00A0", " ");
+        cleaned = System.Text.RegularExpressions.Regex.Replace(cleaned, @"\s+", " ").Trim();
+        return cleaned.Length == 0 ? null : cleaned;
     }
 
     /// <summary>Rectangle → 树节点同款 "L,T,R,B" 字符串（空/无效矩形返回 null）。</summary>

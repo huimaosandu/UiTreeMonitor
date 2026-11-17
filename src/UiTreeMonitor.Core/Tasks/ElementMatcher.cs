@@ -83,6 +83,45 @@ public static class ElementMatcher
         return best;
     }
 
+    /// <summary>矩形容差匹配：ControlType 相同且两个矩形中心距 ≤ tolerancePx（取距离最近、深度最深）。
+    /// 用于窗口缩放/滚动/DPI 变化造成 1-8px 偏移的场景（精确相等会全部落空）。</summary>
+    public static ElementNode? FindByRectNear(TreeSnapshot tree, string? boundingRect, string? controlType, int tolerancePx)
+    {
+        if (string.IsNullOrEmpty(boundingRect)) return null;
+        if (!TryParseRect(boundingRect, out var l, out var t, out var r, out var b)) return null;
+        var cx = (l + r) / 2.0;
+        var cy = (t + b) / 2.0;
+
+        ElementNode? best = null;
+        var bestDist = double.MaxValue;
+        foreach (var node in tree.Nodes.Values)
+        {
+            if (!string.IsNullOrEmpty(controlType) && node.ControlType != controlType) continue;
+            if (!TryParseRect(node.BoundingRectangle, out var nl, out var nt, out var nr, out var nb)) continue;
+            var dx = (nl + nr) / 2.0 - cx;
+            var dy = (nt + nb) / 2.0 - cy;
+            var dist = Math.Sqrt(dx * dx + dy * dy);
+            if (dist > tolerancePx) continue;
+            if (dist < bestDist || (dist == bestDist && best is not null && node.Depth > best.Depth))
+            {
+                best = node;
+                bestDist = dist;
+            }
+        }
+        return best;
+    }
+
+    /// <summary>"L,T,R,B" → 四个整数（解析失败返回 false）。</summary>
+    private static bool TryParseRect(string? rect, out int l, out int t, out int r, out int b)
+    {
+        l = t = r = b = 0;
+        if (string.IsNullOrEmpty(rect)) return false;
+        var parts = rect.Split(',');
+        if (parts.Length != 4) return false;
+        return int.TryParse(parts[0], out l) && int.TryParse(parts[1], out t)
+            && int.TryParse(parts[2], out r) && int.TryParse(parts[3], out b);
+    }
+
     /// <summary>精确属性匹配：全部非空条件同时满足才命中（条件为 null 表示不约束），取前序第一个。</summary>
     public static ElementNode? FindExact(
         IEnumerable<ElementNode> nodes, string? elementName, string? elementAutomationId, string? elementControlType)

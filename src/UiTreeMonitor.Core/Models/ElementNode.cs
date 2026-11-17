@@ -66,6 +66,9 @@ public sealed record ElementNode
     public string? AccessKey { get; init; }
     public string? IsSelected { get; init; }
     public string? ExpandCollapseState { get; init; }
+    /// <summary>UIA RuntimeId（"a.b.c" 形式）：同一元素实例内唯一，鼠标捕获据此 O(1) 精确命中，
+    /// 不再依赖"矩形字符串完全相等"这种几何反查（缩放/滚动/DPI 一变就全落空）。</summary>
+    public string? RuntimeId { get; init; }
     /// <summary>该节点支持的 Pattern 完整数据（原版 el.Patterns → NodeValue 同款格式）。</summary>
     public IReadOnlyList<PatternData> PatternDataList { get; init; } = Array.Empty<PatternData>();
     /// <summary>该节点支持的 Pattern 名称列表（即使当前值为空也列入，保留兼容）。</summary>

@@ -5,6 +5,7 @@ using Axe.Windows.Core.Bases;
 using Axe.Windows.Desktop.UIAutomation;
 using UiTreeMonitor.Core.Models;
 using UiTreeMonitor.Core.Uia;
+using UIAutomationClient;
 
 namespace UiTreeMonitor.Core.Sampler;
 
@@ -148,8 +149,22 @@ public sealed class TreeSampler
             ExpandCollapseState = GetVal("ExpandCollapsePattern", "ExpandCollapseState"),
             PatternDataList = patternDataList,
             SupportedPatterns = patternNames,
+            RuntimeId = ReadRuntimeId(el),
             Children = Array.Empty<int>(),
         };
+    }
+
+    /// <summary>读 UIA RuntimeId（"a.b.c"）：同一元素实例内唯一，用于鼠标捕获到树节点的精确命中。
+    /// 读不到返回 null（部分 provider 不提供），此时捕获侧自动退化为矩形/属性匹配。</summary>
+    public static string? ReadRuntimeId(A11yElement el)
+    {
+        try
+        {
+            var uiaEl = el.PlatformObject as IUIAutomationElement;
+            var rid = uiaEl?.GetRuntimeId();
+            return rid is { Length: > 0 } ? string.Join(".", rid) : null;
+        }
+        catch { return null; }
     }
 
     private static string? Safe(string? s) => string.IsNullOrEmpty(s) ? null : s;

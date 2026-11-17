@@ -53,6 +53,17 @@ public sealed class TreeNodeViewModel : INotifyPropertyChanged
         set { if (_isHighlighted != value) { _isHighlighted = value; OnPropertyChanged(); } }
     }
 
+    private bool _isMatched;
+    /// <summary>关键词检索命中（XAML DataTrigger 画浅绿底色，与鼠标捕获的黄色高亮区分）。</summary>
+    public bool IsMatched
+    {
+        get => _isMatched;
+        set { if (_isMatched != value) { _isMatched = value; OnPropertyChanged(); } }
+    }
+
+    /// <summary>检索用的小写拼接串（Name/AutomationId/ClassName/ControlType），构建时算一次，避免每次输入都重拼。</summary>
+    public string SearchKey { get; init; } = "";
+
     public ObservableCollection<TreeNodeViewModel> Children { get; } = new();
 
     public event PropertyChangedEventHandler? PropertyChanged;
@@ -80,6 +91,7 @@ public sealed class TreeNodeViewModel : INotifyPropertyChanged
             ProcessName = processName,
             Properties = props,
             Patterns = pats,
+            SearchKey = $"{node.Name} {node.AutomationId} {node.ClassName} {node.ControlType}".ToLowerInvariant(),
         };
     }
 

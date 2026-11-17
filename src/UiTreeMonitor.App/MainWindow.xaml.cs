@@ -147,6 +147,15 @@ public partial class MainWindow : Window
     private bool _screenshotPicking;  // 截图目标拾取中（蓝框右上角已临时切换为剪刀）：烧杯回调走截图分叉
     private bool _screenshotPickSolo; // 截图拾取由右键插入发起且为此单独启动了静默捕获：完成后停止并恢复烧杯图标
     private TreeNodeViewModel? _selectedNode; // 当前树选中节点（Details 面板联动）
+
+    // ========== 结构树关键词检索 ==========
+    private readonly List<TreeNodeViewModel> _searchMatches = new(); // 当前命中的节点（按 Id 升序）
+    private int _searchIndex = -1;                                    // 当前定位到第几个命中
+    private DispatcherTimer? _searchTimer;                            // 输入防抖（200ms）
+
+    // ========== 捕获→树定位 ==========
+    private DateTime _lastAutoRecaptureAt = DateTime.MinValue;         // 定位失败自动重抓树的节流时间
+    private bool _selectionFromCapture;                                // 本次选中由捕获触发（Details/Actions 不被覆盖）
     private object? _rightClickedItem; // 右键点击的属性/Pattern 项（ContextMenu 回调用）
     private bool _detailsLocked; // 烧杯按钮点击后锁定 Details 不再刷新
     // Details 面板当前显示元素的定位约束（右键添加监控时作目标元素，两条路径都会更新：
@@ -504,6 +513,9 @@ public partial class MainWindow : Window
         }
         _currentTree = snap;
         _nodeLookup = new Dictionary<int, TreeNodeViewModel>();
+        // 树换了：旧命中对象已失效，检索结果必须重算
+        _searchMatches.Clear();
+        _searchIndex = -1;
 
         // 构建树（只展开前两层）
         _treeRoots.Clear();
@@ -533,6 +545,8 @@ public partial class MainWindow : Window
         {
             ExpandRoots(2);
             TxtStatus.Text = $"结构树已加载：{snap.NodeCount} 个节点（{snap.Target?.ProcessName}）";
+            // 检索框有内容时按新树重算（容器已生成，能正常展开定位）
+            if (!string.IsNullOrWhiteSpace(TxtTreeSearch.Text)) RunSearch();
             // ★ 补定位：悬停触发的异步抓树完成时，悬停结果只产过一次（已被上一轮消费）——
             //   树加载+容器生成后对新树重新定位并展开高亮（悬停高亮功能的关键闭环）
             if (_capturing && _lastHoverResult is { IsValid: true } hover
@@ -827,7 +841,9 @@ public partial class MainWindow : Window
         }
     }
 
-    /// <summary>悬停/烧杯路径共用：在当前树中定位捕获元素并展开+高亮（矩形优先，属性兜底）。</summary>
+    /// <summary>悬停/烧杯路径共用：在当前树中定位捕获元素并展开+高亮。
+    /// 定位顺序：RuntimeId（精确）→ 矩形（完全相等）→ 容差 → 属性。
+    /// 全部落空且树已过期时自动后台重抓一次（节流 3s），重抓完成由 ApplyTree 补定位。</summary>
     private void TryHighlightCaptureResult(MouseCaptureResult result)
     {
         if (_currentTree is null)
@@ -837,17 +853,32 @@ public partial class MainWindow : Window
                 Log($"[HIGHLIGHT] SKIPPED: tree not loaded (silent capture, name={result.Name} type={result.ControlType})");
             return;
         }
-        int? nodeId = MouseCapture.LocateInTree(_currentTree, result);
+        var hit = MouseCapture.LocateInTree(_currentTree, result);
         ClearHighlight();
-        if (nodeId is int id && _nodeLookup.TryGetValue(id, out var vm))
+        if (hit is not null && _nodeLookup.TryGetValue(hit.NodeId, out var vm))
         {
             Highlight(vm);
-            TxtCaptureStatus.Text = $"{result.ProcessName} — {vm.Display}";
+            // 路径 = 结构树里的唯一位置（与任务/脚本的 ElementPath 同编码），直接显示便于复制使用
+            var via = hit.Via == "runtime" ? "" : $"（{hit.Via} 匹配，建议刷新结构树）";
+            TxtCaptureStatus.Text = $"{result.ProcessName} — {vm.Display}　路径={hit.Path ?? "?"}{via}";
+            Log($"[HIGHLIGHT] via={hit.Via} path={hit.Path} node={hit.NodeId} name={result.Name}");
+            if (!_detailsLocked)
+                TxtDetailsTitle.Text = $"{vm.Display}　路径={hit.Path ?? "?"}";
+            return;
         }
-        else
+
+        // 定位失败：树可能过期（元素重建/页面切换/滚动）。同一进程下自动重抓一次（节流）。
+        var now = DateTime.Now;
+        if (_currentTarget is not null && _currentTarget.ProcessId == result.ProcessId
+            && (now - _lastAutoRecaptureAt).TotalSeconds > 3)
         {
-            TxtCaptureStatus.Text = $"{result.ProcessName} — 未在树中定位 ({result.ControlType})";
+            _lastAutoRecaptureAt = now;
+            Log($"[HIGHLIGHT] miss → 自动重抓树 (name={result.Name} type={result.ControlType} rid={result.RuntimeId})");
+            CaptureTree(_currentTarget);
+            TxtCaptureStatus.Text = $"{result.ProcessName} — 树已过期，正在重新抓取…";
+            return;
         }
+        TxtCaptureStatus.Text = $"{result.ProcessName} — 未在树中定位 ({result.ControlType})；可点“抓取结构树”刷新后重试";
     }
 
     private void ClearHighlight()
@@ -859,13 +890,23 @@ public partial class MainWindow : Window
     private void Highlight(TreeNodeViewModel vm)
     {
         vm.IsHighlighted = true;
-        // 展开到该节点
-        ExpandPath(vm.Id);
+        // 展开到该节点（关闭虚拟化后容器真实生成，这条链路才稳定）
+        var item = ExpandPath(vm.Id);
+        if (item is not null)
+        {
+            // 捕获触发的选中：Details 已由 A11yElement 路径填好（Actions 需要实时 Pattern），
+            // 不能再让 SelectedItemChanged 把 _detailsA11yElement 清空
+            _selectionFromCapture = true;
+            try { item.IsSelected = true; } finally { _selectionFromCapture = false; }
+            item.BringIntoView();     // 滚动到可见
+        }
     }
 
-    private void ExpandPath(int id)
+    /// <summary>逐层展开到目标节点，返回目标容器（失败返回 null）。
+    /// 关闭 TreeView 虚拟化是前提：容器必须真实生成，ItemContainerGenerator 才拿得到。</summary>
+    private TreeViewItem? ExpandPath(int id)
     {
-        if (_currentTree is null) return;
+        if (_currentTree is null) return null;
         // 收集从根到目标的路径 id（根在前）
         var path = new List<int>();
         int cur = id;
@@ -882,27 +923,156 @@ public partial class MainWindow : Window
         TreeViewItem? last = null;
         foreach (var nodeId in path)
         {
-            TreeViewItem? item = null;
-            foreach (var o in parent.Items)
+            var item = FindContainer(parent, nodeId);
+            if (item is null)
             {
-                if (o is TreeNodeViewModel vm && vm.Id == nodeId)
-                {
-                    item = parent.ItemContainerGenerator.ContainerFromItem(o) as TreeViewItem;
-                    break;
-                }
+                // 容器还没生成（首次展开）：强制布局后再取一次
+                parent.UpdateLayout();
+                item = FindContainer(parent, nodeId);
+                if (item is null) break;
             }
-            if (item is null) break;
             item.IsExpanded = true;
             item.UpdateLayout(); // 生成子项容器后才能继续向下找
             last = item;
             parent = item;
         }
         last?.BringIntoView(); // 滚动到目标节点可见
+        return last;
+    }
+
+    /// <summary>在指定父容器的 Items 中按节点 Id 找容器（找不到返回 null）。</summary>
+    private static TreeViewItem? FindContainer(ItemsControl parent, int nodeId)
+    {
+        foreach (var o in parent.Items)
+        {
+            if (o is TreeNodeViewModel vm && vm.Id == nodeId)
+                return parent.ItemContainerGenerator.ContainerFromItem(o) as TreeViewItem;
+        }
+        return null;
+    }
+
+    // ========== 结构树关键词检索 ==========
+
+    private void TxtTreeSearch_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        // 200ms 防抖：连续输入不逐字符跑全树
+        if (_searchTimer is null)
+        {
+            _searchTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(200) };
+            _searchTimer.Tick += (_, _) => { _searchTimer!.Stop(); RunSearch(); };
+        }
+        _searchTimer.Stop();
+        _searchTimer.Start();
+    }
+
+    private void TxtTreeSearch_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Enter)
+        {
+            MoveSearch((Keyboard.Modifiers & ModifierKeys.Shift) != 0 ? -1 : 1);
+            e.Handled = true;
+        }
+        else if (e.Key == Key.Escape)
+        {
+            TxtTreeSearch.Clear();
+            e.Handled = true;
+        }
+    }
+
+    private void BtnSearchNext_Click(object sender, RoutedEventArgs e) => MoveSearch(1);
+
+    private void BtnSearchPrev_Click(object sender, RoutedEventArgs e) => MoveSearch(-1);
+
+    private void BtnSearchClear_Click(object sender, RoutedEventArgs e)
+    {
+        TxtTreeSearch.Clear();
+        ClearSearchMatches();
+        TxtSearchCount.Text = "";
+    }
+
+    /// <summary>按姓名/aid/类名/控件类型检索（空格分隔多关键词取 AND），命中节点标浅绿并跳到第一个。</summary>
+    private void RunSearch()
+    {
+        var raw = (TxtTreeSearch.Text ?? "").Trim();
+        if (raw.Length == 0)
+        {
+            ClearSearchMatches();
+            TxtSearchCount.Text = "";
+            return;
+        }
+        if (_currentTree is null || _nodeLookup.Count == 0)
+        {
+            ClearSearchMatches();
+            TxtSearchCount.Text = "树未加载";
+            return;
+        }
+
+        var terms = raw.ToLowerInvariant().Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+        ClearSearchMatches();
+        foreach (var vm in _nodeLookup.Values)
+        {
+            var key = vm.SearchKey ?? "";
+            var all = true;
+            foreach (var t in terms)
+            {
+                if (!key.Contains(t, StringComparison.OrdinalIgnoreCase)) { all = false; break; }
+            }
+            if (!all) continue;
+            vm.IsMatched = true;
+            _searchMatches.Add(vm);
+        }
+        // 字典顺序不保证，按 Id 排（Id 是采样顺序，等于树的自上而下顺序）
+        _searchMatches.Sort((a, b) => a.Id.CompareTo(b.Id));
+
+        _searchIndex = _searchMatches.Count > 0 ? 0 : -1;
+        UpdateSearchCount();
+        if (_searchIndex >= 0) RevealNode(_searchMatches[_searchIndex]);
+    }
+
+    /// <summary>循环切换命中项（delta=+1 下一个 / -1 上一个）。</summary>
+    private void MoveSearch(int delta)
+    {
+        if (_searchMatches.Count == 0) return;
+        _searchIndex = (_searchIndex + delta) % _searchMatches.Count;
+        if (_searchIndex < 0) _searchIndex += _searchMatches.Count;
+        UpdateSearchCount();
+        RevealNode(_searchMatches[_searchIndex]);
+    }
+
+    private void UpdateSearchCount()
+        => TxtSearchCount.Text = _searchMatches.Count == 0
+            ? "无匹配"
+            : $"{_searchIndex + 1}/{_searchMatches.Count}";
+
+    /// <summary>展开并选中目标节点（Details 面板联动 + 滚动可见）。</summary>
+    private void RevealNode(TreeNodeViewModel vm)
+    {
+        var item = ExpandPath(vm.Id);
+        if (item is not null)
+        {
+            item.IsSelected = true;
+            item.BringIntoView();
+        }
+    }
+
+    private void ClearSearchMatches()
+    {
+        foreach (var vm in _nodeLookup.Values)
+            vm.IsMatched = false;
+        _searchMatches.Clear();
+        _searchIndex = -1;
     }
 
     // ========== Details 面板 ==========
     private void TreeView_SelectedItemChanged(object sender, RoutedPropertyChangedEventArgs<object> e)
     {
+        // 捕获自动选中：只同步「选中节点」，Details 面板与 _detailsA11yElement 保持捕获路径写入的值
+        // （否则这里会把 A11yElement 置空，Actions 按钮立刻变灰，表现为“捕获后不能操作”）
+        if (_selectionFromCapture)
+        {
+            _selectedNode = e.NewValue as TreeNodeViewModel;
+            return;
+        }
         _detailsLocked = false; // 用户手动选中树节点 → 解锁 Details
         _detailsA11yElement = null; // 树选中来自快照，无原始 A11yElement → Actions 不可用
         if (e.NewValue is TreeNodeViewModel vm)
