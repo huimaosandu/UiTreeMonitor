@@ -16,6 +16,8 @@ public enum InputActionKind
     MouseLeftDrag,      // 长按拖动（按下→移动→抬起，位移超过阈值）
     MouseRightDrag,
     KeyDown,
+    MouseLeftDown,      // 仅"按下"瞬间的预热通知（不产生录制步骤）：弹出菜单/页内弹层在"抬起"
+                        // 时就被目标关闭，等 Up 回调再去解析元素必然拿不到（Chromium 实测）
 }
 
 /// <summary>一次输入动作（钩子线程产出；元素信息由订阅方另行解析）。</summary>
@@ -172,6 +174,15 @@ public sealed class InputHookCore : IDisposable
             {
                 case WM_LBUTTONDOWN when CaptureMouseLeft:
                     _downValid = true; _downRight = false; _downX = m.pt.X; _downY = m.pt.Y;
+                    // ★ 同时发一条"按下"预热通知：屏幕上此刻的元素（弹出菜单项、弹层按钮）一定还在，
+                    //   订阅方可以趁这一刻先抓元素/定位 spec。抬起时目标往往已经把菜单关掉了。
+                    try
+                    {
+                        Raise(new InputActionRecord(
+                            DateTime.Now, InputActionKind.MouseLeftDown, m.pt.X, m.pt.Y, m.pt.X, m.pt.Y,
+                            0, false, false, false, WindowFromPoint(new POINT { X = m.pt.X, Y = m.pt.Y })));
+                    }
+                    catch { /* 预热失败不影响正式录制 */ }
                     break;
                 case WM_RBUTTONDOWN when CaptureMouseRight:
                     _downValid = true; _downRight = true; _downX = m.pt.X; _downY = m.pt.Y;

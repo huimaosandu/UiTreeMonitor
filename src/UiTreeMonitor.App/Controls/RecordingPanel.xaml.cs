@@ -74,6 +74,15 @@ public partial class RecordingPanel : UserControl
     private AutomationElement? _recentClickElem;
     private DateTime _recentClickTick = DateTime.MinValue;
 
+    // ★ 鼠标"按下"瞬间的元素快照（弹出菜单/页内弹层在"抬起"时就被目标关闭，
+    //   等 Up 回调再解析必然拿到 null 或新页面元素 —— Chromium 弹出菜单录制丢步的根因）
+    private AutomationElement? _primedElem;
+    private string _primedName = "", _primedCtrlType = "";
+    private int _primedPid;
+    private string? _primedSpec;
+    private int _primedX, _primedY;
+    private DateTime _primedTick = DateTime.MinValue;
+
     /// <summary>录制状态变化通知。</summary>
     public event Action<bool>? RecordingStateChanged;
 
@@ -257,6 +266,17 @@ public partial class RecordingPanel : UserControl
     /// <summary>启动 UIA 事件监听（设置开启时；挂载目标解析降级链见类注释）。</summary>
     private void StartUiaListener()
     {
+        // ★ 覆盖前必须先释放旧监听：多个 EventListenerCore 同时活着会并行回调，
+        //   同一个 UIA 事件被录成多条 —— 这是"点一下按钮自动录出上百个动作"的直接原因
+        //   （每次 TryAttachAutoListener 重挂/切换目标都会重新 new，旧对象若不 Stop 会一直监听）。
+        if (_autoListener is not null)
+        {
+            try { _autoListener.Stop(); } catch { /* 已丢弃 */ }
+            try { _autoListener.Dispose(); } catch { /* 已丢弃 */ }
+            _autoListener = null;
+            AppLog.Write("RECORD", "StartUiaListener: 释放旧 UIA 监听（避免多监听并行导致事件重复录制）");
+        }
+
         var uniqueId = GetTargetElementUniqueId?.Invoke();
         var target = GetTargetWindowInfo?.Invoke();
 
@@ -322,6 +342,28 @@ public partial class RecordingPanel : UserControl
         });
     }
 
+    /// <summary>鼠标"按下"瞬间抓一份元素快照（不录步骤）。窗口标题栏/弹层按钮/弹出菜单项此刻都还在，
+    /// 是这一整次点击里唯一可靠的取样时刻——抬起后 Chromium 常常已经把菜单关掉或已经跳转页面。</summary>
+    private void PrimeClickElement(InputActionRecord input)
+    {
+        try
+        {
+            var elem = AutomationElement.FromPoint(new Point(input.X, input.Y));
+            if (elem is null) return;
+
+            _primedPid = elem.Current.ProcessId;
+            if (_primedPid == Environment.ProcessId) { _primedElem = null; return; } // 自己 UI 不预热
+            _primedName = elem.Current.Name ?? "";
+            _primedCtrlType = elem.Current.ControlType?.ProgrammaticName ?? "";
+            _primedSpec = BuildSpec(elem);
+            _primedElem = elem;
+            _primedX = input.X;
+            _primedY = input.Y;
+            _primedTick = DateTime.Now;
+        }
+        catch { _primedElem = null; /* 预热失败不影响正式录制（Up 回调还会再解析一次） */ }
+    }
+
     /// <summary>
     /// 输入动作回调（钩子线程 → UI 线程）：UIA 定位动作目标元素（鼠标=坐标命中、键盘=当前焦点），
     /// 过滤本软件自己的 UI。UIA 语义模式下先尝试 Pattern 语义化（点击→Invoke、文本键→SetValue、
@@ -329,6 +371,16 @@ public partial class RecordingPanel : UserControl
     /// </summary>
     private void OnInputAction(InputActionRecord input)
     {
+        // ★ 按下预热：只抓元素快照，绝不产生录制步骤。
+        //   用 Send 优先级立即执行——从"按下"到"目标处理并关掉菜单"通常只有几十毫秒，
+        //   排到普通优先级队列里往往就晚了（那时菜单已经关了，抓到的是新页面元素）。
+        if (input.Kind == InputActionKind.MouseLeftDown)
+        {
+            if (!_isRecording) return;
+            Dispatcher.BeginInvoke(DispatcherPriority.Send, new Action(() => PrimeClickElement(input)));
+            return;
+        }
+
         Dispatcher.BeginInvoke(() =>
         {
             if (!_isRecording) return;
@@ -373,6 +425,27 @@ public partial class RecordingPanel : UserControl
                 }
             }
             catch { /* 元素可能已销毁/进程已退出；已读到的部分继续用 */ }
+
+            // ★ 抬起时刻解析的元素经常已经不对了：Chromium 弹出菜单/页内弹层在"抬起"时就关闭，
+            //   此刻 FromPoint 要么 null（走坐标兜底），要么落到跳转后的新页面元素（会录成错误语义）。
+            //   按下那一刻的屏幕内容一定还是原样，所以 Down 回调里抓的快照最可信，优先用它。
+            var primedFresh = input.Kind == InputActionKind.MouseLeftClick
+                              && _primedElem is not null
+                              && (DateTime.Now - _primedTick).TotalSeconds <= 3.0
+                              && Math.Abs(input.X - _primedX) <= 4
+                              && Math.Abs(input.Y - _primedY) <= 4;
+            if (primedFresh)
+            {
+                elem = _primedElem;
+                pid = _primedPid;
+                elemName = _primedName;
+                ctrlType = _primedCtrlType;
+                specAtClick = _primedSpec;
+                try { procName = Process.GetProcessById(pid).ProcessName; } catch { }
+                AppLog.Write("RECORD", $"Input {input.Kind}: 采用按下时刻的元素快照 elem='{TruncLog(elemName, 40)}'" +
+                    $" type={ctrlType} pid={pid}（抬起后元素已失效/已切换页面时以此为准）");
+                _primedElem = null;   // 用后即清，避免连续点击复用旧快照
+            }
 
             // ★ 鼠标动作命中元素缓存（KeyDown 焦点解析失败的回退源：键入前刚点过输入框）
             if (input.Kind != InputActionKind.KeyDown && elem is not null && pid != 0)
@@ -497,12 +570,17 @@ public partial class RecordingPanel : UserControl
         switch (input.Kind)
         {
             case InputActionKind.MouseLeftClick:
-                if (elem is not null && TryBuildSemanticRecord(input, elem, elemName, procName, ctrlType, specAtClick, out var semantic, out var replacePrev))
+            {
+                // ★ clickProbeFailed：语义探测**本身**失败（元素已失效/属性读不出来），
+                //   区别于"元素活着但确实没有点击语义"（点空白/纯文本展示）。只有前者才兜底坐标——
+                //   否则每次点页面空白都会留一条回放垃圾步骤。
+                bool clickProbeFailed = false;
+                if (elem is not null && TryBuildSemanticRecord(input, elem, elemName, procName, ctrlType, specAtClick,
+                        out clickProbeFailed, out var semantic, out var replacePrev))
                 {
-                    // ★ 语义探测成功但**元素定位属性全读空**（Chromium 的 IUIAutomationElement
-                    //   属性包整包抛异常的典型表现，GitHub 弹出菜单项实测如此）：这样的语义步骤
-                    //   回放时无从定位元素，必然报"元素未找到: spec:v1|"。改录坐标延迟定位——
-                    //   回放按坐标探测实际语义动作，命中容器时自动下钻到真正被点的菜单项。
+                    // ★ 语义探测成功但**元素定位属性全读空**：这样的语义步骤回放时无从定位元素，
+                    //   必然报"元素未找到: spec:v1|"。改录坐标延迟定位——回放按坐标探测实际语义动作，
+                    //   命中容器时自动下钻到真正被点的菜单项。
                     if (string.IsNullOrEmpty(semantic.ElementPath))
                     {
                         AppendRecord(MakeCoordRecord(input, "元素定位属性读取失败"), replacePrevious: false,
@@ -516,17 +594,21 @@ public partial class RecordingPanel : UserControl
                         $"({string.Join(", ", semantic.Parameters ?? Array.Empty<object?>())}) elem={elemName} type={ctrlType} pid={pid} proc={procName}");
                     return;
                 }
-                if (elem is null)
+                if (elem is null || clickProbeFailed)
                 {
-                    // ★ 点击即关窗竞态（Qt accept()/tk destroy）：录制时元素已销毁，但点击真实发生且
-                    //   该坐标回放时会命中重新打开的弹窗按钮 → coord:v1 延迟定位，保持纯语义不动光标
-                    var coord = MakeCoordRecord(input, "录制时元素已消失");
+                    // ★ 点击即关窗竞态（Qt accept()/tk destroy）、或 Chromium 弹出菜单"点完即关"导致
+                    //   元素在回调时已经失效：录制时读不到语义，但**点击真实发生了**，该坐标回放时会
+                    //   命中重新打开的菜单项/弹窗按钮 → coord:v1 延迟定位，回放按坐标探测实际语义。
+                    //   宁可留一条坐标步骤，也不能静默丢步（丢步用户根本不知道漏了什么）。
+                    var coord = MakeCoordRecord(input, elem is null ? "录制时元素已消失" : "点击瞬间元素已失效");
                     AppendRecord(coord, replacePrevious: false, source: "input-semantic coord-deferred");
-                    AppLog.Write("RECORD", $"OnInputAction→coord-deferred @({input.X},{input.Y}) [录制时元素已消失，回放按坐标探测实际语义动作]");
+                    AppLog.Write("RECORD", $"OnInputAction→coord-deferred @({input.X},{input.Y}) " +
+                        $"[{ (elem is null ? "录制时元素已消失" : "语义探测失败/元素已失效") }] 回放按坐标探测实际语义动作");
                     return;
                 }
-                // 元素活着但无 InvokePattern：探针日志已注明（click-no-invoke），UIA 模式不录无语义动作
+                // 元素活着但确实没有点击语义（点窗口空白/纯文本展示）：探针日志已注明，不录
                 return;
+            }
 
             case InputActionKind.KeyDown:
             {
@@ -543,7 +625,7 @@ public partial class RecordingPanel : UserControl
                 if (isEnter)
                 {
                     FlushPendingKeys(reason: "enter");
-                    if (elem is not null && TryBuildSemanticRecord(input, elem, elemName, procName, ctrlType, specAtClick, out var keyRecord, out var keyMerge))
+                    if (elem is not null && TryBuildSemanticRecord(input, elem, elemName, procName, ctrlType, specAtClick, out _, out var keyRecord, out var keyMerge))
                     {
                         AppendRecord(keyRecord, keyMerge, source: $"input-semantic {input.Kind}");
                         AppLog.Write("RECORD", $"OnInputAction→semantic: {keyRecord.PatternName}.{keyRecord.MethodName}" +
@@ -577,7 +659,7 @@ public partial class RecordingPanel : UserControl
             }
 
             case InputActionKind.MouseLeftDrag:
-                if (elem is not null && TryBuildSemanticRecord(input, elem, elemName, procName, ctrlType, specAtClick, out var dragRecord, out var dragMerge))
+                if (elem is not null && TryBuildSemanticRecord(input, elem, elemName, procName, ctrlType, specAtClick, out _, out var dragRecord, out var dragMerge))
                 {
                     AppendRecord(dragRecord, dragMerge, source: $"input-semantic {input.Kind}");
                     AppLog.Write("RECORD", $"OnInputAction→semantic: {dragRecord.PatternName}.{dragRecord.MethodName}" +
@@ -642,11 +724,29 @@ public partial class RecordingPanel : UserControl
     /// 值类连续变化（逐字符输入/拖动过程）ReplacePrevious：替换上一条同元素同 Pattern 记录，只保留最终值。</summary>
     private void OnAutoEvent(UiaEventRecord uiaEvent)
     {
-        Dispatcher.Invoke(() =>
+        // ★ 用 BeginInvoke 而不是 Invoke：UIA 回调在管道线程，Invoke 会让它同步等 UI 线程，
+        //   UI 一忙（刷新列表/抓树）事件就排队，卡顿后成批涌出来，看起来就是"点一下刷出很多动作"。
+        Dispatcher.BeginInvoke(() =>
         {
             if (!_isRecording) return;
 
             var record = uiaEvent.ToActionRecord();
+
+            // ★ 事件洪水节流：同元素（spec 忽略 rect 抖动）同 Pattern 同方法在 400ms 内重复触发只留一条。
+            //   部分控件一次点击会连带触发多条属性事件，这些不是用户操作，回放也是无意义的重复动作。
+            //   值类（ReplacePrevious=true，逐字符输入/拖动）不走节流，靠 merge 保留最终值。
+            if (!uiaEvent.ReplacePrevious
+                && _lastAppendedNode is { Kind: StepKinds.Action } tail
+                && tail.Action is not null
+                && tail.Action.PatternName == record.PatternName
+                && tail.Action.MethodName == record.MethodName
+                && MergeKey(tail.Action) == MergeKey(record)
+                && (record.Timestamp - tail.Action.Timestamp).TotalMilliseconds < 400)
+            {
+                AppLog.Write("RECORD", $"[throttle] 丢弃重复事件 {record.PatternName}.{record.MethodName} elem={record.ElementName}");
+                return;
+            }
+
             var detail = record.Parameters is { Length: > 0 }
                 ? $"{record.MethodName}({string.Join(", ", record.Parameters)})"
                 : record.MethodName;
@@ -726,10 +826,11 @@ public partial class RecordingPanel : UserControl
     /// </summary>
     private bool TryBuildSemanticRecord(InputActionRecord input, AutomationElement? elem,
         string elemName, string procName, string ctrlType, string? specOverride,
-        out ActionRecord record, out bool replacePrevious)
+        out bool clickProbeFailed, out ActionRecord record, out bool replacePrevious)
     {
         record = null!;
         replacePrevious = false;
+        clickProbeFailed = false;
         if (elem is null) return false;
         try
         {
@@ -749,7 +850,8 @@ public partial class RecordingPanel : UserControl
                     // ★ 按点击语义优先级探测真实 Pattern（不能默认 Invoke）：
                     //   Chromium 的菜单项/自绘按钮常常只有 ExpandCollapse、没有 Invoke，
                     //   以前一律只认 Invoke → 这些点击要么被丢弃、要么回放必然失败。
-                    if (TryBuildClickSemantic(elem, elemName, procName, ctrlType, input.Timestamp, specOverride, out record))
+                    if (TryBuildClickSemantic(elem, elemName, procName, ctrlType, input.Timestamp, specOverride,
+                            out clickProbeFailed, out record))
                     {
                         replacePrevious = false;
                         return true;
@@ -843,9 +945,10 @@ public partial class RecordingPanel : UserControl
     /// 固定探测链必然漏；能力全集同时进 Result，回放失败时一眼能看出该元素到底能干什么。
     /// </summary>
     private bool TryBuildClickSemantic(AutomationElement elem, string elemName, string procName,
-        string ctrlType, DateTime ts, string? specOverride, out ActionRecord record)
+        string ctrlType, DateTime ts, string? specOverride, out bool probeFailed, out ActionRecord record)
     {
         record = null!;
+        probeFailed = false;
         var shortType = ShortType(ctrlType);
         try
         {
@@ -897,7 +1000,7 @@ public partial class RecordingPanel : UserControl
             // 支持全集里没有任何"点击语义"能力 → 交给调用方走坐标记录，但把能力清单写进日志备查
             LogPatternProbe(elem, elemName, ctrlType, procName, "click-no-semantic");
         }
-        catch { /* Pattern 探测失败 → 调用方回退坐标记录 */ }
+        catch { probeFailed = true; /* 元素已失效/属性读不出来 → 调用方用坐标兜底，不静默丢步 */ }
         return false;
     }
 
