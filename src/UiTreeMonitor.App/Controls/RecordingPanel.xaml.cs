@@ -625,7 +625,8 @@ public partial class RecordingPanel : UserControl
                         $"[{ (elem is null ? "录制时元素已消失" : "语义探测失败/元素已失效") }] 回放按坐标探测实际语义动作");
                     return;
                 }
-                // 元素活着但确实没有点击语义（点窗口空白/纯文本展示）：探针日志已注明，不录
+                // 元素活着但探测不到点击语义的情况已在 TryBuildClickSemantic 里兜底成坐标步骤
+                //（唯一例外是纯文本叶子），能走到这里说明是 Text/StaticText 或窗口级点击，不录
                 return;
             }
 
@@ -893,8 +894,22 @@ public partial class RecordingPanel : UserControl
                         replacePrevious = false;
                         return true;
                     }
+
+                    // ★ 语义化失败也不能静默丢步：Chromium 弹出菜单项"抬起即关"，此时
+                    //   GetSupportedPatterns() 返回**空数组且不抛异常**（日志实锤：MenuItem 'New issue'
+                    //   supported=[]）。以前这里直接 break → 用户明明点了菜单项，第 2 步却没有。
+                    //   现在一律留一条坐标步骤，回放时按坐标探测该位置实际支持的语义动作。
+                    //   唯一例外：命中纯文本叶子（Text/StaticText），点它没有可执行语义，录下来只是噪声。
+                    var clickShortType = ShortType(ctrlType);
+                    if (clickShortType is "Text" or "StaticText")
+                    {
+                        LogPatternProbe(elem, elemName, ctrlType, procName, "click-text-no-op");
+                        break;
+                    }
                     LogPatternProbe(elem, elemName, ctrlType, procName, "click-no-semantic");
-                    break;
+                    record = MakeCoordRecord(input, $"点击未探测到可执行语义（{clickShortType}）");
+                    replacePrevious = false;
+                    return true;
                 }
 
                 case InputActionKind.KeyDown:
@@ -985,59 +1000,126 @@ public partial class RecordingPanel : UserControl
         string ctrlType, DateTime ts, string? specOverride, out bool probeFailed, out ActionRecord record)
     {
         record = null!;
-        probeFailed = false;
-        var shortType = ShortType(ctrlType);
+        var failed = false;
+
+        // ① 先试 FromPoint 命中的元素本身
+        var hit = TryOn(elem, elemName, ctrlType, specOverride);
+        if (hit is not null) { record = hit; probeFailed = failed; return true; }
+        if (failed) { probeFailed = true; return false; }  // 元素已失效 → 调用方走坐标兜底
+
+        // ② FromPoint 在 Qt / Chromium 上常常返回最上层的 **Text**（Qt 树项的文字、网页里的链接文字），
+        //    真正可交互的是它的祖先（TreeItem / ListItem / Hyperlink）。沿父链向上找第一个"高置信
+        //    可点击"的祖先再试一次——否则点树项永远录不出步骤
+        //    （日志实锤：elem='树项目' type=ControlType.Text，而它父链上的 TreeItem 有 SelectionItem）。
+        AutomationElement? ancestor = null;
         try
         {
-            // ★ 元素支持的 Pattern 全集（WAF 内部同样是拿全表逐个试，这里一次拿到，不再自己维护探测链）
-            var supported = elem.GetSupportedPatterns();
-            var ids = new HashSet<int>();
-            var names = new List<string>();
-            foreach (var pat in supported)
+            var walker = TreeWalker.ControlViewWalker;
+            var cur = elem;
+            for (var i = 0; i < 6 && cur is not null; i++)
             {
-                try { ids.Add(pat.Id); names.Add(pat.ProgrammaticName); } catch { /* 单个 pattern 读不到 */ }
+                cur = walker.GetParent(cur);
+                if (cur is null) break;
+                if (HasHighConfidenceClickPattern(cur)) { ancestor = cur; break; }
             }
-            var capability = names.Count > 0 ? string.Join(",", names) : "(none)";
+        }
+        catch { /* 父链读不到就放弃 */ }
 
-            foreach (var action in UiaPatternCatalog.ClickActions)
+        if (ancestor is not null)
+        {
+            var ancName = elemName;
+            var ancType = ctrlType;
+            try { var n = ancestor.Current.Name; if (!string.IsNullOrEmpty(n)) ancName = n; } catch { }
+            try { var t = ancestor.Current.ControlType?.ProgrammaticName; if (!string.IsNullOrEmpty(t)) ancType = t; } catch { }
+
+            // ★ 祖先必须现读 spec：叶子的 spec 会定位到 Text 上，回放点它等于没点
+            hit = TryOn(ancestor, ancName, ancType, null);
+            if (hit is not null)
             {
-                if (!ids.Contains(action.PatternId)) continue;
-
-                var method = action.MethodName;
-                var extra = "";
-                if (action.Kind == UiaPatternCatalog.ClickKind.Toggle)
-                {
-                    // Toggle 是翻转：把点击后的状态写进脚本，回放时能核对（UIA 没有 SetState，无法自动纠偏）
-                    try
-                    {
-                        if (elem.TryGetCurrentPattern(TogglePattern.Pattern, out var tObj) && tObj is TogglePattern tp)
-                            extra = $"→{tp.Current.ToggleState}";
-                    }
-                    catch { /* 状态读不到 */ }
-                }
-                else if (action.Kind == UiaPatternCatalog.ClickKind.ExpandCollapse)
-                {
-                    // ★ 录制回调在点击生效之后取元素，读到的展开状态已是"点击造成的结果"，
-                    //   所以动作取"达到该状态的那个动作"，不能取反（取反会把"打开菜单"录成 Collapse）。
-                    var collapsed = false;
-                    try
-                    {
-                        if (elem.TryGetCurrentPattern(ExpandCollapsePattern.Pattern, out var ecObj) && ecObj is ExpandCollapsePattern ecp)
-                            collapsed = ecp.Current.ExpandCollapseState == ExpandCollapseState.Collapsed;
-                    }
-                    catch { /* 状态读不到按展开处理 */ }
-                    method = collapsed ? "Collapse" : "Expand";
-                }
-
-                record = BuildSemantic(elem, action.PatternName, method, null,
-                    $"{procName} {shortType} {method}{extra}　patterns=[{capability}]", elemName, ts, specOverride);
+                record = hit;
+                AppLog.Write("RECORD", $"[semantic-probe] click 上溯到可交互祖先: '{TruncLog(elemName, 30)}'({ShortType(ctrlType)})" +
+                    $" → '{TruncLog(ancName, 30)}'({ShortType(ancType)}) {record.PatternName}.{record.MethodName}");
+                probeFailed = failed;
                 return true;
             }
-
-            // 支持全集里没有任何"点击语义"能力 → 交给调用方走坐标记录，但把能力清单写进日志备查
-            LogPatternProbe(elem, elemName, ctrlType, procName, "click-no-semantic");
         }
-        catch { probeFailed = true; /* 元素已失效/属性读不出来 → 调用方用坐标兜底，不静默丢步 */ }
+
+        LogPatternProbe(elem, elemName, ctrlType, procName, "click-no-semantic");
+        probeFailed = failed;
+        return false;
+
+        /// <summary>在某一个元素上按 ClickActions 优先级挑点击语义（成功返回记录，否则 null）。
+        /// 每个 Pattern 独立容错：Toggle 状态 / ExpandCollapse 状态读不到不影响其它能力。</summary>
+        ActionRecord? TryOn(AutomationElement target, string targetName, string targetType, string? spec)
+        {
+            var shortType = ShortType(targetType);
+            try
+            {
+                // ★ 元素支持的 Pattern 全集（WAF 内部同样是拿全表逐个试，这里一次拿到，不再自己维护探测链）
+                var supported = target.GetSupportedPatterns();
+                var ids = new HashSet<int>();
+                var names = new List<string>();
+                foreach (var pat in supported)
+                {
+                    try { ids.Add(pat.Id); names.Add(pat.ProgrammaticName); } catch { /* 单个 pattern 读不到 */ }
+                }
+                var capability = names.Count > 0 ? string.Join(",", names) : "(none)";
+
+                foreach (var action in UiaPatternCatalog.ClickActions)
+                {
+                    if (!ids.Contains(action.PatternId)) continue;
+
+                    var method = action.MethodName;
+                    var extra = "";
+                    if (action.Kind == UiaPatternCatalog.ClickKind.Toggle)
+                    {
+                        // Toggle 是翻转：把点击后的状态写进脚本，回放时能核对（UIA 没有 SetState，无法自动纠偏）
+                        try
+                        {
+                            if (target.TryGetCurrentPattern(TogglePattern.Pattern, out var tObj) && tObj is TogglePattern tp)
+                                extra = $"→{tp.Current.ToggleState}";
+                        }
+                        catch { /* 状态读不到 */ }
+                    }
+                    else if (action.Kind == UiaPatternCatalog.ClickKind.ExpandCollapse)
+                    {
+                        // ★ 录制回调在点击生效之后取元素，读到的展开状态已是"点击造成的结果"，
+                        //   所以动作取"达到该状态的那个动作"，不能取反（取反会把"打开菜单"录成 Collapse）。
+                        var collapsed = false;
+                        try
+                        {
+                            if (target.TryGetCurrentPattern(ExpandCollapsePattern.Pattern, out var ecObj) && ecObj is ExpandCollapsePattern ecp)
+                                collapsed = ecp.Current.ExpandCollapseState == ExpandCollapseState.Collapsed;
+                        }
+                        catch { /* 状态读不到按展开处理 */ }
+                        method = collapsed ? "Collapse" : "Expand";
+                    }
+
+                    return BuildSemantic(target, action.PatternName, method, null,
+                        $"{procName} {shortType} {method}{extra}　patterns=[{capability}]", targetName, ts, spec);
+                }
+            }
+            catch { failed = true; /* 元素已失效/属性读不出来 → 调用方用坐标兜底，不静默丢步 */ }
+            return null;
+        }
+    }
+
+    /// <summary>高置信"点击语义"Pattern：Invoke(10000) / SelectionItem(10010) / ExpandCollapse(10005) / Toggle(10015)。
+    /// ★ 刻意不含 LegacyIAccessible(10018)：Pane/Window/Custom 这类容器几乎都报它，沿父链上会误判到容器上。</summary>
+    private static bool HasHighConfidenceClickPattern(AutomationElement el)
+    {
+        try
+        {
+            foreach (var p in el.GetSupportedPatterns())
+            {
+                try
+                {
+                    if (p.Id is 10000 or 10010 or 10005 or 10015) return true;
+                }
+                catch { /* 单个 pattern 读不到 */ }
+            }
+        }
+        catch { /* 元素已销毁 */ }
         return false;
     }
 
