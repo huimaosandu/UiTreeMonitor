@@ -385,12 +385,26 @@ public partial class RecordingPanel : UserControl
             // ★ 竞态校验：点击"确定/关闭弹窗"类按钮时目标窗口被瞬间销毁，晚到的 FromPoint 会落到
             //   其后的窗口（曾把弹窗 OK 的 Invoke 记到主界面无关 Text 上）。钩子线程在 WM_LBUTTONUP
             //   时刻快照了真实目标顶层窗口句柄（input.Hwnd）——FromPoint 结果的顶层窗口不一致 → 元素不可信，丢弃
+            //
+            // ★ 但 Chromium（Edge/Chrome）会误杀：WindowFromPoint 拿到的是**子窗口**
+            //   （Chrome_RenderWidgetHostHWND 之类），而 UIA 元素向上只能爬到**顶层**窗口句柄，
+            //   两者本来就不相等 → 每次点击都被判成"窗口已关闭"，整场录制全变 coord。
+            //   所以先各自 GetAncestor(GA_ROOT) 归一到顶层再比；元素拿不到 hwnd 时退化为"同进程"判断。
             if (elem is not null && input.Hwnd != IntPtr.Zero && pid != 0)
             {
                 var topHwnd = TopLevelHwndOf(elem);
-                if (topHwnd != input.Hwnd)
+                var sameWindow = topHwnd != IntPtr.Zero
+                                 && GetAncestor(input.Hwnd, GA_ROOT) == GetAncestor(topHwnd, GA_ROOT);
+                if (!sameWindow && topHwnd == IntPtr.Zero)
                 {
-                    AppLog.Write("RECORD", $"Input {input.Kind}: FromPoint window {topHwnd} ≠ click-time window {input.Hwnd}" +
+                    // 元素没有任何原生窗口句柄（Chromium 自绘层常见）：只能按进程判断
+                    GetWindowThreadProcessId(input.Hwnd, out var clickPid);
+                    sameWindow = clickPid != 0 && (int)clickPid == pid;
+                }
+                if (!sameWindow)
+                {
+                    AppLog.Write("RECORD", $"Input {input.Kind}: FromPoint top-level {GetAncestor(topHwnd, GA_ROOT)} = {topHwnd}" +
+                        $" ≠ click-time window {input.Hwnd} root {GetAncestor(input.Hwnd, GA_ROOT)}" +
                         $" (clicked window vanished, elem='{elemName}' is BEHIND it) → 丢弃元素，语义化走 coord 定位");
                     elem = null;
                     pid = 0; elemName = ""; ctrlType = ""; procName = "";
@@ -1072,6 +1086,9 @@ public partial class RecordingPanel : UserControl
 
     [DllImport("user32.dll")] private static extern bool GetCursorPos(out WinPoint pt);
     [StructLayout(LayoutKind.Sequential)] private struct WinPoint { public int X, Y; }
+    [DllImport("user32.dll")] private static extern IntPtr GetAncestor(IntPtr hwnd, uint flags);
+    [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
+    private const uint GA_ROOT = 2;
 
     private static string TruncLog(string s, int max) => s.Length <= max ? s : s[..max] + "…";
 

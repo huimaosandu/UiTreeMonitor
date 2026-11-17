@@ -302,92 +302,37 @@ public sealed class ActionReplayer : IDisposable
             try { name = el.CurrentName ?? ""; } catch { /* 名字读不到不碍事 */ }
             var label = name.Length > 0 ? name : $"pid {pid}";
 
-            // ★ 每档单独容错：某一种 Pattern 读失败不能中断后面的能力探测
-            //   （以前整段一个大 try，Invoke 抛 0x80131509 就直接整体失败，后面 4 档根本没试）
             var errors = new List<string>();
             var sawTransient = false;
 
-            try
+            // ★ ① 先对 FromPoint 命中的元素按点击优先级试 5 档
+            var (hit, transientHit) = TryPatternsOn(el, errors);
+            if (hit is not null) return hit;
+            sawTransient |= transientHit;
+
+            // ★ ② 命中容器（菜单 List / 弹层 Pane / 分组）时向点击点下钻：
+            //   Chromium 的弹出菜单 FromPoint 常返回**容器 List**，对它 Invoke 必然失败，
+            //   真正被点的 MenuItem 是它的子元素（日志实测：坐标处支持 ScrollItem/TextChild，无点击语义）
+            var ctrlId = 0;
+            try { ctrlId = el.CurrentControlType; } catch { }
+            if (IsContainerControlType(ctrlId))
             {
-                if (el.GetCurrentPattern(PatternIds.Invoke) is IUIAutomationInvokePattern invoke)
+                foreach (var cand in CandidatesAtPoint(uia, el, x, y))
                 {
-                    invoke.Invoke();
-                    return $"Invoke '{label}'";
+                    var (deepHit, deepTransient) = TryPatternsOn(cand, null);
+                    if (deepHit is not null) return deepHit;
+                    sawTransient |= deepTransient;
                 }
             }
-            catch (Exception ex) { Note(ex, "Invoke"); }
 
-            try
-            {
-                if (el.GetCurrentPattern(PatternIds.LegacyIAccessible) is IUIAutomationLegacyIAccessiblePattern legacy)
-                {
-                    legacy.DoDefaultAction();
-                    return $"DoDefaultAction '{label}'";
-                }
-            }
-            catch (Exception ex) { Note(ex, "DoDefaultAction"); }
-
-            try
-            {
-                if (el.GetCurrentPattern(PatternIds.Toggle) is IUIAutomationTogglePattern toggle)
-                {
-                    toggle.Toggle();
-                    return $"Toggle '{label}'";
-                }
-            }
-            catch (Exception ex) { Note(ex, "Toggle"); }
-
-            try
-            {
-                if (el.GetCurrentPattern(PatternIds.SelectionItem) is IUIAutomationSelectionItemPattern selectItem)
-                {
-                    selectItem.Select();
-                    return $"Select '{label}'";
-                }
-            }
-            catch (Exception ex) { Note(ex, "Select"); }
-
-            try
-            {
-                if (el.GetCurrentPattern(PatternIds.ExpandCollapse) is IUIAutomationExpandCollapsePattern expandCollapse)
-                {
-                    // 点击语义 = 打开/收起（菜单/树节点）：已展开时再点应收起
-                    var state = expandCollapse.CurrentExpandCollapseState;
-                    if (state == ExpandCollapseState.ExpandCollapseState_Expanded)
-                    {
-                        expandCollapse.Collapse();
-                        return $"Collapse '{label}'";
-                    }
-                    expandCollapse.Expand();
-                    return $"Expand '{label}'";
-                }
-            }
-            catch (Exception ex) { Note(ex, "Expand"); }
-
-            // 五种点击语义都没成 → 把元素实际支持的 Pattern 清单 + 各档失败原因报出来
+            // 都没有成功 → 把元素实际支持的 Pattern 清单 + 各档失败原因报出来
             var supported = UiaPatternCatalog.SupportedNames(el);
-            var ctrl = "";
-            try { ctrl = el.CurrentControlType == 0 ? "" : $" ControlType={el.CurrentControlType}"; } catch { }
+            var ctrl = ctrlId == 0 ? "" : $" ControlType={ctrlId}";
             failureDetail = $"元素 '{label}'{ctrl} 没有可执行的点击语义（支持: " +
                 (supported.Count > 0 ? string.Join(",", supported) : "无任何 Pattern") + "）" +
                 (errors.Count > 0 ? "；失败档: " + string.Join(" | ", errors) : "");
             transient = sawTransient;
             return null;
-
-            void Note(Exception ex, string stage)
-            {
-                if (ex.HResult == HResultInvalidState)
-                {
-                    // 元素状态瞬时无效：值得重试，也值得报出来（Chromium 重绘瞬间的典型错误）
-                    sawTransient = true;
-                    errors.Add($"{stage}: 元素状态瞬时无效(0x80131509)");
-                }
-                else if (ex.Message.Contains("support", StringComparison.OrdinalIgnoreCase))
-                {
-                    // "不支持该 Pattern"是正常情况（元素就没这个能力），不算失败原因
-                }
-                else errors.Add($"{stage}={ex.Message}");
-            }
         }
         catch (Exception ex)
         {
@@ -395,6 +340,150 @@ public sealed class ActionReplayer : IDisposable
             transient = ex.HResult == HResultInvalidState;
             return null;
         }
+    }
+
+    /// <summary>在一个元素上按点击优先级试 5 档（Invoke → LegacyIAccessible → Toggle → SelectionItem → ExpandCollapse）。
+    /// 每档独立容错：某一种 Pattern 读失败不能中断后面的能力探测（以前整段一个大 try，
+    /// Invoke 抛 0x80131509 就直接整体失败，后面 4 档根本没试）。</summary>
+    private static (string? Hit, bool Transient) TryPatternsOn(IUIAutomationElement el, List<string>? errors)
+    {
+        var sawTransient = false;
+        var label = "";
+        try { label = el.CurrentName ?? ""; } catch { /* 名字读不到 */ }
+        if (label.Length == 0)
+        {
+            try { label = $"pid {el.CurrentProcessId}"; } catch { label = "?"; }
+        }
+
+        try
+        {
+            if (el.GetCurrentPattern(PatternIds.Invoke) is IUIAutomationInvokePattern invoke)
+            {
+                invoke.Invoke();
+                return ($"Invoke '{label}'", sawTransient);
+            }
+        }
+        catch (Exception ex) { Note(ex, "Invoke"); }
+
+        try
+        {
+            if (el.GetCurrentPattern(PatternIds.LegacyIAccessible) is IUIAutomationLegacyIAccessiblePattern legacy)
+            {
+                legacy.DoDefaultAction();
+                return ($"DoDefaultAction '{label}'", sawTransient);
+            }
+        }
+        catch (Exception ex) { Note(ex, "DoDefaultAction"); }
+
+        try
+        {
+            if (el.GetCurrentPattern(PatternIds.Toggle) is IUIAutomationTogglePattern toggle)
+            {
+                toggle.Toggle();
+                return ($"Toggle '{label}'", sawTransient);
+            }
+        }
+        catch (Exception ex) { Note(ex, "Toggle"); }
+
+        try
+        {
+            if (el.GetCurrentPattern(PatternIds.SelectionItem) is IUIAutomationSelectionItemPattern selectItem)
+            {
+                selectItem.Select();
+                return ($"Select '{label}'", sawTransient);
+            }
+        }
+        catch (Exception ex) { Note(ex, "Select"); }
+
+        try
+        {
+            if (el.GetCurrentPattern(PatternIds.ExpandCollapse) is IUIAutomationExpandCollapsePattern expandCollapse)
+            {
+                // 点击语义 = 打开/收起（菜单/树节点）：已展开时再点应收起
+                var state = expandCollapse.CurrentExpandCollapseState;
+                if (state == ExpandCollapseState.ExpandCollapseState_Expanded)
+                {
+                    expandCollapse.Collapse();
+                    return ($"Collapse '{label}'", sawTransient);
+                }
+                expandCollapse.Expand();
+                return ($"Expand '{label}'", sawTransient);
+            }
+        }
+        catch (Exception ex) { Note(ex, "Expand"); }
+
+        return (null, sawTransient);
+
+        void Note(Exception ex, string stage)
+        {
+            if (ex.HResult == HResultInvalidState)
+            {
+                // 元素状态瞬时无效：值得重试，也值得报出来（Chromium 重绘瞬间的典型错误）
+                sawTransient = true;
+                errors?.Add($"{stage}: 元素状态瞬时无效(0x80131509)");
+            }
+            else if (ex.Message.Contains("support", StringComparison.OrdinalIgnoreCase))
+            {
+                // "不支持该 Pattern"是正常情况（元素就没这个能力），不算失败原因
+            }
+            else errors?.Add($"{stage}={ex.Message}");
+        }
+    }
+
+    /// <summary>容器类 ControlType（命中它才值得向点击点下钻）。50008=List、50009=Menu、50010=MenuBar、
+    /// 50026=Group、50033=Pane、50025=Custom、50030=Document、50032=Window。</summary>
+    private static bool IsContainerControlType(int ctrlType)
+        => ctrlType is 50008 or 50009 or 50010 or 50025 or 50026 or 50030 or 50032 or 50033;
+
+    /// <summary>从 root 起向点击点方向逐层取"包含该点"的子元素，返回 深→浅 的候选链（含 root 兜底）。
+    /// 用途：FromPoint 只给最上层元素，Chromium 弹出菜单给的是容器 List，真正要点的 MenuItem 在它下面。</summary>
+    private static List<IUIAutomationElement> CandidatesAtPoint(IUIAutomation uia, IUIAutomationElement root, int x, int y)
+    {
+        var chain = new List<IUIAutomationElement>();
+        IUIAutomationElement? cur = root;
+        try
+        {
+            var walker = uia.ControlViewWalker;
+            for (var depth = 0; depth < 6; depth++)
+            {
+                IUIAutomationElement? next = null;
+                try
+                {
+                    var child = walker.GetFirstChildElement(cur);
+                    while (child is not null)
+                    {
+                        try
+                        {
+                            var r = child.CurrentBoundingRectangle;
+                            if (r.right > r.left && r.bottom > r.top
+                                && x >= r.left && x < r.right && y >= r.top && y < r.bottom
+                                && child.CurrentIsOffscreen == 0)
+                            {
+                                next = child;
+                                break;
+                            }
+                        }
+                        catch { /* 子元素正在销毁 */ }
+                        child = walker.GetNextSiblingElement(child);
+                    }
+                }
+                catch { break; }
+                if (next is null) break;
+                cur = next;
+            }
+
+            // 由深到浅收集（最深子元素才是真正被点的那个）
+            IUIAutomationElement? p = cur;
+            var guard = 0;
+            while (p is not null && guard++ < 8)
+            {
+                chain.Add(p);
+                try { p = walker.GetParentElement(p); } catch { break; }
+            }
+        }
+        catch { /* 下钻失败就只试 root */ }
+        chain.Add(root);
+        return chain;
     }
 
     public void Dispose()

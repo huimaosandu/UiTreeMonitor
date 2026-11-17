@@ -170,6 +170,8 @@ public partial class MainWindow : Window
 
     // Details 面板当前元素的原始 A11yElement（Actions 执行用：需实时 Pattern 引用，快照无此能力）
     private Axe.Windows.Core.Bases.A11yElement? _detailsA11yElement;
+    // Details/Properties/Patterns 当前显示的是哪个进程的元素（切软件时用来判断"面板还是旧软件的残留"）
+    private int _detailsPid;
 
     private static readonly string AppDataDir =
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".ui-tree-monitor");
@@ -596,6 +598,14 @@ public partial class MainWindow : Window
                 && snap.Target is not null && snap.Target.ProcessId == hover.ProcessId
                 && CursorStillOn(hover))
             {
+                // ★ Details/Properties/Patterns 补刷：抓树是异步的，第一次悬停那条结果处理时
+                //   POI context 往往已失效（取不到元素 → 面板被清成"正在识别…"），这里用
+                //   最新悬停结果重取一次元素并补刷，切换软件后第一次就一定能出内容
+                if (!_detailsLocked && _detailsA11yElement is null)
+                {
+                    var el = ReacquireHoverElement(hover);
+                    if (el is not null) ApplyDetails(el, hover);
+                }
                 TryHighlightCaptureResult(hover);
             }
         }));
@@ -826,63 +836,124 @@ public partial class MainWindow : Window
     {
         var driver = HollowHighlightDriver.GetDefaultInstance();
 
-        while (_captureQueue.TryDequeue(out var result))
+        // ★ 只处理"最新一条"结果：悬停约 8 次/秒，而刷新 Details 要 Populate + 重建两个面板，
+        //   处理慢时队列会积压；逐条处理就会把若干帧之前的中间态刷出来（切软件时表现为
+        //   "先闪一下旧元素，第一次该出来的 Properties/Patterns 却没出来"）。
+        MouseCaptureResult? result = null;
+        while (_captureQueue.TryDequeue(out var r)) result = r;
+        if (result is null) return;
+
+        // 诊断：静默模式下确认结果处理
+        if (_silentCapturing && result.IsValid)
+            Log($"[DRAIN] processing: pid={result.ProcessId} name={result.Name} ecId={result.ElementContextId}");
+
+        // 原版高亮链路：HollowHighlightDriver.SetElement(A11yElement)
+        // 内部完成 SetLocation(蓝框) + SetText(Glimpse + Focusable/NotFocusable) + 显隐控制
+        // 静默捕获模式（录制中）：跳过视觉高亮，只做树定位+Details刷新
+        if (!result.IsValid)
         {
-            // 诊断：静默模式下确认结果处理
-            if (_silentCapturing && result.IsValid)
-                Log($"[DRAIN] processing: pid={result.ProcessId} name={result.Name} ecId={result.ElementContextId}");
-
-            // 原版高亮链路：HollowHighlightDriver.SetElement(A11yElement)
-            // 内部完成 SetLocation(蓝框) + SetText(Glimpse + Focusable/NotFocusable) + 显隐控制
-            // 静默捕获模式（录制中）：跳过视觉高亮，只做树定位+Details刷新
-            if (!result.IsValid || result.ElementContextId is not Guid ecId
-                || GetDataAction.GetElementContext(ecId)?.Element is not { } el)
-            {
-                if (!_silentCapturing) driver.Clear();
-                continue;
-            }
-            // ★ 静默/正常捕获统一：蓝框+烧杯+文字（静默模式的烧杯=触发器入口，OnSnapshotAddTarget 分叉处理）
-            driver.SetElement(el);
-            _lastHoverResult = result; // 供烧杯按钮回调（OnSnapshotAddTarget）取当前悬停元素
-
-            // ★ 自动录制补挂：录制开始时可能无目标（监听器以自由模式启动或未启动），
-            //   悬停到目标元素后自动升级/切换监听（兑现"悬停后监听自动生效"的提示）；
-            //   同时传悬停元素 ElementContext id（EventListenerCore 爬到顶层窗口做窗口级挂载）
-            if (_silentCapturing && result.ProcessId != 0)
-                RecordingPanel.TryAttachAutoListener(result.ProcessId, result.ElementContextId);
-
-            // ★ Details 跟随鼠标捕获刷新（未锁定时）
-            if (!_detailsLocked)
-            {
-                _detailsA11yElement = el; // 缓存原始元素（Actions 执行需实时 Pattern 引用）
-                var (props, pats) = TreeNodeViewModel.FromA11yElement(el, result.ProcessName, result);
-                TxtDetailsTitle.Text = $"[{result.ControlType}] {result.Name ?? ""}";
-                PropertiesGrid.ItemsSource = props;
-                PatternsTree.ItemsSource = pats;
-                // 记录当前 Details 元素约束（右键添加监控时作目标元素定位）
-                _detailsElemName = result.Name;
-                _detailsElemControlType = result.ControlType;
-                _detailsElemAutomationId = result.AutomationId;
-                _detailsElemBoundingRect = result.BoundingRectangle is { } r
-                    ? $"{r.Left},{r.Top},{r.Right},{r.Bottom}" : null;
-            }
-
-            // 未加载树或目标进程变化 → 自动抓新窗口树
-            if (_currentTree is null || _currentTarget is null || _currentTarget.ProcessId != result.ProcessId)
-            {
-                var win = WindowEnumerator.EnumerateWindows()
-                    .FirstOrDefault(x => x.ProcessId == result.ProcessId);
-                if (win is not null)
-                    CaptureTree(new TargetWindowInfo(win.ProcessId, win.Handle, win.ProcessName, win.Title));
-                // ★ 树是异步抓的，同一元素悬停只产一次结果——若只 continue，抓树完成后将再无结果
-                //   进来定位。先用现有树尝试（多数未命中），抓树完成后由 ApplyTree 对 _lastHoverResult 补定位
-                TryHighlightCaptureResult(result);
-                continue;
-            }
-
-            // 在已加载树中定位
-            TryHighlightCaptureResult(result);
+            if (!_silentCapturing) driver.Clear();
+            return;
         }
+
+        // ★ 取元素：POI context 里的元素 → 取不到（下一次捕获已替换/清理了 context）就按捕获矩形
+        //   FromPoint 重取一次。切换软件后第一次悬停几乎必然走到这一步，不补就会残留上一软件的面板。
+        Axe.Windows.Core.Bases.A11yElement? el = null;
+        if (result.ElementContextId is Guid ecId)
+        {
+            try { el = GetDataAction.GetElementContext(ecId)?.Element; } catch { el = null; }
+        }
+        el ??= ReacquireHoverElement(result);
+
+        if (el is null)
+        {
+            // 已经切到别的软件但这一帧还拿不到元素：清掉旧软件的面板并给提示，
+            // 否则旧内容留在界面上，看起来就是"Properties/Patterns 没刷新"
+            if (!_detailsLocked && _detailsPid != 0 && _detailsPid != result.ProcessId)
+                ClearDetailsPanel("正在识别…");
+            if (!_silentCapturing) driver.Clear();
+            return;
+        }
+
+        // ★ 静默/正常捕获统一：蓝框+烧杯+文字（静默模式的烧杯=触发器入口，OnSnapshotAddTarget 分叉处理）
+        driver.SetElement(el);
+        _lastHoverResult = result; // 供烧杯按钮回调（OnSnapshotAddTarget）取当前悬停元素
+
+        // ★ 自动录制补挂：录制开始时可能无目标（监听器以自由模式启动或未启动），
+        //   悬停到目标元素后自动升级/切换监听（兑现"悬停后监听自动生效"的提示）；
+        //   同时传悬停元素 ElementContext id（EventListenerCore 爬到顶层窗口做窗口级挂载）
+        if (_silentCapturing && result.ProcessId != 0)
+            RecordingPanel.TryAttachAutoListener(result.ProcessId, result.ElementContextId);
+
+        // ★ Details 跟随鼠标捕获刷新（未锁定时）
+        if (!_detailsLocked) ApplyDetails(el, result);
+
+        // 未加载树或目标进程变化 → 自动抓新窗口树
+        if (_currentTree is null || _currentTarget is null || _currentTarget.ProcessId != result.ProcessId)
+        {
+            var win = WindowEnumerator.EnumerateWindows()
+                .FirstOrDefault(x => x.ProcessId == result.ProcessId);
+            if (win is not null)
+                CaptureTree(new TargetWindowInfo(win.ProcessId, win.Handle, win.ProcessName, win.Title));
+            // ★ 树是异步抓的，同一元素悬停只产一次结果——若只 continue，抓树完成后将再无结果
+            //   进来定位。先用现有树尝试（多数未命中），抓树完成后由 ApplyTree 对 _lastHoverResult 补定位
+            TryHighlightCaptureResult(result);
+            return;
+        }
+
+        // 在已加载树中定位
+        TryHighlightCaptureResult(result);
+    }
+
+    /// <summary>
+    /// 按捕获矩形的中心 FromPoint 重取实时元素。
+    /// 用途：鼠标捕获结果里只带 ElementContext id，而 context 会被下一次捕获替换/清理，
+    /// 处理稍晚就取不到元素（切换软件后的第一帧几乎都是这种情况）；此时用矩形中心重新取一次，
+    /// 再用 RuntimeId（读不到时矩形完全相等）确认取到的确实是同一个元素，避免命中遮挡层。
+    /// </summary>
+    private Axe.Windows.Core.Bases.A11yElement? ReacquireHoverElement(MouseCaptureResult result)
+    {
+        if (result.BoundingRectangle is not { } b || b.Width <= 0 || b.Height <= 0) return null;
+        try
+        {
+            using var session = UiTreeMonitor.Core.Uia.UiaSession.Create(); // UI 线程是 STA
+            var el = session.GetElementFromPoint(b.Left + b.Width / 2, b.Top + b.Height / 2);
+            if (el is null) return null;
+
+            if (!string.IsNullOrEmpty(result.RuntimeId) && TreeSampler.ReadRuntimeId(el) == result.RuntimeId)
+                return el;
+
+            var r = el.BoundingRectangle;
+            return r.Left == b.Left && r.Top == b.Top && r.Right == b.Right && r.Bottom == b.Bottom ? el : null;
+        }
+        catch { return null; }
+    }
+
+    /// <summary>把某个实时元素填进 Details / Properties / Patterns 三个面板（Drain 与抓树补刷共用）。</summary>
+    private void ApplyDetails(Axe.Windows.Core.Bases.A11yElement el, MouseCaptureResult result)
+    {
+        _detailsA11yElement = el; // 缓存原始元素（Actions 执行需实时 Pattern 引用）
+        _detailsPid = result.ProcessId;
+        var (props, pats) = TreeNodeViewModel.FromA11yElement(el, result.ProcessName, result);
+        TxtDetailsTitle.Text = $"[{result.ControlType}] {result.Name ?? ""}";
+        PropertiesGrid.ItemsSource = props;
+        PatternsTree.ItemsSource = pats;
+        // 记录当前 Details 元素约束（右键添加监控时作目标元素定位）
+        _detailsElemName = result.Name;
+        _detailsElemControlType = result.ControlType;
+        _detailsElemAutomationId = result.AutomationId;
+        _detailsElemBoundingRect = result.BoundingRectangle is { } r
+            ? $"{r.Left},{r.Top},{r.Right},{r.Bottom}" : null;
+    }
+
+    /// <summary>清空 Details/Properties/Patterns 三个面板（切换目标软件、取不到元素时用）。</summary>
+    private void ClearDetailsPanel(string? title)
+    {
+        _detailsA11yElement = null;
+        _detailsPid = 0;
+        PropertiesGrid.ItemsSource = null;
+        PatternsTree.ItemsSource = null;
+        if (title is not null) TxtDetailsTitle.Text = title;
     }
 
     /// <summary>悬停/烧杯路径共用：在当前树中定位捕获元素并展开+高亮。
