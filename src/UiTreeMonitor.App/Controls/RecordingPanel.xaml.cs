@@ -492,6 +492,18 @@ public partial class RecordingPanel : UserControl
             case InputActionKind.MouseLeftClick:
                 if (elem is not null && TryBuildSemanticRecord(input, elem, elemName, procName, ctrlType, out var semantic, out var replacePrev))
                 {
+                    // ★ 语义探测成功但**元素定位属性全读空**（Chromium 的 IUIAutomationElement
+                    //   属性包整包抛异常的典型表现，GitHub 弹出菜单项实测如此）：这样的语义步骤
+                    //   回放时无从定位元素，必然报"元素未找到: spec:v1|"。改录坐标延迟定位——
+                    //   回放按坐标探测实际语义动作，命中容器时自动下钻到真正被点的菜单项。
+                    if (string.IsNullOrEmpty(semantic.ElementPath))
+                    {
+                        AppendRecord(MakeCoordRecord(input, "元素定位属性读取失败"), replacePrevious: false,
+                            source: "input-semantic coord-fallback");
+                        AppLog.Write("RECORD", $"OnInputAction→coord-fallback @({input.X},{input.Y}): " +
+                            $"语义已探测但定位属性全空，改录坐标（原语义 {semantic.PatternName}.{semantic.MethodName} elem={elemName} type={ctrlType} pid={pid}）");
+                        return;
+                    }
                     AppendRecord(semantic, replacePrev, source: $"input-semantic {input.Kind}");
                     AppLog.Write("RECORD", $"OnInputAction→semantic: {semantic.PatternName}.{semantic.MethodName}" +
                         $"({string.Join(", ", semantic.Parameters ?? Array.Empty<object?>())}) elem={elemName} type={ctrlType} pid={pid} proc={procName}");
@@ -501,19 +513,7 @@ public partial class RecordingPanel : UserControl
                 {
                     // ★ 点击即关窗竞态（Qt accept()/tk destroy）：录制时元素已销毁，但点击真实发生且
                     //   该坐标回放时会命中重新打开的弹窗按钮 → coord:v1 延迟定位，保持纯语义不动光标
-                    var coord = new ActionRecord
-                    {
-                        Timestamp = input.Timestamp,
-                        ElementName = "(窗口已关闭·坐标延迟定位)",
-                        ElementPath = $"coord:v1|{input.X},{input.Y}",
-                        // ★ 不要写死 InvokePattern：录制时元素已消失，此刻根本不知道它支持什么。
-                        //   回放时按坐标探测实际能力（Invoke → LegacyIAccessible → Toggle → Select → Expand）
-                        PatternName = "(coord:auto)",
-                        MethodName = "Click",
-                        Parameters = null,
-                        Success = true,
-                        Result = $"按坐标探测语义动作 @({input.X},{input.Y})（录制时元素已消失）",
-                    };
+                    var coord = MakeCoordRecord(input, "录制时元素已消失");
                     AppendRecord(coord, replacePrevious: false, source: "input-semantic coord-deferred");
                     AppLog.Write("RECORD", $"OnInputAction→coord-deferred @({input.X},{input.Y}) [录制时元素已消失，回放按坐标探测实际语义动作]");
                     return;
@@ -905,29 +905,80 @@ public partial class RecordingPanel : UserControl
             ? programmaticName["ControlType.".Length..]
             : programmaticName;
 
-    /// <summary>与 EventListenerCore.BuildSpec（COM 版）同格式的 WPF 元素 spec（回放 ResolveBySpec 通用）。</summary>
+    /// <summary>坐标延迟定位记录（元素已消失 / 元素定位属性读不出时的兜底）：
+    /// 回放时按坐标探测该位置元素**实际支持的**语义动作（Invoke → LegacyIAccessible → Toggle → Select
+    /// → ExpandCollapse），命中容器（菜单 List / 弹层 Pane）会自动下钻到真正被点的子元素，光标不动。</summary>
+    private static ActionRecord MakeCoordRecord(InputActionRecord input, string why) => new()
+    {
+        Timestamp = input.Timestamp,
+        ElementName = why.Contains("消失", StringComparison.Ordinal) ? "(窗口已关闭·坐标延迟定位)" : "(坐标延迟定位)",
+        ElementPath = $"coord:v1|{input.X},{input.Y}",
+        // ★ 不要写死 InvokePattern：此刻不知道回放时该位置是什么元素、支持什么
+        PatternName = "(coord:auto)",
+        MethodName = "Click",
+        Parameters = null,
+        Success = true,
+        Result = $"按坐标探测语义动作 @({input.X},{input.Y})（{why}）",
+    };
+
+    /// <summary>与 EventListenerCore.BuildSpec（COM 版）同格式的 WPF 元素 spec（回放 ResolveBySpec 通用）。
+    /// ★ 必须**逐属性独立读取**：`AutomationElement.Current` 是整包读取，Chromium 弹出菜单项只要有一个
+    ///   属性读不到就整包抛异常，结果 autoId/name/type/class/rect/rid 全空 —— 录制出 "spec:v1|" 空壳，
+    ///   回放必然报「元素未找到: spec:v1|」（GitHub 弹出菜单 "New issue" 实测）。</summary>
     private static string BuildSpec(AutomationElement elem)
+    {
+        var autoId = Esc(ReadStr(elem, AutomationElement.AutomationIdProperty)) ?? "";
+        var name = Esc(ReadStr(elem, AutomationElement.NameProperty)) ?? "";
+        var type = ReadControlType(elem) ?? "";
+        var cls = Esc(ReadStr(elem, AutomationElement.ClassNameProperty)) ?? "";
+        var rect = ReadRect(elem) ?? "";
+        var rid = ReadRuntimeId(elem) ?? "";
+
+        // 定位信息一条都读不到 → 返回空串，调用方改录坐标（绝不录成 "spec:v1|" 这种回放必死的空步）
+        if (autoId.Length == 0 && name.Length == 0 && type.Length == 0
+            && cls.Length == 0 && rect.Length == 0 && rid.Length == 0) return "";
+
+        return $"spec:v1|autoId={autoId}|name={name}|type={type}|class={cls}|rect={rect}" +
+               (rid.Length > 0 ? $"|rid={rid}" : "");
+    }
+
+    private static string ReadStr(AutomationElement elem, AutomationProperty prop)
+    {
+        try { return elem.GetCurrentPropertyValue(prop, false) as string ?? ""; }
+        catch { return ""; }
+    }
+
+    private static string ReadControlType(AutomationElement elem)
     {
         try
         {
-            var c = elem.Current;
-            var r = c.BoundingRectangle;
-            var rect = r.IsEmpty || r.Width <= 0 || r.Height <= 0
-                ? "" : $"{(int)r.Left},{(int)r.Top},{(int)r.Right},{(int)r.Bottom}";
-            // ★ runtimeId：UIA RuntimeId 在同一元素实例内唯一，回放时优先用它精确命中
-            //   （浏览器里 Name/AutomationId 会随状态变——输入框 placeholder 变成输入内容，属性评分就失配了）
-            string rid = "";
-            try
-            {
-                var ids = elem.GetRuntimeId();
-                if (ids is { Length: > 0 }) rid = string.Join(".", ids);
-            }
-            catch { /* 部分 provider 不提供 RuntimeId */ }
-            return $"spec:v1|autoId={Esc(c.AutomationId)}|name={Esc(c.Name)}|type={ShortType(c.ControlType?.ProgrammaticName ?? "")}" +
-                   $"|class={Esc(c.ClassName)}|rect={rect}" +
-                   (rid.Length > 0 ? $"|rid={rid}" : "");
+            var v = elem.GetCurrentPropertyValue(AutomationElement.ControlTypeProperty, false);
+            return v is ControlType ct ? ShortType(ct.ProgrammaticName) : "";
         }
-        catch { return "spec:v1|"; }
+        catch { return ""; }
+    }
+
+    private static string ReadRect(AutomationElement elem)
+    {
+        try
+        {
+            var v = elem.GetCurrentPropertyValue(AutomationElement.BoundingRectangleProperty, false);
+            if (v is System.Windows.Rect r && r.Width > 0 && r.Height > 0)
+                return $"{(int)r.Left},{(int)r.Top},{(int)r.Right},{(int)r.Bottom}";
+        }
+        catch { /* 部分 provider 不提供 BoundingRectangle */ }
+        return "";
+    }
+
+    private static string ReadRuntimeId(AutomationElement elem)
+    {
+        try
+        {
+            var ids = elem.GetRuntimeId();
+            if (ids is { Length: > 0 }) return string.Join(".", ids);
+        }
+        catch { /* 部分 provider 不提供 RuntimeId */ }
+        return "";
     }
 
     private static string? Esc(string? s) => string.IsNullOrEmpty(s) ? "" : Uri.EscapeDataString(s);

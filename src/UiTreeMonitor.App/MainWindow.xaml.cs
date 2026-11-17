@@ -1634,8 +1634,19 @@ public partial class MainWindow : Window
         //   在目标窗口树中按属性+矩形评分重定位（回放不受窗口移动影响，rect 仅作近似加分）
         if (elementPath.StartsWith("spec:v1|", StringComparison.Ordinal))
         {
-            var bySpec = ResolveBySpec(elementPath);
-            if (bySpec is not null) return bySpec;
+            // ★ 弹出菜单/对话框是**异步**出现的：上一步刚 Expand 了菜单，菜单项要 200~500ms 才真正
+            //   进入 UIA 树。单次探测会直接判"元素未找到"，表现为浏览器回放随机失败（GitHub 弹出
+            //   菜单第 2 步实测）。短重试：命中即返回（零额外开销），只有真没命中才等这 400ms。
+            for (var attempt = 0; attempt < 3; attempt++)
+            {
+                var bySpec = ResolveBySpec(elementPath);
+                if (bySpec is not null) return bySpec;
+                if (attempt < 2)
+                {
+                    System.Threading.Thread.Sleep(200);
+                    Log($"ResolveElement: spec 第 {attempt + 1} 次未命中 → 200ms 后重试（等弹出菜单进 UIA 树）");
+                }
+            }
             // ★ spec 未命中（元素已消失/结构变化）→ 跳过该步：绝不盲目兜底到窗口根元素执行
             //   （曾把 SetValue(null) 打到窗口根上；ActionReplayer 对 null 记失败并继续）
             Log("ResolveElement: spec 未命中 → 跳过该步（不对窗口根元素盲目执行）");
