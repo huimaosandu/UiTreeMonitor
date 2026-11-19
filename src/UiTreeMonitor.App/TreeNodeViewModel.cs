@@ -67,6 +67,15 @@ public sealed class TreeNodeViewModel : INotifyPropertyChanged
         set { if (_isMatched != value) { _isMatched = value; OnPropertyChanged(); } }
     }
 
+    private bool _isExpanded;
+    /// <summary>是否展开（TreeViewItem.IsExpanded 双向绑定到此）。
+    /// 抓树后默认展开前两层走这里赋值，不依赖 TreeViewItem 容器是否已生成。</summary>
+    public bool IsExpanded
+    {
+        get => _isExpanded;
+        set { if (_isExpanded != value) { _isExpanded = value; OnPropertyChanged(); } }
+    }
+
     /// <summary>检索用的小写拼接串（Name/AutomationId/ClassName/ControlType），构建时算一次，避免每次输入都重拼。</summary>
     public string SearchKey { get; init; } = "";
 

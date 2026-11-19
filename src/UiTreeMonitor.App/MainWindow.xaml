@@ -88,6 +88,9 @@
                             <TreeView.Resources>
                                 <!-- 鼠标捕获高亮：整行底色 + 加粗 + 左边框，比只染文字底色更醒目 -->
                                 <Style TargetType="TreeViewItem">
+                                    <!-- 展开状态由 VM 驱动：ItemsSource 数据绑定下 Items 里是 VM 而非容器，
+                                         直接改 TreeViewItem.IsExpanded 的写法拿不到容器（默认展开会失效） -->
+                                    <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}"/>
                                     <Style.Triggers>
                                         <DataTrigger Binding="{Binding IsHighlighted}" Value="True">
                                             <Setter Property="Background" Value="#FFD666"/>

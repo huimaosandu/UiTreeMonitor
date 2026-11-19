@@ -583,11 +583,11 @@ public partial class MainWindow : Window
                 stack.Push((cn, cvm));
             }
         }
-        // 默认展开前两层
+        // 默认展开前两层（在 VM 上置位，容器生成时就带展开状态，无需等待布局）
+        ExpandRoots(2);
         TreeView.UpdateLayout();
         Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background, new Action(() =>
         {
-            ExpandRoots(2);
             TxtStatus.Text = $"结构树已加载：{snap.NodeCount} 个节点（{snap.Target?.ProcessName}）";
             // 检索框有内容时按新树重算（容器已生成，能正常展开定位）
             if (!string.IsNullOrWhiteSpace(TxtTreeSearch.Text)) RunSearch();
@@ -611,18 +611,22 @@ public partial class MainWindow : Window
         }));
     }
 
+    /// <summary>默认展开前 depth 层。
+    /// ItemsSource 数据绑定下 TreeView.Items 里是 TreeNodeViewModel 而非 TreeViewItem，
+    /// 遍历容器拿不到任何东西（原写法恒空，默认展开形同未实现）——
+    /// 改为给 VM.IsExpanded 赋值，由 TreeViewItem 的 IsExpanded 双向绑定在容器生成时生效。</summary>
     private void ExpandRoots(int depth)
     {
-        foreach (var root in TreeView.Items.OfType<TreeViewItem>())
+        foreach (var root in _treeRoots)
             ExpandToDepth(root, depth);
     }
 
-    private static void ExpandToDepth(TreeViewItem? item, int depth)
+    private static void ExpandToDepth(TreeNodeViewModel? vm, int depth)
     {
-        if (item is null || depth <= 0) return;
-        item.IsExpanded = true;
-        item.UpdateLayout();
-        foreach (var child in item.Items.OfType<TreeViewItem>())
+        if (vm is null || depth <= 0) return;
+        vm.IsExpanded = true;
+        if (depth <= 1) return;
+        foreach (var child in vm.Children)
             ExpandToDepth(child, depth - 1);
     }
 
