@@ -74,12 +74,22 @@ public sealed class StepNode
         StepKinds.Timer => $"⏰ 定时 {TriggerAt:yyyy-MM-dd HH:mm:ss}",
         StepKinds.Trigger => Trigger is null
             ? "⚗ 触发器（未配置）"
-            : $"⚗ 触发器：{Trigger.ElementName} 的 {Trigger.Property} {CondText(Trigger.Condition)} {(Trigger.Condition == "Changed" ? "" : Trigger.ExpectedValue ?? "")}",
+            : $"⚗ 触发器：{Brief(Trigger.ElementName)} 的 {Trigger.Property} {CondText(Trigger.Condition)} {(Trigger.Condition == "Changed" ? "" : Trigger.ExpectedValue ?? "")}",
         StepKinds.Screenshot => string.IsNullOrEmpty(ScreenshotSpec)
             ? "📷 截图（未配置）"
             : $"📷 截图 {ScreenshotName}",
-        _ => Action is null ? "(空动作)" : $"{Action.PatternName}.{Action.MethodName} {Action.ElementName}",
+        _ => Action is null ? "(空动作)" : $"{Action.PatternName}.{Action.MethodName} {Brief(Action.ElementName)}",
     };
+
+    /// <summary>元素名压成单行并截断：UIA 的 Name 可能是整篇文档（带成百上千个换行），
+    /// 直接拼进 TreeView 行会把行高撑到几千像素、整窗布局变形。</summary>
+    private static string Brief(string? text, int max = 60)
+    {
+        if (string.IsNullOrEmpty(text)) return "";
+        var s = System.Text.RegularExpressions.Regex.Replace(text, @"[\r\n\t]+", " ");
+        s = System.Text.RegularExpressions.Regex.Replace(s, @" {2,}", " ").Trim();
+        return s.Length <= max ? s : string.Concat(s.AsSpan(0, max - 1), "…");
+    }
 
     /// <summary>循环结束条件显示（×N 次 / ≤时长 / 至时刻）。</summary>
     private string LoopEndText() => LoopEndMode switch

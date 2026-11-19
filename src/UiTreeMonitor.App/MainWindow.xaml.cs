@@ -939,7 +939,7 @@ public partial class MainWindow : Window
         _detailsA11yElement = el; // 缓存原始元素（Actions 执行需实时 Pattern 引用）
         _detailsPid = result.ProcessId;
         var (props, pats) = TreeNodeViewModel.FromA11yElement(el, result.ProcessName, result);
-        TxtDetailsTitle.Text = $"[{result.ControlType}] {result.Name ?? ""}";
+        TxtDetailsTitle.Text = $"[{result.ControlType}] {TextFit.OneLine(result.Name, 160)}";
         PropertiesGrid.ItemsSource = props;
         PatternsTree.ItemsSource = pats;
         // 记录当前 Details 元素约束（右键添加监控时作目标元素定位）
@@ -979,7 +979,9 @@ public partial class MainWindow : Window
             Highlight(vm);
             // 路径 = 结构树里的唯一位置（与任务/脚本的 ElementPath 同编码），直接显示便于复制使用
             var via = hit.Via == "runtime" ? "" : $"（{hit.Via} 匹配，建议刷新结构树）";
-            TxtCaptureStatus.Text = $"{result.ProcessName} — {vm.Display}　路径={hit.Path ?? "?"}{via}";
+            // 顶部条只有一行且宽度有限：路径是唯一需要复制的信息，放最前；名字压到 48 字（完整名在 Details 里）
+            var brief = $"[{vm.ControlType}] {TextFit.OneLine(vm.BaseLabel, 48)}";
+            TxtCaptureStatus.Text = $"{result.ProcessName} — 路径={hit.Path ?? "?"}　{brief}{via}";
             Log($"[HIGHLIGHT] via={hit.Via} path={hit.Path} node={hit.NodeId} name={result.Name}");
             if (!_detailsLocked)
                 TxtDetailsTitle.Text = $"{vm.Display}　路径={hit.Path ?? "?"}";

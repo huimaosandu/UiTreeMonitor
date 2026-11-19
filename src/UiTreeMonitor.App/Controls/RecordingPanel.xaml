@@ -21,7 +21,8 @@
                            MinWidth="18" Margin="0,0,4,0" VerticalAlignment="Center"/>
                 <TextBlock Text="⏸ " Foreground="#CC0000" FontWeight="Bold"
                            Visibility="{Binding DisabledMark}"/>
-                <TextBlock Text="{Binding DisplayText}" VerticalAlignment="Center"/>
+                <TextBlock Text="{Binding DisplayText}" VerticalAlignment="Center"
+                           TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
                 <TextBlock Text="  " />
                 <TextBlock Text="{Binding Detail}" Foreground="#888888" FontSize="11" VerticalAlignment="Center"/>
             </StackPanel>

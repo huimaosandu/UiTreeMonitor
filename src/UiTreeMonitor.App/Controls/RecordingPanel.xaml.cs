@@ -807,7 +807,7 @@ public partial class RecordingPanel : UserControl
 
             // ★ 双通道合流：与输入语义化记录共用 merge（同元素同 Pattern 同方法只留一条）
             AppendRecord(record, uiaEvent.ReplacePrevious, source: $"uia {uiaEvent.EventName}",
-                statusText: $"● 已捕获 {_steps.Count} 个动作: {detail} ({uiaEvent.ElementName})");
+                statusText: $"● 已捕获 {_steps.Count} 个动作: {detail} ({TextFit.OneLine(uiaEvent.ElementName, 60)})");
         });
     }
 
@@ -837,7 +837,7 @@ public partial class RecordingPanel : UserControl
             ? $"{record.MethodName}({string.Join(", ", record.Parameters)})"
             : record.MethodName;
         TxtStatus.Text = statusText ?? $"● 已捕获 {_steps.Count} 个动作: {detail}" +
-                         (record.ElementName != "" ? $" ({record.ElementName})" : "") +
+                         (record.ElementName != "" ? $" ({TextFit.OneLine(record.ElementName, 60)})" : "") +
                          (_insertAnchor is not null ? "（插入模式）" : "");
         if (merged)
             AppLog.Write("RECORD", $"AppendRecord merge[{source}]: {record.PatternName}.{record.MethodName}" +

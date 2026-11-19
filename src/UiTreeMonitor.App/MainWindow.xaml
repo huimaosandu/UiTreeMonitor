@@ -9,7 +9,9 @@
         FontFamily="Microsoft YaHei" FontSize="13">
     <Grid>
         <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
+            <!-- ★ 顶部工具条高度上限：UIA 文本可能带成百上千个换行（整篇文档），
+                 行高 Auto 会被撑到几千像素、把整个窗口挤变形；这里加硬上限兜底 -->
+            <RowDefinition Height="Auto" MaxHeight="64"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
@@ -29,7 +31,8 @@
                 <Button x:Name="BtnRefreshWindows" Content="刷新窗口" Margin="8,0,0,0" Padding="10,4" Click="BtnRefreshWindows_Click" DockPanel.Dock="Left"/>
                 <Button x:Name="BtnCaptureTree" Content="抓取结构树" Margin="8,0,0,0" Padding="10,4" Click="BtnCaptureTree_Click" DockPanel.Dock="Left"/>
                 <Button x:Name="BtnMouseCapture" Content="随鼠标捕获" Margin="8,0,0,0" Padding="10,4" Click="BtnMouseCapture_Click" DockPanel.Dock="Left"/>
-                <TextBlock x:Name="TxtCaptureStatus" Text="" VerticalAlignment="Center" Margin="12,0,0,0" Foreground="#666666"/>
+                <TextBlock x:Name="TxtCaptureStatus" Text="" VerticalAlignment="Center" Margin="12,0,0,0"
+                           Foreground="#666666" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
             </DockPanel>
         </Border>
 
@@ -104,7 +107,7 @@
                                     </Style.Triggers>
                                 </Style>
                                 <HierarchicalDataTemplate DataType="{x:Type local:TreeNodeViewModel}" ItemsSource="{Binding Children}">
-                                    <TextBlock Text="{Binding Display}">
+                                    <TextBlock Text="{Binding Display}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis">
                                         <TextBlock.Style>
                                             <Style TargetType="TextBlock">
                                                 <Style.Triggers>
@@ -125,7 +128,8 @@
                 <Border Grid.Row="2" Background="#FAFAFA" BorderBrush="#CCCCCC" BorderThickness="0,1,0,0" Padding="4">
                     <DockPanel>
                         <TextBlock x:Name="TxtDetailsTitle" Text="选中节点查看详情" FontWeight="Bold"
-                                   DockPanel.Dock="Top" Margin="2,2,0,4" Foreground="#333333"/>
+                                   DockPanel.Dock="Top" Margin="2,2,0,4" Foreground="#333333"
+                                   TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
 
                         <StackPanel DockPanel.Dock="Top">
                             <!-- Properties Expander -->
@@ -331,7 +335,7 @@
         <!-- ===== 状态栏 ===== -->
         <StatusBar Grid.Row="2">
             <StatusBarItem>
-                <TextBlock x:Name="TxtStatus" Text="就绪"/>
+                <TextBlock x:Name="TxtStatus" Text="就绪" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
             </StatusBarItem>
         </StatusBar>
     </Grid>

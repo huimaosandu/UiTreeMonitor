@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
+using System.Text.RegularExpressions;
 using Axe.Windows.Core.Bases;
 using Axe.Windows.Desktop.UIAutomation;
 using UiTreeMonitor.Core.Models;
@@ -11,6 +12,20 @@ using UiTreeMonitor.Core.Targeting;
 using UiTreeMonitor.Core.Uia;
 
 namespace UiTreeMonitor.App;
+
+/// <summary>UIA 文本压成单行：Name 可能是整篇文档（Notepad++ 的正文 Pane 就是全文，
+/// 自带上千个换行），原样塞进 TextBlock 会被渲染成上千行，把所在的 Auto 行撑到几千像素、
+/// 整个窗口布局被挤成这样。所有"要显示给人看"的 UIA 文本都过这里。</summary>
+public static class TextFit
+{
+    public static string OneLine(string? text, int max = 120)
+    {
+        if (string.IsNullOrEmpty(text)) return "";
+        var s = Regex.Replace(text, @"[\r\n\t\f\v]+", " ");
+        s = Regex.Replace(s, @" {2,}", " ").Trim();
+        return s.Length <= max ? s : string.Concat(s.AsSpan(0, max - 1), "…");
+    }
+}
 
 /// <summary>Details 面板的单个属性条目（Properties 列表用）。</summary>
 public sealed class PropertyItem
@@ -39,7 +54,12 @@ public sealed class PatternItem
 public sealed class TreeNodeViewModel : INotifyPropertyChanged
 {
     public int Id { get; init; }
-    public string Display => $"[{ControlType}] {Name ?? AutomationId ?? ClassName ?? "(无名称)"}";
+    /// <summary>树行显示文本：压成单行并截断（见 TextFit.OneLine 的说明），否则整篇文档会撑坏布局。</summary>
+    public string Display => $"[{ControlType}] {TextFit.OneLine(BaseLabel)}";
+    /// <summary>Name/AutomationId/ClassName 里第一个非空的，作为节点主标识。</summary>
+    public string BaseLabel => !string.IsNullOrEmpty(Name) ? Name!
+        : !string.IsNullOrEmpty(AutomationId) ? AutomationId!
+        : !string.IsNullOrEmpty(ClassName) ? ClassName! : "(无名称)";
     public string? Name { get; init; }
     public string ControlType { get; init; } = "";
     public string? AutomationId { get; init; }
@@ -121,8 +141,10 @@ public sealed class TreeNodeViewModel : INotifyPropertyChanged
             var val = node.GetProperty(propName);
             if (val is not null)
             {
-                var display = val.Length > 120 ? val.Substring(0, 117) + "..." : val;
-                list.Add(new PropertyItem { Name = propName, Value = display, FullValue = val });
+                // 先压单行再截断：DataGrid 行高固定，但带换行的单元格仍会撑出纵向内容
+                var one = TextFit.OneLine(val, 400);
+                var display = one.Length > 120 ? string.Concat(one.AsSpan(0, 117), "...") : one;
+                list.Add(new PropertyItem { Name = propName, Value = display, FullValue = one });
             }
         }
         return list;
@@ -135,12 +157,12 @@ public sealed class TreeNodeViewModel : INotifyPropertyChanged
     /// </summary>
     private static PropertyItem MakeSubProperty(string name, string? raw)
     {
-        var v = raw ?? "(null)";
+        var v = TextFit.OneLine(raw ?? "(null)", 300);
         if (!v.StartsWith(name + " = ", StringComparison.Ordinal)) v = $"{name} = {v}";
         return new PropertyItem
         {
             Name = name,
-            Value = v.Length > 120 ? v[..117] + "..." : v,
+            Value = v.Length > 120 ? string.Concat(v.AsSpan(0, 117), "...") : v,
             FullValue = v,
         };
     }
@@ -154,7 +176,7 @@ public sealed class TreeNodeViewModel : INotifyPropertyChanged
         foreach (var pd in node.PatternDataList)
         {
             var subProps = pd.SubProps.Select(sp => MakeSubProperty(sp.Name, sp.Value)).ToList();
-            list.Add(new PatternItem { Name = pd.Name, Value = pd.DisplayValue, SubProperties = subProps,
+            list.Add(new PatternItem { Name = pd.Name, Value = TextFit.OneLine(pd.DisplayValue, 160), SubProperties = subProps,
                 HasActions = false, PatternIndex = list.Count }); // 快照无 A11yPattern 引用，不支持 Actions
         }
 
@@ -200,8 +222,9 @@ public sealed class TreeNodeViewModel : INotifyPropertyChanged
                 var val = getter();
                 if (!string.IsNullOrEmpty(val))
                 {
-                    var display = val.Length > 120 ? val.Substring(0, 117) + "..." : val;
-                    props.Add(new PropertyItem { Name = name, Value = display, FullValue = val });
+                    var one = TextFit.OneLine(val, 400);
+                    var display = one.Length > 120 ? string.Concat(one.AsSpan(0, 117), "...") : one;
+                    props.Add(new PropertyItem { Name = name, Value = display, FullValue = one });
                 }
             }
             catch { /* 某些属性可能抛异常 */ }
